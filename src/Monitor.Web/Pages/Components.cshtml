@@ -1,0 +1,43 @@
+@page "/components"
+@model ComponentsModel
+@{
+    ViewData["Title"] = "Components";
+}
+
+<header class="page-head compact">
+    <div>
+        <p class="eyebrow">REGISTRY</p>
+        <h1>Components</h1>
+        <p class="lede">Every independently observable system known to Monitor.</p>
+    </div>
+</header>
+
+<section class="panel table-panel">
+    @if (Model.Components.Count == 0)
+    {
+        <div class="empty"><strong>No components registered.</strong><span>POST to <code>/api/components/register</code> to add one.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Environment</th><th>Version</th><th>Heartbeat</th><th>Last run</th></tr></thead>
+                <tbody>
+                @foreach (var component in Model.Components)
+                {
+                    var statusClass = component.Status.ToString().ToLowerInvariant();
+                    <tr>
+                        <td><span class="status-label"><i class="status-dot @statusClass"></i>@component.Status</span></td>
+                        <td><strong>@component.Name</strong><small>@component.Slug</small></td>
+                        <td>@component.Type</td>
+                        <td>@component.Environment</td>
+                        <td>@(component.Version ?? "—")</td>
+                        <td>@(component.LastHeartbeatAt?.ToString("u") ?? "—")</td>
+                        <td>@(component.LastRunAt?.ToString("u") ?? "—")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>

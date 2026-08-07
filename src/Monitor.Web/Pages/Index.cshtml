@@ -1,0 +1,118 @@
+@page "/"
+@model IndexModel
+@{
+    ViewData["Title"] = "Overview";
+}
+
+<header class="page-head">
+    <div>
+        <p class="eyebrow">OPERATIONS / OVERVIEW</p>
+        <h1>Autonomous systems</h1>
+        <p class="lede">One surface for the software that keeps working when you are not looking at it.</p>
+    </div>
+    <div class="live-pill"><span></span> LIVE</div>
+</header>
+
+<section class="metrics" aria-label="Summary">
+    <article class="metric">
+        <span>Components</span>
+        <strong>@Model.ComponentCount</strong>
+        <small>registered systems</small>
+    </article>
+    <article class="metric">
+        <span>Healthy</span>
+        <strong>@Model.HealthyCount</strong>
+        <small>heartbeat &lt; 2 min</small>
+    </article>
+    <article class="metric">
+        <span>Runs today</span>
+        <strong>@Model.RunsToday</strong>
+        <small>all components</small>
+    </article>
+    <article class="metric">
+        <span>Cost today</span>
+        <strong>$@Model.CostTodayUsd.ToString("0.00")</strong>
+        <small>reported estimate</small>
+    </article>
+</section>
+
+<div class="dashboard-grid">
+    <section class="panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">SYSTEM HEALTH</p>
+                <h2>Components</h2>
+            </div>
+            <a href="/components">View all</a>
+        </div>
+
+        @if (Model.Components.Count == 0)
+        {
+            <div class="empty">
+                <strong>No components yet.</strong>
+                <span>Register the first agent, bot, MCP server, or service through the ingestion API.</span>
+            </div>
+        }
+        else
+        {
+            <div class="rows">
+                @foreach (var component in Model.Components.Take(8))
+                {
+                    var statusClass = component.Status.ToString().ToLowerInvariant();
+                    <div class="system-row">
+                        <span class="status-dot @statusClass"></span>
+                        <div class="row-main">
+                            <strong>@component.Name</strong>
+                            <span>@component.Type · @component.Environment</span>
+                        </div>
+                        <span class="status-text">@component.Status</span>
+                    </div>
+                }
+            </div>
+        }
+    </section>
+
+    <section class="panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">ACTIVITY</p>
+                <h2>Recent runs</h2>
+            </div>
+            <a href="/runs">View all</a>
+        </div>
+
+        @if (Model.RecentRuns.Count == 0)
+        {
+            <div class="empty">
+                <strong>Nothing has run yet.</strong>
+                <span>Runs will appear here as soon as a component starts reporting work.</span>
+            </div>
+        }
+        else
+        {
+            <div class="rows">
+                @foreach (var run in Model.RecentRuns)
+                {
+                    var statusClass = run.Status.ToString().ToLowerInvariant();
+                    <a class="run-row" href="/run/@run.Id">
+                        <span class="run-status @statusClass">@run.Status</span>
+                        <div class="row-main">
+                            <strong>@run.Name</strong>
+                            <span>@run.Component</span>
+                        </div>
+                        <span class="run-meta">
+                            @if (run.DurationMs is not null)
+                            {
+                                @($"{run.DurationMs:0} ms")
+                            }
+                            else
+                            {
+                                @("running")
+                            }
+                        </span>
+                    </a>
+                }
+            </div>
+        }
+    </section>
+</div>

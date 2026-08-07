@@ -1,0 +1,44 @@
+@page "/runs"
+@model RunsModel
+@{
+    ViewData["Title"] = "Runs";
+}
+
+<header class="page-head compact">
+    <div>
+        <p class="eyebrow">EXECUTION HISTORY</p>
+        <h1>Runs</h1>
+        <p class="lede">The operational unit of work across every monitored component.</p>
+    </div>
+</header>
+
+<section class="panel table-panel">
+    @if (Model.Runs.Count == 0)
+    {
+        <div class="empty"><strong>No runs received.</strong><span>Start one through <code>POST /api/runs</code>.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Status</th><th>Run</th><th>Component</th><th>Model</th><th>Started</th><th>Duration</th><th>Tokens</th><th>Cost</th></tr></thead>
+                <tbody>
+                @foreach (var run in Model.Runs)
+                {
+                    var statusClass = run.Status.ToString().ToLowerInvariant();
+                    <tr>
+                        <td><span class="run-status @statusClass">@run.Status</span></td>
+                        <td><a class="table-link" href="/run/@run.Id">@run.Name</a></td>
+                        <td>@run.Component</td>
+                        <td>@(run.Model ?? "—")</td>
+                        <td>@run.StartedAt.ToString("u")</td>
+                        <td>@(run.Duration is null ? "running" : $"{run.Duration.Value.TotalMilliseconds:0} ms")</td>
+                        <td>@run.Tokens.ToString("N0")</td>
+                        <td>$@run.CostUsd.ToString("0.0000")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>

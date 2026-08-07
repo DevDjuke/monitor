@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <RootNamespace>Monitor.Web</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Monitor.Domain\Monitor.Domain.csproj" />
+    <ProjectReference Include="..\Monitor.Infrastructure\Monitor.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

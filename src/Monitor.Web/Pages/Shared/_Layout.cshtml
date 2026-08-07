@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>@ViewData["Title"] · Monitor</title>
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+</head>
+<body>
+    <div class="shell">
+        <aside class="sidebar">
+            <a class="brand" href="/">
+                <span class="brand-mark"><i></i><i></i><i></i></span>
+                <span>MONITOR</span>
+            </a>
+            <nav class="nav" aria-label="Primary">
+                <a href="/">Overview</a>
+                <a href="/components">Components</a>
+                <a href="/runs">Runs</a>
+            </nav>
+            <div class="sidebar-foot">
+                <span class="live-dot"></span>
+                Control plane online
+            </div>
+        </aside>
+        <main class="main">
+            @RenderBody()
+        </main>
+    </div>
+</body>
+</html>

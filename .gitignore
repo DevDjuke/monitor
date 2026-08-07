@@ -1,0 +1,16 @@
+## .NET
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+## Local Monitor data
+*.db
+*.db-shm
+*.db-wal
+
+## OS / IDE
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,63 @@
+@page "/run/{id:guid}"
+@model RunModel
+@{
+    ViewData["Title"] = Model.Run.Name;
+    var statusClass = Model.Run.Status.ToString().ToLowerInvariant();
+    var duration = Model.Run.CompletedAt is null ? null : Model.Run.CompletedAt.Value - Model.Run.StartedAt;
+}
+
+<header class="page-head compact run-head">
+    <div>
+        <p class="eyebrow">RUN / @Model.Run.Id</p>
+        <h1>@Model.Run.Name</h1>
+        <p class="lede">@Model.Run.Component.Name · @Model.Run.StartedAt.ToString("u")</p>
+    </div>
+    <span class="run-status @statusClass">@Model.Run.Status</span>
+</header>
+
+<section class="run-facts">
+    <div><span>Duration</span><strong>@(duration is null ? "running" : $"{duration.Value.TotalMilliseconds:0} ms")</strong></div>
+    <div><span>Model</span><strong>@(Model.Run.Model ?? "—")</strong></div>
+    <div><span>Input tokens</span><strong>@Model.Run.InputTokens.ToString("N0")</strong></div>
+    <div><span>Output tokens</span><strong>@Model.Run.OutputTokens.ToString("N0")</strong></div>
+    <div><span>Cost</span><strong>$@Model.Run.CostUsd.ToString("0.0000")</strong></div>
+    <div><span>Trigger</span><strong>@(Model.Run.Trigger ?? "—")</strong></div>
+</section>
+
+<section class="panel trace-panel">
+    <div class="panel-head"><div><p class="eyebrow">TRACE</p><h2>Execution</h2></div><span>@Model.Spans.Count spans</span></div>
+    @if (Model.Spans.Count == 0)
+    {
+        <div class="empty"><strong>No spans reported.</strong><span>This run only contains its top-level timing and usage data.</span></div>
+    }
+    else
+    {
+        <div class="trace">
+        @foreach (var span in Model.Spans)
+        {
+            var spanClass = span.Status.ToString().ToLowerInvariant();
+            var spanDuration = span.CompletedAt is null ? null : span.CompletedAt.Value - span.StartedAt;
+            <div class="trace-row">
+                <span class="trace-line"></span>
+                <span class="status-dot @spanClass"></span>
+                <span class="trace-kind">@span.Kind</span>
+                <strong>@span.Name</strong>
+                <span class="trace-duration">@(spanDuration is null ? "running" : $"{spanDuration.Value.TotalMilliseconds:0} ms")</span>
+            </div>
+        }
+        </div>
+    }
+</section>
+
+@if (!string.IsNullOrWhiteSpace(Model.Run.Error))
+{
+    <section class="panel payload error-payload"><p class="eyebrow">ERROR</p><pre>@Model.Run.Error</pre></section>
+}
+@if (!string.IsNullOrWhiteSpace(Model.Run.InputJson))
+{
+    <section class="panel payload"><p class="eyebrow">INPUT</p><pre>@Model.Run.InputJson</pre></section>
+}
+@if (!string.IsNullOrWhiteSpace(Model.Run.OutputJson))
+{
+    <section class="panel payload"><p class="eyebrow">OUTPUT</p><pre>@Model.Run.OutputJson</pre></section>
+}
