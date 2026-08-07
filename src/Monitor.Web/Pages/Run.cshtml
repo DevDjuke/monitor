@@ -3,7 +3,7 @@
 @{
     ViewData["Title"] = Model.Run.Name;
     var statusClass = Model.Run.Status.ToString().ToLowerInvariant();
-    var duration = Model.Run.CompletedAt is null ? null : Model.Run.CompletedAt.Value - Model.Run.StartedAt;
+    TimeSpan? duration = Model.Run.CompletedAt is null ? null : Model.Run.CompletedAt.Value - Model.Run.StartedAt;
 }
 
 <header class="page-head compact run-head">
@@ -36,7 +36,7 @@
         @foreach (var span in Model.Spans)
         {
             var spanClass = span.Status.ToString().ToLowerInvariant();
-            var spanDuration = span.CompletedAt is null ? null : span.CompletedAt.Value - span.StartedAt;
+            TimeSpan? spanDuration = span.CompletedAt is null ? null : span.CompletedAt.Value - span.StartedAt;
             <div class="trace-row">
                 <span class="trace-line"></span>
                 <span class="status-dot @spanClass"></span>

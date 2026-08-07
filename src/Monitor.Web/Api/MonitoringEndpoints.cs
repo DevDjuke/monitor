@@ -15,6 +15,7 @@ public static class MonitoringEndpoints
         api.MapPost("/components/{id:guid}/heartbeat", Heartbeat);
 
         api.MapGet("/runs", GetRuns);
+        api.MapGet("/runs/{id:guid}", GetRun);
         api.MapPost("/runs", StartRun);
         api.MapPost("/runs/{id:guid}/complete", CompleteRun);
         api.MapPost("/runs/{runId:guid}/spans", CreateSpan);
@@ -131,6 +132,55 @@ public static class MonitoringEndpoints
             .ToListAsync(cancellationToken);
 
         return Results.Ok(runs);
+    }
+
+    private static async Task<IResult> GetRun(
+        Guid id,
+        MonitorDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var run = await db.Runs
+            .AsNoTracking()
+            .Include(x => x.Component)
+            .Include(x => x.Spans)
+            .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
+
+        if (run is null)
+        {
+            return Results.NotFound();
+        }
+
+        return Results.Ok(new
+        {
+            run.Id,
+            run.ComponentId,
+            Component = run.Component.Name,
+            run.ExternalId,
+            run.Name,
+            run.Trigger,
+            run.Model,
+            run.Status,
+            run.StartedAt,
+            run.CompletedAt,
+            run.InputTokens,
+            run.OutputTokens,
+            run.CostUsd,
+            run.InputJson,
+            run.OutputJson,
+            run.Error,
+            Spans = run.Spans.OrderBy(x => x.StartedAt).Select(x => new
+            {
+                x.Id,
+                x.ParentSpanId,
+                x.Name,
+                x.Kind,
+                x.Status,
+                x.StartedAt,
+                x.CompletedAt,
+                x.AttributesJson,
+                x.Error
+            })
+        });
     }
 
     private static async Task<IResult> StartRun(
