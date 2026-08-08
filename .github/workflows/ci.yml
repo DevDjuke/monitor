@@ -16,18 +16,6 @@ jobs:
           dotnet-version: '10.0.x'
       - run: dotnet restore Monitor.sln
       - run: dotnet build Monitor.sln --configuration Release --no-restore
-      - name: Generate EF snapshot probe
-        run: |
-          dotnet tool install --global dotnet-ef --version 10.0.10
-          dotnet ef migrations add SnapshotProbe \
-            --project src/Monitor.Infrastructure \
-            --startup-project src/Monitor.Web \
-            --context MonitorDbContext \
-            --output-dir Migrations
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ef-model-snapshot
-          path: src/Monitor.Infrastructure/Migrations/MonitorDbContextModelSnapshot.cs
       - name: Smoke test authentication and migrations
         env:
           ASPNETCORE_ENVIRONMENT: Development
