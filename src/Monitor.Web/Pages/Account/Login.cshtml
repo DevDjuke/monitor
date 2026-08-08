@@ -1,0 +1,36 @@
+@page "/account/login"
+@model Monitor.Web.Pages.Account.LoginModel
+@{
+    Layout = "_AuthLayout";
+    ViewData["Title"] = "Sign in";
+}
+
+<section class="auth-card">
+    <div class="auth-heading">
+        <p class="eyebrow">CONTROL PLANE</p>
+        <h1>Sign in</h1>
+        <p>Monitor is private. Authenticate to inspect components, runs, traces, and usage.</p>
+    </div>
+
+    <form method="post" class="auth-form">
+        <input asp-for="ReturnUrl" type="hidden" />
+        <div asp-validation-summary="ModelOnly" class="validation-summary"></div>
+
+        <label asp-for="Input.Email"></label>
+        <input asp-for="Input.Email" autocomplete="username" autofocus />
+        <span asp-validation-for="Input.Email" class="field-error"></span>
+
+        <label asp-for="Input.Password"></label>
+        <input asp-for="Input.Password" autocomplete="current-password" />
+        <span asp-validation-for="Input.Password" class="field-error"></span>
+
+        <label class="check-row">
+            <input asp-for="Input.RememberMe" />
+            <span>Keep me signed in</span>
+        </label>
+
+        <button type="submit" class="primary-button">Sign in</button>
+    </form>
+
+    <p class="auth-footnote">First local run? <a href="/account/setup">Create the initial account</a>. Setup automatically closes after the first user exists.</p>
+</section>

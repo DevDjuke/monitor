@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <title>@ViewData["Title"] · Monitor</title>
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/auth.css" asp-append-version="true" />
 </head>
 <body>
     <div class="shell">
@@ -19,6 +20,12 @@
                 <a href="/components">Components</a>
                 <a href="/runs">Runs</a>
             </nav>
+            <div class="sidebar-account">
+                <span class="account-email">@User.Identity?.Name</span>
+                <form method="post" asp-page="/Account/Logout">
+                    <button type="submit" class="signout-button">Sign out</button>
+                </form>
+            </div>
             <div class="sidebar-foot">
                 <span class="live-dot"></span>
                 Control plane online
