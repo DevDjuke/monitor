@@ -16,3 +16,52 @@ jobs:
           dotnet-version: '10.0.x'
       - run: dotnet restore Monitor.sln
       - run: dotnet build Monitor.sln --configuration Release --no-restore
+      - name: Smoke test authentication and migrations
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          ASPNETCORE_URLS: http://127.0.0.1:5080
+          ConnectionStrings__Monitor: Data Source=/tmp/monitor-ci.db
+          Monitor__IngestionApiKey: ci-test-ingestion-key
+        run: |
+          set -euo pipefail
+          rm -f /tmp/monitor-ci.db
+
+          dotnet run \
+            --project src/Monitor.Web \
+            --configuration Release \
+            --no-build \
+            > /tmp/monitor-ci.log 2>&1 &
+          app_pid=$!
+
+          cleanup() {
+            kill "$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:5080/api/health > /dev/null; then
+              break
+            fi
+
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              cat /tmp/monitor-ci.log
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          curl -fsS http://127.0.0.1:5080/api/health > /dev/null
+          curl -fsS http://127.0.0.1:5080/account/login > /dev/null
+          curl -fsS http://127.0.0.1:5080/account/setup > /dev/null
+
+          unauthenticated_status=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:5080/api/components)
+          test "$unauthenticated_status" = "401"
+
+          curl -fsS \
+            -H 'X-Monitor-Key: ci-test-ingestion-key' \
+            http://127.0.0.1:5080/api/components \
+            > /dev/null
+
+          test -s /tmp/monitor-ci.db
