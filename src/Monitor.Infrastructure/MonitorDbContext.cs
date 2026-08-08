@@ -1,10 +1,13 @@
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Monitor.Domain;
+using Monitor.Infrastructure.Auth;
 
 namespace Monitor.Infrastructure;
 
-public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options) : DbContext(options)
+public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
+    : IdentityDbContext<MonitorUser>(options)
 {
     private static readonly ValueConverter<DateTimeOffset, long> DateTimeOffsetConverter = new(
         value => value.ToUnixTimeMilliseconds(),
@@ -20,6 +23,8 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        base.OnModelCreating(modelBuilder);
+
         var component = modelBuilder.Entity<MonitoredComponent>();
         component.ToTable("Components");
         component.HasKey(x => x.Id);

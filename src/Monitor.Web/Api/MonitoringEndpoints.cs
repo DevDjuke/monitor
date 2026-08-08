@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
@@ -8,7 +10,35 @@ public static class MonitoringEndpoints
 {
     public static IEndpointRouteBuilder MapMonitoringApi(this IEndpointRouteBuilder endpoints)
     {
+        endpoints.MapGet("/api/health", () => Results.Ok(new { status = "ok", now = DateTimeOffset.UtcNow }));
+
+        var expectedApiKey = endpoints.ServiceProvider
+            .GetRequiredService<IConfiguration>()["Monitor:IngestionApiKey"];
+
         var api = endpoints.MapGroup("/api");
+        api.AddEndpointFilter(async (context, next) =>
+        {
+            var httpContext = context.HttpContext;
+            if (httpContext.User.Identity?.IsAuthenticated == true)
+            {
+                return await next(context);
+            }
+
+            if (string.IsNullOrWhiteSpace(expectedApiKey))
+            {
+                return Results.Json(
+                    new { error = "The ingestion API key is not configured." },
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+
+            var suppliedApiKey = httpContext.Request.Headers["X-Monitor-Key"].ToString();
+            if (!ApiKeysMatch(expectedApiKey, suppliedApiKey))
+            {
+                return Results.Unauthorized();
+            }
+
+            return await next(context);
+        });
 
         api.MapGet("/components", GetComponents);
         api.MapPost("/components/register", RegisterComponent);
@@ -20,9 +50,19 @@ public static class MonitoringEndpoints
         api.MapPost("/runs/{id:guid}/complete", CompleteRun);
         api.MapPost("/runs/{runId:guid}/spans", CreateSpan);
 
-        api.MapGet("/health", () => Results.Ok(new { status = "ok", now = DateTimeOffset.UtcNow }));
-
         return endpoints;
+    }
+
+    private static bool ApiKeysMatch(string expected, string supplied)
+    {
+        if (string.IsNullOrEmpty(supplied))
+        {
+            return false;
+        }
+
+        var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(expected));
+        var suppliedHash = SHA256.HashData(Encoding.UTF8.GetBytes(supplied));
+        return CryptographicOperations.FixedTimeEquals(expectedHash, suppliedHash);
     }
 
     private static async Task<IResult> GetComponents(MonitorDbContext db, CancellationToken cancellationToken)
