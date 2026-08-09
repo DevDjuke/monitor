@@ -89,11 +89,12 @@ public sealed class RetentionAggregationService(
                 .GroupBy(x => new AggregateKey(
                     ToHourBucket(x.StartedAt),
                     x.ComponentId,
-                    NormalizeModel(x.Model)))
+                    NormalizeModelKey(x.Model)))
                 .Select(group => new PendingAggregate(
                     group.Key,
                     group.First().Component.Name,
                     group.First().Component.Environment,
+                    NormalizeModel(group.First().Model),
                     CreateDelta(group)))
                 .ToList();
 
@@ -109,7 +110,7 @@ public sealed class RetentionAggregationService(
                 .ToListAsync(cancellationToken);
 
             var existingByKey = existingAggregates.ToDictionary(
-                x => new AggregateKey(x.BucketStart, x.ComponentId, x.Model));
+                x => new AggregateKey(x.BucketStart, x.ComponentId, NormalizeModelKey(x.Model)));
 
             foreach (var pending in grouped)
             {
@@ -124,7 +125,7 @@ public sealed class RetentionAggregationService(
                         pending.Key.ComponentId,
                         pending.ComponentName,
                         pending.Environment,
-                        pending.Key.Model,
+                        pending.Model,
                         pending.Delta,
                         now);
                     db.RunAggregates.Add(aggregate);
@@ -230,6 +231,7 @@ public sealed class RetentionAggregationService(
     }
 
     private static string NormalizeModel(string? model) => model?.Trim() ?? string.Empty;
+    private static string NormalizeModelKey(string? model) => NormalizeModel(model).ToUpperInvariant();
 
     private static async Task<bool> TryAcquireLockAsync(DbConnection connection, CancellationToken cancellationToken)
     {
@@ -266,11 +268,12 @@ public sealed class RetentionAggregationService(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private sealed record AggregateKey(DateTimeOffset BucketStart, Guid ComponentId, string Model);
+    private sealed record AggregateKey(DateTimeOffset BucketStart, Guid ComponentId, string ModelKey);
     private sealed record PendingAggregate(
         AggregateKey Key,
         string ComponentName,
         string Environment,
+        string Model,
         RunAggregateDelta Delta);
 }
 
