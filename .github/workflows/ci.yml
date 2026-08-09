@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,40 +26,12 @@ jobs:
           --health-start-period 20s
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
-          fetch-depth: 0
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
       - run: dotnet restore Monitor.sln
-      - name: Generate run sequence migration
-        if: ${{ github.event_name == 'pull_request' && hashFiles('src/Monitor.Infrastructure/Migrations/*AddRunSequence.cs') == '' }}
-        run: |
-          git show origin/main:src/Monitor.Infrastructure/Migrations/MonitorDbContextModelSnapshot.cs \
-            > src/Monitor.Infrastructure/Migrations/MonitorDbContextModelSnapshot.cs
-          rm -f src/Monitor.Infrastructure/Migrations/*AddRunSequence*.cs
-
-          dotnet tool install --global dotnet-ef --version 10.0.10
-          dotnet ef migrations add AddRunSequence \
-            --project src/Monitor.Infrastructure \
-            --startup-project src/Monitor.Web \
-            --context MonitorDbContext \
-            --output-dir Migrations
-      - name: Commit generated migration
-        if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          if git diff --quiet -- src/Monitor.Infrastructure/Migrations && [ -z "$(git status --porcelain src/Monitor.Infrastructure/Migrations)" ]; then
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/Monitor.Infrastructure/Migrations
-          git commit -m "Add run keyset sequence migration"
-          git push origin HEAD:${{ github.head_ref }}
       - run: dotnet build Monitor.sln --configuration Release --no-restore
-      - name: Smoke test authentication, SQL Server, and sample telemetry
+      - name: Smoke test authentication, SQL Server, and realtime run queries
         env:
           ASPNETCORE_ENVIRONMENT: Development
           ASPNETCORE_URLS: http://127.0.0.1:5080
@@ -116,6 +85,10 @@ jobs:
           unauthenticated_status=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:5080/api/components)
           test "$unauthenticated_status" = "401"
 
+          unauthenticated_hub_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -X POST 'http://127.0.0.1:5080/hubs/monitor/negotiate?negotiateVersion=1')
+          test "$unauthenticated_hub_status" = "401"
+
           curl -fsS \
             -H 'X-Monitor-Key: ci-test-ingestion-key' \
             http://127.0.0.1:5080/api/components \
@@ -166,6 +139,12 @@ jobs:
             'http://127.0.0.1:5080/api/runs/query?pageSize=25&status=Failed&environment=development&search=Synthetic')
           echo "$filtered" | grep -q 'Synthetic website audit'
           echo "$filtered" | grep -q '"status":"Failed"'
+
+          options=$(curl -fsS \
+            -H 'X-Monitor-Key: ci-test-ingestion-key' \
+            'http://127.0.0.1:5080/api/runs/options')
+          echo "$options" | grep -q 'Sample Website Auditor'
+          echo "$options" | grep -q 'sample-model'
 
           first_page=$(curl -fsS \
             -H 'X-Monitor-Key: ci-test-ingestion-key' \
