@@ -31,7 +31,7 @@ jobs:
           dotnet-version: '10.0.x'
       - run: dotnet restore Monitor.sln
       - run: dotnet build Monitor.sln --configuration Release --no-restore
-      - name: Smoke test authentication and SQL Server migrations
+      - name: Smoke test authentication, SQL Server, and sample telemetry
         env:
           ASPNETCORE_ENVIRONMENT: Development
           ASPNETCORE_URLS: http://127.0.0.1:5080
@@ -46,8 +46,13 @@ jobs:
             --no-build \
             > /tmp/monitor-ci.log 2>&1 &
           app_pid=$!
+          worker_pid=""
 
           cleanup() {
+            if [ -n "$worker_pid" ]; then
+              kill "$worker_pid" 2>/dev/null || true
+              wait "$worker_pid" 2>/dev/null || true
+            fi
             kill "$app_pid" 2>/dev/null || true
             wait "$app_pid" 2>/dev/null || true
           }
@@ -77,3 +82,43 @@ jobs:
             -H 'X-Monitor-Key: ci-test-ingestion-key' \
             http://127.0.0.1:5080/api/components \
             > /dev/null
+
+          Monitor__BaseUrl=http://127.0.0.1:5080 \
+          Monitor__IngestionApiKey=ci-test-ingestion-key \
+          SampleWorker__HeartbeatIntervalSeconds=1 \
+          SampleWorker__RunIntervalSeconds=1 \
+          SampleWorker__FailureEvery=2 \
+          dotnet run \
+            --project samples/Monitor.SampleWorker \
+            --configuration Release \
+            --no-build \
+            > /tmp/monitor-worker-ci.log 2>&1 &
+          worker_pid=$!
+
+          telemetry_ready=false
+          for attempt in {1..30}; do
+            if ! kill -0 "$worker_pid" 2>/dev/null; then
+              cat /tmp/monitor-worker-ci.log
+              exit 1
+            fi
+
+            components=$(curl -fsS -H 'X-Monitor-Key: ci-test-ingestion-key' http://127.0.0.1:5080/api/components)
+            runs=$(curl -fsS -H 'X-Monitor-Key: ci-test-ingestion-key' 'http://127.0.0.1:5080/api/runs?take=20')
+
+            if echo "$components" | grep -q 'sample-website-auditor' \
+              && echo "$runs" | grep -q 'Synthetic website audit' \
+              && echo "$runs" | grep -q '"status":"Failed"'; then
+              telemetry_ready=true
+              break
+            fi
+
+            sleep 1
+          done
+
+          if [ "$telemetry_ready" != true ]; then
+            echo "Sample telemetry did not reach Monitor."
+            cat /tmp/monitor-worker-ci.log
+            echo "Components: $components"
+            echo "Runs: $runs"
+            exit 1
+          fi
