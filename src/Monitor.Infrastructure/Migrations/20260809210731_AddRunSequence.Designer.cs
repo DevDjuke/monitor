@@ -12,7 +12,7 @@ using Monitor.Infrastructure;
 namespace Monitor.Infrastructure.Migrations
 {
     [DbContext(typeof(MonitorDbContext))]
-    [Migration("20260809210325_AddRunSequence")]
+    [Migration("20260809210731_AddRunSequence")]
     partial class AddRunSequence
     {
         /// <inheritdoc />
@@ -24,6 +24,8 @@ namespace Monitor.Infrastructure.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
+
+            modelBuilder.HasSequence("RunSequence");
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole", b =>
                 {
@@ -203,9 +205,8 @@ namespace Monitor.Infrastructure.Migrations
 
                     b.Property<long>("Sequence")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Sequence"));
+                        .HasColumnType("bigint")
+                        .HasDefaultValueSql("NEXT VALUE FOR [RunSequence]");
 
                     b.Property<DateTimeOffset>("StartedAt")
                         .HasColumnType("datetimeoffset");
