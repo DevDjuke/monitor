@@ -283,18 +283,12 @@
         elements.newBanner.hidden = false;
     }
 
-    function eventMatchesFilters(event) {
+    function eventMatchesStructuredFilters(event) {
         const filters = getFilters();
         if (filters.componentId && event.componentId !== filters.componentId) return false;
         if (filters.status && event.status !== filters.status) return false;
         if (filters.environment && event.environment !== filters.environment) return false;
         if (filters.model && event.model !== filters.model) return false;
-
-        if (filters.search) {
-            const term = filters.search.toLocaleLowerCase();
-            const haystack = `${event.name ?? ''} ${event.component ?? ''} ${event.model ?? ''}`.toLocaleLowerCase();
-            if (!haystack.includes(term)) return false;
-        }
 
         const started = new Date(event.startedAt).getTime();
         const from = localDayIso(filters.from, false);
@@ -317,8 +311,10 @@
             return;
         }
 
-        if (!eventMatchesFilters(event)) return;
+        if (!eventMatchesStructuredFilters(event)) return;
 
+        // Free-text search is intentionally not evaluated against the SignalR payload.
+        // The server query is authoritative and also searches fields such as ExternalId.
         if (!state.cursor) {
             queueRefresh();
         } else {
