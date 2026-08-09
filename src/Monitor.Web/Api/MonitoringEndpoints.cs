@@ -1,8 +1,10 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
+using Monitor.Web.Realtime;
 
 namespace Monitor.Web.Api;
 
@@ -45,6 +47,8 @@ public static class MonitoringEndpoints
         api.MapPost("/components/{id:guid}/heartbeat", Heartbeat);
 
         api.MapGet("/runs", GetRuns);
+        api.MapGet("/runs/query", QueryRuns);
+        api.MapGet("/runs/options", GetRunOptions);
         api.MapGet("/runs/{id:guid}", GetRun);
         api.MapPost("/runs", StartRun);
         api.MapPost("/runs/{id:guid}/complete", CompleteRun);
@@ -152,12 +156,12 @@ public static class MonitoringEndpoints
         var limit = Math.Clamp(take ?? 50, 1, 250);
         var runs = await db.Runs
             .AsNoTracking()
-            .Include(x => x.Component)
-            .OrderByDescending(x => x.StartedAt)
+            .OrderByDescending(x => x.Sequence)
             .Take(limit)
             .Select(x => new
             {
                 x.Id,
+                x.Sequence,
                 x.ComponentId,
                 Component = x.Component.Name,
                 x.Name,
@@ -172,6 +176,126 @@ public static class MonitoringEndpoints
             .ToListAsync(cancellationToken);
 
         return Results.Ok(runs);
+    }
+
+    private static async Task<IResult> QueryRuns(
+        int? pageSize,
+        long? before,
+        Guid? componentId,
+        RunStatus? status,
+        string? environment,
+        string? model,
+        string? search,
+        DateTimeOffset? from,
+        DateTimeOffset? to,
+        MonitorDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var limit = pageSize is 25 or 50 or 100 ? pageSize.Value : 50;
+        var query = db.Runs.AsNoTracking().AsQueryable();
+
+        if (before is > 0)
+        {
+            query = query.Where(x => x.Sequence < before.Value);
+        }
+
+        if (componentId.HasValue)
+        {
+            query = query.Where(x => x.ComponentId == componentId.Value);
+        }
+
+        if (status.HasValue)
+        {
+            query = query.Where(x => x.Status == status.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(environment))
+        {
+            var normalizedEnvironment = environment.Trim().ToLowerInvariant();
+            query = query.Where(x => x.Component.Environment == normalizedEnvironment);
+        }
+
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            var normalizedModel = model.Trim();
+            query = query.Where(x => x.Model == normalizedModel);
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            query = query.Where(x =>
+                x.Name.Contains(term) ||
+                x.Component.Name.Contains(term) ||
+                (x.Model != null && x.Model.Contains(term)) ||
+                (x.ExternalId != null && x.ExternalId.Contains(term)));
+        }
+
+        if (from.HasValue)
+        {
+            query = query.Where(x => x.StartedAt >= from.Value);
+        }
+
+        if (to.HasValue)
+        {
+            query = query.Where(x => x.StartedAt < to.Value);
+        }
+
+        var rows = await query
+            .OrderByDescending(x => x.Sequence)
+            .Take(limit + 1)
+            .Select(x => new RunQueryRow(
+                x.Id,
+                x.Sequence,
+                x.ComponentId,
+                x.Component.Name,
+                x.Component.Environment,
+                x.Name,
+                x.Status,
+                x.Model,
+                x.StartedAt,
+                x.CompletedAt,
+                x.InputTokens + x.OutputTokens,
+                x.CostUsd))
+            .ToListAsync(cancellationToken);
+
+        var hasMore = rows.Count > limit;
+        if (hasMore)
+        {
+            rows.RemoveAt(limit);
+        }
+
+        long? nextCursor = hasMore && rows.Count > 0 ? rows[^1].Sequence : null;
+        return Results.Ok(new { items = rows, nextCursor, pageSize = limit });
+    }
+
+    private static async Task<IResult> GetRunOptions(
+        MonitorDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var components = await db.Components
+            .AsNoTracking()
+            .OrderBy(x => x.Name)
+            .ThenBy(x => x.Environment)
+            .Select(x => new { x.Id, x.Name, x.Environment })
+            .ToListAsync(cancellationToken);
+
+        var environments = components
+            .Select(x => x.Environment)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x)
+            .ToArray();
+
+        var models = await db.Runs
+            .AsNoTracking()
+            .Where(x => x.Model != null && x.Model != "")
+            .Select(x => x.Model!)
+            .Distinct()
+            .OrderBy(x => x)
+            .Take(100)
+            .ToListAsync(cancellationToken);
+
+        return Results.Ok(new { components, environments, models });
     }
 
     private static async Task<IResult> GetRun(
@@ -193,6 +317,7 @@ public static class MonitoringEndpoints
         return Results.Ok(new
         {
             run.Id,
+            run.Sequence,
             run.ComponentId,
             Component = run.Component.Name,
             run.ExternalId,
@@ -226,6 +351,7 @@ public static class MonitoringEndpoints
     private static async Task<IResult> StartRun(
         StartRunRequest request,
         MonitorDbContext db,
+        IHubContext<MonitorHub> hub,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Name))
@@ -252,6 +378,7 @@ public static class MonitoringEndpoints
         component.MarkRunStarted(now);
         db.Runs.Add(run);
         await db.SaveChangesAsync(cancellationToken);
+        await BroadcastRunChangedAsync(hub, run, component, "Started", cancellationToken);
 
         return Results.Created($"/api/runs/{run.Id}", new { run.Id, run.StartedAt });
     }
@@ -260,6 +387,7 @@ public static class MonitoringEndpoints
         Guid id,
         CompleteRunRequest request,
         MonitorDbContext db,
+        IHubContext<MonitorHub> hub,
         CancellationToken cancellationToken)
     {
         if (request.Status == RunStatus.Running)
@@ -267,7 +395,9 @@ public static class MonitoringEndpoints
             return Results.BadRequest(new { error = "status must be Success, Failed or Cancelled" });
         }
 
-        var run = await db.Runs.FindAsync([id], cancellationToken);
+        var run = await db.Runs
+            .Include(x => x.Component)
+            .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (run is null)
         {
             return Results.NotFound();
@@ -283,6 +413,7 @@ public static class MonitoringEndpoints
             DateTimeOffset.UtcNow);
 
         await db.SaveChangesAsync(cancellationToken);
+        await BroadcastRunChangedAsync(hub, run, run.Component, "Completed", cancellationToken);
         return Results.NoContent();
     }
 
@@ -323,6 +454,29 @@ public static class MonitoringEndpoints
         await db.SaveChangesAsync(cancellationToken);
         return Results.Created($"/api/runs/{runId}/spans/{span.Id}", new { span.Id });
     }
+
+    private static Task BroadcastRunChangedAsync(
+        IHubContext<MonitorHub> hub,
+        AgentRun run,
+        MonitoredComponent component,
+        string change,
+        CancellationToken cancellationToken)
+    {
+        return hub.Clients.All.SendAsync(
+            "RunChanged",
+            new RunRealtimeEvent(
+                run.Id,
+                run.Sequence,
+                run.ComponentId,
+                component.Name,
+                component.Environment,
+                run.Name,
+                run.Model,
+                run.Status.ToString(),
+                run.StartedAt,
+                change),
+            cancellationToken);
+    }
 }
 
 public sealed record RegisterComponentRequest(
@@ -357,3 +511,17 @@ public sealed record CreateSpanRequest(
     DateTimeOffset? CompletedAt,
     string? AttributesJson,
     string? Error);
+
+public sealed record RunQueryRow(
+    Guid Id,
+    long Sequence,
+    Guid ComponentId,
+    string Component,
+    string Environment,
+    string Name,
+    RunStatus Status,
+    string? Model,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? CompletedAt,
+    long Tokens,
+    double CostUsd);
