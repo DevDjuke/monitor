@@ -31,14 +31,43 @@ jobs:
           dotnet-version: '10.0.x'
       - run: dotnet restore Monitor.sln
       - run: dotnet build Monitor.sln --configuration Release --no-restore
-      - name: Smoke test authentication, SQL Server, and realtime run queries
+      - name: Smoke test authentication, migration upgrade, and realtime run queries
         env:
           ASPNETCORE_ENVIRONMENT: Development
           ASPNETCORE_URLS: http://127.0.0.1:5080
           ConnectionStrings__Monitor: Server=127.0.0.1,1433;Database=Monitor;User Id=sa;Password=MonitorCi!2026Password;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
           Monitor__IngestionApiKey: ci-test-ingestion-key
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+
+          # Prove AddRunSequence upgrades an already-populated Runs table.
+          dotnet tool install --global dotnet-ef --version 10.0.10
+          dotnet ef database update 20260809200032_InitialSqlServer \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --connection "$ConnectionStrings__Monitor"
+
+          sql_container=$(docker ps \
+            --filter 'ancestor=mcr.microsoft.com/mssql/server:2022-latest' \
+            --format '{{.ID}}' | head -n 1)
+          test -n "$sql_container"
+
+          docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorCi!2026Password' -C -d Monitor \
+            -Q "
+              DECLARE @ComponentId uniqueidentifier = NEWID();
+              INSERT INTO Components
+                  (Id, Name, Slug, Type, Environment, Version, Enabled, Status, LastHeartbeatAt, LastRunAt, CreatedAt, UpdatedAt)
+              VALUES
+                  (@ComponentId, N'Legacy CI', N'legacy-ci', 0, N'development', N'0.0.1', 1, 1, NULL, NULL, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET());
+
+              INSERT INTO Runs
+                  (Id, ComponentId, ExternalId, Name, Trigger, Model, Status, StartedAt, CompletedAt, InputTokens, OutputTokens, CostUsd, InputJson, OutputJson, Error)
+              VALUES
+                  (NEWID(), @ComponentId, N'legacy-1', N'Legacy run 1', N'CI', N'ci-model', 1, DATEADD(second, -2, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), 1, 1, 0.0, NULL, NULL, NULL),
+                  (NEWID(), @ComponentId, N'legacy-2', N'Legacy run 2', N'CI', N'ci-model', 2, DATEADD(second, -1, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), 1, 0, 0.0, NULL, NULL, N'legacy failure');
+            "
 
           dotnet run \
             --project src/Monitor.Web \
@@ -92,10 +121,17 @@ jobs:
             -X POST 'http://127.0.0.1:5080/hubs/monitor/negotiate?negotiateVersion=1')
           test "$unauthenticated_hub_status" = "401"
 
-          curl -fsS \
+          legacy_runs=$(curl -fsS \
             -H 'X-Monitor-Key: ci-test-ingestion-key' \
-            http://127.0.0.1:5080/api/components \
-            > /dev/null
+            'http://127.0.0.1:5080/api/runs/query?pageSize=25&search=Legacy')
+          python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["items"]
+          assert len(data) == 2, data
+          sequences = [row["sequence"] for row in data]
+          assert all(value > 0 for value in sequences), sequences
+          assert len(set(sequences)) == 2, sequences
+          ' <<< "$legacy_runs"
 
           Monitor__BaseUrl=http://127.0.0.1:5080 \
           Monitor__IngestionApiKey=ci-test-ingestion-key \
@@ -149,15 +185,39 @@ jobs:
           echo "$options" | grep -q 'Sample Website Auditor'
           echo "$options" | grep -q 'sample-model'
 
+          component_id=$(python3 -c '
+          import json, sys
+          components = json.load(sys.stdin)
+          print(next(item["id"] for item in components if item["slug"] == "sample-website-auditor"))
+          ' <<< "$components")
+
+          # Create enough runs to exercise the supported 25-row keyset page size quickly.
+          for i in {1..30}; do
+            curl -fsS -X POST \
+              -H 'Content-Type: application/json' \
+              -H 'X-Monitor-Key: ci-test-ingestion-key' \
+              http://127.0.0.1:5080/api/runs \
+              -d "{\"componentId\":\"$component_id\",\"name\":\"Keyset smoke $i\",\"externalId\":\"keyset-$i\",\"trigger\":\"CI\",\"model\":\"ci-model\",\"inputJson\":null}" \
+              > /dev/null
+          done
+
           first_page=$(curl -fsS \
             -H 'X-Monitor-Key: ci-test-ingestion-key' \
-            'http://127.0.0.1:5080/api/runs/query?pageSize=1')
+            'http://127.0.0.1:5080/api/runs/query?pageSize=25')
           next_cursor=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("nextCursor") or "")' <<< "$first_page")
           test -n "$next_cursor"
 
           second_page=$(curl -fsS \
             -H 'X-Monitor-Key: ci-test-ingestion-key' \
-            "http://127.0.0.1:5080/api/runs/query?pageSize=1&before=$next_cursor")
-          first_id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["items"][0]["id"])' <<< "$first_page")
-          second_id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["items"][0]["id"])' <<< "$second_page")
-          test "$first_id" != "$second_id"
+            "http://127.0.0.1:5080/api/runs/query?pageSize=25&before=$next_cursor")
+          python3 -c '
+          import json, sys
+          first = json.loads(sys.argv[1])["items"]
+          second = json.loads(sys.argv[2])["items"]
+          assert len(first) == 25, len(first)
+          assert len(second) > 0, second
+          first_ids = {row["id"] for row in first}
+          second_ids = {row["id"] for row in second}
+          assert first_ids.isdisjoint(second_ids), (first_ids & second_ids)
+          assert max(row["sequence"] for row in second) < min(row["sequence"] for row in first), (first, second)
+          ' "$first_page" "$second_page"
