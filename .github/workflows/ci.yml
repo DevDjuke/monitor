@@ -235,3 +235,147 @@ jobs:
           assert first_ids.isdisjoint(second_ids), (first_ids & second_ids)
           assert max(row["sequence"] for row in second) < min(row["sequence"] for row in first), (first, second)
           ' "$first_page" "$second_page"
+
+      - name: Smoke test retention aggregation and forensic preservation
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          ASPNETCORE_URLS: http://127.0.0.1:5081
+          ConnectionStrings__Monitor: Server=127.0.0.1,1433;Database=Monitor;User Id=sa;Password=MonitorCi!2026Password;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
+          Monitor__IngestionApiKey: ci-test-ingestion-key
+          Monitor__BootstrapAdmin__Email: ci@monitor.local
+          Monitor__BootstrapAdmin__Password: MonitorCiAdmin2026
+          Retention__Enabled: true
+          Retention__AggregationDelayMinutes: 0
+          Retention__SuccessfulRunDetailDays: 1
+          Retention__SweepIntervalMinutes: 1
+          Retention__BatchSize: 100
+          Retention__MaxBatchesPerSweep: 5
+        run: |
+          set -euo pipefail
+
+          sql_container=$(docker ps \
+            --filter 'ancestor=mcr.microsoft.com/mssql/server:2022-latest' \
+            --format '{{.ID}}' | head -n 1)
+          test -n "$sql_container"
+
+          docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorCi!2026Password' -C -b -d Monitor \
+            -Q "
+              DECLARE @ComponentId uniqueidentifier = (SELECT TOP(1) Id FROM Components WHERE Slug = N'legacy-ci');
+              DECLARE @SuccessId uniqueidentifier = NEWID();
+              DECLARE @FailedId uniqueidentifier = NEWID();
+              DECLARE @CancelledId uniqueidentifier = NEWID();
+              DECLARE @StartedAt datetimeoffset = DATEADD(day, -2, SYSDATETIMEOFFSET());
+              DECLARE @CompletedAt datetimeoffset = DATEADD(second, 2, @StartedAt);
+
+              INSERT INTO Runs
+                  (Id, ComponentId, ExternalId, Name, [Trigger], Model, Status, StartedAt, CompletedAt, AggregatedAt, InputTokens, OutputTokens, CostUsd, InputJson, OutputJson, Error)
+              VALUES
+                  (@SuccessId, @ComponentId, N'retention-success', N'Retention success', N'CI', N'retention-model', 1, @StartedAt, @CompletedAt, NULL, 10, 20, 0.10, N'{}', N'{}', NULL),
+                  (@FailedId, @ComponentId, N'retention-failed', N'Retention failed', N'CI', N'retention-model', 2, @StartedAt, @CompletedAt, NULL, 11, 21, 0.20, N'{}', N'{}', N'retention failure'),
+                  (@CancelledId, @ComponentId, N'retention-cancelled', N'Retention cancelled', N'CI', N'retention-model', 3, @StartedAt, @CompletedAt, NULL, 12, 22, 0.30, N'{}', N'{}', N'retention cancelled');
+
+              INSERT INTO Spans
+                  (Id, RunId, ParentSpanId, Name, Kind, Status, StartedAt, CompletedAt, AttributesJson, Error)
+              VALUES
+                  (NEWID(), @SuccessId, NULL, N'Retention success span', 4, 1, @StartedAt, @CompletedAt, N'{}', NULL),
+                  (NEWID(), @FailedId, NULL, N'Retention failed span', 4, 2, @StartedAt, @CompletedAt, N'{}', N'failed span detail'),
+                  (NEWID(), @CancelledId, NULL, N'Retention cancelled span', 4, 2, @StartedAt, @CompletedAt, N'{}', N'cancelled span detail');
+            "
+
+          (
+            cd src/Monitor.Web
+            exec dotnet bin/Release/net10.0/Monitor.Web.dll
+          ) > /tmp/monitor-retention-ci.log 2>&1 &
+          app_pid=$!
+
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "=== Monitor retention log ==="
+              cat /tmp/monitor-retention-ci.log 2>/dev/null || true
+              echo "=== End Monitor retention log ==="
+            fi
+            kill "$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+            return "$status"
+          }
+          trap cleanup EXIT
+
+          app_ready=false
+          for attempt in {1..45}; do
+            if curl -fsS http://127.0.0.1:5081/api/health > /dev/null; then
+              app_ready=true
+              break
+            fi
+
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "Monitor process exited during retention startup."
+              wait "$app_pid" || true
+              exit 1
+            fi
+
+            sleep 1
+          done
+          test "$app_ready" = true
+
+          retention_ready=false
+          for attempt in {1..30}; do
+            state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P 'MonitorCi!2026Password' -C -b -d Monitor -h -1 -W \
+              -Q "
+                SET NOCOUNT ON;
+                DECLARE @ComponentId uniqueidentifier = (SELECT TOP(1) Id FROM Components WHERE Slug = N'legacy-ci');
+                SELECT CONCAT(
+                  (SELECT COUNT(*) FROM Runs WHERE ExternalId = N'retention-success'), N'|',
+                  (SELECT COUNT(*) FROM Runs WHERE ExternalId = N'retention-failed' AND AggregatedAt IS NOT NULL AND Error = N'retention failure' AND InputJson = N'{}' AND OutputJson = N'{}'), N'|',
+                  (SELECT COUNT(*) FROM Runs WHERE ExternalId = N'retention-cancelled' AND AggregatedAt IS NOT NULL AND Error = N'retention cancelled' AND InputJson = N'{}' AND OutputJson = N'{}'), N'|',
+                  (SELECT COUNT(*) FROM Spans s INNER JOIN Runs r ON r.Id = s.RunId WHERE r.ExternalId IN (N'retention-failed', N'retention-cancelled')), N'|',
+                  (SELECT COUNT(*) FROM Spans WHERE Name = N'Retention success span'), N'|',
+                  (SELECT COALESCE(SUM(TotalRuns), 0) FROM RunAggregates WHERE ComponentId = @ComponentId AND Model = N'retention-model'), N'|',
+                  (SELECT COALESCE(SUM(SuccessRuns), 0) FROM RunAggregates WHERE ComponentId = @ComponentId AND Model = N'retention-model'), N'|',
+                  (SELECT COALESCE(SUM(FailedRuns), 0) FROM RunAggregates WHERE ComponentId = @ComponentId AND Model = N'retention-model'), N'|',
+                  (SELECT COALESCE(SUM(CancelledRuns), 0) FROM RunAggregates WHERE ComponentId = @ComponentId AND Model = N'retention-model')
+                );
+              " | tr -d '\r' | xargs)
+
+            if [ "$state" = "0|1|1|2|0|3|1|1|1" ]; then
+              retention_ready=true
+              break
+            fi
+
+            sleep 1
+          done
+
+          if [ "$retention_ready" != true ]; then
+            echo "Retention invariant state was: $state"
+            exit 1
+          fi
+
+          curl -fsS -c /tmp/monitor-retention-cookies.txt \
+            http://127.0.0.1:5081/account/login \
+            -o /tmp/monitor-retention-login.html
+
+          token=$(python3 -c '
+          import re
+          html = open("/tmp/monitor-retention-login.html", encoding="utf-8").read()
+          match = re.search(r"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", html)
+          assert match, "antiforgery token not found"
+          print(match.group(1))
+          ')
+
+          login_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-retention-cookies.txt \
+            -c /tmp/monitor-retention-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$token" \
+            --data-urlencode 'Input.Email=ci@monitor.local' \
+            --data-urlencode 'Input.Password=MonitorCiAdmin2026' \
+            --data-urlencode 'Input.RememberMe=false' \
+            http://127.0.0.1:5081/account/login)
+          test "$login_status" = "302"
+
+          curl -fsS -b /tmp/monitor-retention-cookies.txt \
+            http://127.0.0.1:5081/usage \
+            -o /tmp/monitor-retention-usage.html
+          grep -q 'RETENTION / AGGREGATION' /tmp/monitor-retention-usage.html
+          grep -q 'Failed and cancelled runs are never purged' /tmp/monitor-retention-usage.html
