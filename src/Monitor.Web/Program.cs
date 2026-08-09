@@ -20,10 +20,10 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
 var connectionString = builder.Configuration.GetConnectionString("Monitor")
-    ?? "Data Source=monitor.db";
+    ?? "Server=(localdb)\\MSSQLLocalDB;Database=Monitor;Trusted_Connection=True;TrustServerCertificate=True;MultipleActiveResultSets=True";
 
 builder.Services.AddDbContext<MonitorDbContext>(options =>
-    options.UseSqlite(connectionString));
+    options.UseSqlServer(connectionString));
 
 builder.Services
     .AddIdentity<MonitorUser, IdentityRole>(options =>
