@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,10 +29,33 @@ jobs:
           --health-start-period 20s
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
       - run: dotnet restore Monitor.sln
+      - name: Generate run sequence migration
+        if: ${{ github.event_name == 'pull_request' && hashFiles('src/Monitor.Infrastructure/Migrations/*AddRunSequence.cs') == '' }}
+        run: |
+          dotnet tool install --global dotnet-ef --version 10.0.10
+          dotnet ef migrations add AddRunSequence \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --output-dir Migrations
+      - name: Commit generated migration
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          if git diff --quiet -- src/Monitor.Infrastructure/Migrations && [ -z "$(git status --porcelain src/Monitor.Infrastructure/Migrations)" ]; then
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/Monitor.Infrastructure/Migrations
+          git commit -m "Add run keyset sequence migration"
+          git push origin HEAD:${{ github.head_ref }}
       - run: dotnet build Monitor.sln --configuration Release --no-restore
       - name: Smoke test authentication, SQL Server, and sample telemetry
         env:
@@ -74,6 +100,7 @@ jobs:
           curl -fsS http://127.0.0.1:5080/api/health > /dev/null
           curl -fsS http://127.0.0.1:5080/account/login > /dev/null
           curl -fsS http://127.0.0.1:5080/account/setup > /dev/null
+          curl -fsS http://127.0.0.1:5080/lib/microsoft/signalr/dist/browser/signalr.min.js > /dev/null
 
           unauthenticated_status=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:5080/api/components)
           test "$unauthenticated_status" = "401"
@@ -122,3 +149,22 @@ jobs:
             echo "Runs: $runs"
             exit 1
           fi
+
+          filtered=$(curl -fsS \
+            -H 'X-Monitor-Key: ci-test-ingestion-key' \
+            'http://127.0.0.1:5080/api/runs/query?pageSize=25&status=Failed&environment=development&search=Synthetic')
+          echo "$filtered" | grep -q 'Synthetic website audit'
+          echo "$filtered" | grep -q '"status":"Failed"'
+
+          first_page=$(curl -fsS \
+            -H 'X-Monitor-Key: ci-test-ingestion-key' \
+            'http://127.0.0.1:5080/api/runs/query?pageSize=1')
+          next_cursor=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("nextCursor") or "")' <<< "$first_page")
+          test -n "$next_cursor"
+
+          second_page=$(curl -fsS \
+            -H 'X-Monitor-Key: ci-test-ingestion-key' \
+            "http://127.0.0.1:5080/api/runs/query?pageSize=1&before=$next_cursor")
+          first_id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["items"][0]["id"])' <<< "$first_page")
+          second_id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["items"][0]["id"])' <<< "$second_page")
+          test "$first_id" != "$second_id"
