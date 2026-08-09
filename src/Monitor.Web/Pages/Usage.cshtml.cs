@@ -83,22 +83,37 @@ public sealed class UsageModel(
             cancellationToken);
 
         var since = DateTimeOffset.UtcNow.AddHours(-48);
-        RecentBuckets = await db.RunAggregates
+        var bucketData = await db.RunAggregates
             .AsNoTracking()
             .Where(x => x.BucketStart >= since)
             .GroupBy(x => x.BucketStart)
-            .Select(group => new BucketRow(
-                group.Key,
-                group.Sum(x => x.TotalRuns),
-                group.Sum(x => x.SuccessRuns),
-                group.Sum(x => x.FailedRuns),
-                group.Sum(x => x.CancelledRuns),
-                group.Sum(x => x.InputTokens + x.OutputTokens),
-                group.Sum(x => x.CostUsd),
-                group.Sum(x => x.TotalDurationMs)))
+            .Select(group => new
+            {
+                BucketStart = group.Key,
+                TotalRuns = group.Sum(x => x.TotalRuns),
+                SuccessRuns = group.Sum(x => x.SuccessRuns),
+                FailedRuns = group.Sum(x => x.FailedRuns),
+                CancelledRuns = group.Sum(x => x.CancelledRuns),
+                InputTokens = group.Sum(x => x.InputTokens),
+                OutputTokens = group.Sum(x => x.OutputTokens),
+                CostUsd = group.Sum(x => x.CostUsd),
+                TotalDurationMs = group.Sum(x => x.TotalDurationMs)
+            })
             .OrderByDescending(x => x.BucketStart)
             .Take(48)
             .ToListAsync(cancellationToken);
+
+        RecentBuckets = bucketData
+            .Select(x => new BucketRow(
+                x.BucketStart,
+                x.TotalRuns,
+                x.SuccessRuns,
+                x.FailedRuns,
+                x.CancelledRuns,
+                x.InputTokens + x.OutputTokens,
+                x.CostUsd,
+                x.TotalDurationMs))
+            .ToList();
     }
 
     private sealed record Summary(
