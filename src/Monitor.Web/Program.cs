@@ -3,9 +3,11 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Infrastructure;
 using Monitor.Infrastructure.Auth;
+using Monitor.Infrastructure.Retention;
 using Monitor.Web.Api;
 using Monitor.Web.Auth;
 using Monitor.Web.Realtime;
+using Monitor.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -26,6 +28,10 @@ var connectionString = builder.Configuration.GetConnectionString("Monitor")
 
 builder.Services.AddDbContext<MonitorDbContext>(options =>
     options.UseSqlServer(connectionString));
+
+builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection(RetentionOptions.SectionName));
+builder.Services.AddScoped<RetentionAggregationService>();
+builder.Services.AddHostedService<RetentionWorker>();
 
 builder.Services
     .AddIdentity<MonitorUser, IdentityRole>(options =>

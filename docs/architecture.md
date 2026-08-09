@@ -20,9 +20,17 @@ One execution or unit of work. This is the main operational object, rather than 
 
 Runs also have a database-generated monotonic `Sequence`. It is an operational ordering key used for stable keyset pagination. Unlike timestamps or row versions, it does not change when a run completes and does not depend on two concurrent runs having distinct start times.
 
+Terminal runs receive `AggregatedAt` only after their contribution to a durable aggregate has been committed in the same database transaction. Retention never removes a successful run whose `AggregatedAt` is null.
+
 ### TraceSpan
 
 One nested operation inside a run. Spans can represent agent reasoning steps, model calls, tool calls, HTTP calls, or ordinary internal work. `ParentSpanId` permits a trace tree without coupling the domain to a telemetry vendor.
+
+### RunAggregate
+
+A durable hourly metric bucket keyed by hour, component, and model. It stores terminal-run counts by status, input/output tokens, cost, total/min/max duration, and the first/last run timestamps represented by that bucket.
+
+Component name and environment are snapshotted into the aggregate so historical reporting does not depend on later registration metadata changes. `ComponentId` remains the durable grouping identity.
 
 ## Transport
 
@@ -44,13 +52,33 @@ SQL Server is the current persistence provider, with `(localdb)\MSSQLLocalDB` as
 
 ## Retention and aggregation
 
-Retention must distinguish successful telemetry from failure evidence.
+Retention distinguishes normal successful telemetry from operational evidence.
 
-Successful runs may later be aggregated into durable metrics and then have their raw run/span payloads compacted or removed according to retention policy. Aggregates can preserve counts, success rates, latency distributions, token usage, costs, model/component dimensions, and other reporting data without retaining every successful trace forever.
+The background retention worker first aggregates terminal runs into hourly `RunAggregate` buckets. Aggregation and setting `AgentRun.AggregatedAt` happen atomically. Re-running a sweep therefore does not double-count an already aggregated run.
 
-Failed runs follow a stricter invariant: they may also contribute to aggregates, but their full inspectable data must remain available for later investigation. That includes the run record, error/failure reason, relevant input/output payloads, and trace spans. Retention work must not replace failed-run forensic detail with aggregates alone.
+Only `Success` is purge-eligible. A successful run can be deleted only when both conditions are true:
 
-The exact retention windows, archival tiers, and storage limits are deliberately deferred until real workload volume makes those trade-offs measurable.
+1. it has already been aggregated (`AggregatedAt != null`), and
+2. its completion timestamp is older than the configured successful-run detail window.
+
+Deleting a successful run cascades to its trace spans, which is where much of the raw telemetry volume is expected to live.
+
+`Failed` and `Cancelled` runs also contribute to aggregate metrics, but their raw records are forensic evidence and are not purged by the retention worker. Their error/failure reason, input/output payloads, and trace spans remain available for later inspection.
+
+The worker uses a SQL Server application lock (`Monitor.RetentionAggregation`) so only one Monitor node can execute a retention sweep at a time. This prevents concurrent nodes from selecting and aggregating the same unmarked runs.
+
+The default policy is intentionally conservative:
+
+- aggregation delay: 5 minutes;
+- successful raw-detail retention: 30 days;
+- sweep interval: 15 minutes;
+- failed/cancelled raw-detail retention: indefinite.
+
+Changing the successful retention window affects future purge eligibility only. Aggregate buckets are not rewritten. Disabling the worker leaves raw data untouched.
+
+The `/usage` page combines durable aggregate totals with only terminal runs whose `AggregatedAt` is still null. This prevents double-counting during the period where aggregated successful runs are intentionally retained in raw form.
+
+Longer-term archival tiers or aggregate rollups (hourly → daily/monthly) can be added when actual volume makes them useful; they must preserve the same forensic invariant for failed and cancelled runs.
 
 ## Control plane
 

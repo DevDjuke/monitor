@@ -11,6 +11,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     public DbSet<MonitoredComponent> Components => Set<MonitoredComponent>();
     public DbSet<AgentRun> Runs => Set<AgentRun>();
     public DbSet<TraceSpan> Spans => Set<TraceSpan>();
+    public DbSet<RunAggregate> RunAggregates => Set<RunAggregate>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -38,7 +39,9 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         run.Property(x => x.Model).HasMaxLength(160);
         run.HasIndex(x => x.Sequence).IsUnique().IsDescending();
         run.HasIndex(x => x.StartedAt);
+        run.HasIndex(x => x.AggregatedAt);
         run.HasIndex(x => new { x.ComponentId, x.ExternalId });
+        run.HasIndex(x => new { x.Status, x.CompletedAt, x.AggregatedAt });
         run.HasOne(x => x.Component)
             .WithMany(x => x.Runs)
             .HasForeignKey(x => x.ComponentId)
@@ -53,5 +56,15 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
             .WithMany(x => x.Spans)
             .HasForeignKey(x => x.RunId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        var aggregate = modelBuilder.Entity<RunAggregate>();
+        aggregate.ToTable("RunAggregates");
+        aggregate.HasKey(x => x.Id);
+        aggregate.Property(x => x.ComponentName).HasMaxLength(200);
+        aggregate.Property(x => x.Environment).HasMaxLength(80);
+        aggregate.Property(x => x.Model).HasMaxLength(160);
+        aggregate.HasIndex(x => new { x.BucketStart, x.ComponentId, x.Model }).IsUnique();
+        aggregate.HasIndex(x => x.BucketStart);
+        aggregate.HasIndex(x => new { x.ComponentId, x.BucketStart });
     }
 }

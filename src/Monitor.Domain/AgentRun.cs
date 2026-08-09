@@ -14,6 +14,7 @@ public sealed class AgentRun
     public RunStatus Status { get; private set; }
     public DateTimeOffset StartedAt { get; private set; }
     public DateTimeOffset? CompletedAt { get; private set; }
+    public DateTimeOffset? AggregatedAt { get; private set; }
     public long InputTokens { get; private set; }
     public long OutputTokens { get; private set; }
     public double CostUsd { get; private set; }
@@ -68,5 +69,15 @@ public sealed class AgentRun
         OutputJson = outputJson;
         Error = error;
         CompletedAt = now;
+    }
+
+    public void MarkAggregated(DateTimeOffset now)
+    {
+        if (Status == RunStatus.Running || CompletedAt is null)
+        {
+            throw new InvalidOperationException("Only terminal runs can be aggregated.");
+        }
+
+        AggregatedAt ??= now;
     }
 }

@@ -8,6 +8,8 @@ Monitor starts with one deliberately small model:
 MonitoredComponent
   └─ AgentRun
        └─ TraceSpan
+
+RunAggregate
 ```
 
 The goal is to make every autonomous component answer the same questions: Is it alive? What is it doing? What did it do? How long did it take? What tools/models did it call? How many tokens did it use? What did it cost? What failed?
@@ -19,6 +21,9 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - Nested trace spans for agent/model/tool/http/internal work.
 - Runs history with server-side search/filtering and stable keyset pagination.
 - SignalR-backed live run updates: the latest page refreshes automatically while older history remains stable.
+- Hourly durable run aggregates by component and model for long-range usage metrics.
+- Automated retention that purges only old, already-aggregated successful runs while preserving failed/cancelled forensic detail.
+- `/usage` retention and aggregate dashboard without double-counting retained raw runs.
 - Private Razor control plane protected by ASP.NET Core Identity/cookie authentication.
 - Separate API-key authentication for autonomous components.
 - One-time local owner setup and production bootstrap administrator support.
@@ -26,7 +31,7 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - `Monitor.SampleWorker` dogfoods the SDK with recurring synthetic agent activity and intentional failures.
 - Versioned EF Core migrations.
 - SQL Server persistence with LocalDB as the default development instance.
-- GitHub Actions build and SQL Server-backed end-to-end telemetry smoke test.
+- GitHub Actions build and SQL Server-backed end-to-end tests for telemetry, migration upgrades, keyset pagination, and retention safety.
 
 This first API is intentionally simple HTTP. Native OpenTelemetry/OTLP ingestion is the next transport; the domain model is kept independent from the ingestion protocol.
 
@@ -54,6 +59,53 @@ dotnet run --project src/Monitor.Web
 EF Core creates the `Monitor` database and applies pending migrations on startup. In Development, open `/account/setup` on the first run and create the owner account. The setup endpoint becomes unavailable as soon as a user exists.
 
 The old SQLite `monitor.db` file from the prototype is no longer used and can be deleted once you are sure it contains nothing you want to keep.
+
+## Retention and aggregation
+
+Terminal runs are aggregated into durable hourly buckets keyed by UTC hour, component, and model. Buckets preserve run counts by terminal status, token totals, reported cost, and duration statistics.
+
+Aggregation is idempotent at the run level: a terminal run receives `AggregatedAt` only in the same transaction that commits its contribution to an aggregate. A successful run is therefore never purge-eligible before its metrics have been durably counted.
+
+The default policy is:
+
+- aggregate terminal runs after 5 minutes;
+- retain successful raw run/span detail for 30 days;
+- run the retention sweep every 15 minutes;
+- retain failed and cancelled run/span/error detail indefinitely.
+
+Only successful runs are deleted. Failed and cancelled runs still contribute to aggregates but remain available in `/runs` for forensic inspection, including their payloads, error reason, and spans.
+
+Configure the policy through `appsettings.json` or environment variables:
+
+```json
+{
+  "Retention": {
+    "Enabled": true,
+    "AggregationDelayMinutes": 5,
+    "SuccessfulRunDetailDays": 30,
+    "SweepIntervalMinutes": 15,
+    "BatchSize": 1000,
+    "MaxBatchesPerSweep": 20
+  }
+}
+```
+
+Equivalent environment variables use the normal ASP.NET Core double-underscore syntax:
+
+```text
+Retention__Enabled
+Retention__AggregationDelayMinutes
+Retention__SuccessfulRunDetailDays
+Retention__SweepIntervalMinutes
+Retention__BatchSize
+Retention__MaxBatchesPerSweep
+```
+
+Set `Retention__Enabled=false` to stop both aggregation and purging. Existing raw data and aggregate buckets are left untouched. Changing the successful-run retention window changes future purge eligibility; it does not rewrite historical aggregate buckets.
+
+The retention worker uses a SQL Server application lock so only one Monitor web node performs a sweep at a time.
+
+The authenticated `/usage` page reports durable aggregate totals plus only terminal raw runs that have not yet been aggregated. This means the 30-day overlap between aggregate data and retained successful raw detail does not double-count usage.
 
 ## Run the sample worker
 
@@ -240,7 +292,6 @@ docs/
 ## Next
 
 1. OTLP receiver / OpenTelemetry semantic-convention mapping.
-2. Retention and aggregation, preserving full failed-run forensic detail.
-3. Per-component credentials and key rotation.
-4. Cost/model dashboards and alerting.
-5. Control-plane commands (pause, disable, kill run, configuration).
+2. Per-component credentials and key rotation.
+3. Cost/model dashboards, alerting, and longer-range aggregate rollups.
+4. Control-plane commands (pause, disable, kill run, configuration).

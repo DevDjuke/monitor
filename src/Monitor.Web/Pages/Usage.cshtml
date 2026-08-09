@@ -1,0 +1,120 @@
+@page "/usage"
+@model UsageModel
+@{
+    ViewData["Title"] = "Usage";
+}
+
+<header class="page-head compact">
+    <div>
+        <p class="eyebrow">RETENTION / AGGREGATION</p>
+        <h1>Usage</h1>
+        <p class="lede">Durable execution metrics backed by hourly aggregates, with failure evidence kept raw for investigation.</p>
+    </div>
+</header>
+
+<section class="metrics" aria-label="Aggregated usage summary">
+    <article class="metric">
+        <span>Terminal runs</span>
+        <strong>@Model.TotalRuns.ToString("N0")</strong>
+        <small>aggregated + pending</small>
+    </article>
+    <article class="metric">
+        <span>Success rate</span>
+        <strong>@Model.SuccessRate.ToString("0.0")%</strong>
+        <small>@Model.SuccessRuns.ToString("N0") successful</small>
+    </article>
+    <article class="metric">
+        <span>Tokens</span>
+        <strong>@((Model.InputTokens + Model.OutputTokens).ToString("N0"))</strong>
+        <small>@Model.InputTokens.ToString("N0") in · @Model.OutputTokens.ToString("N0") out</small>
+    </article>
+    <article class="metric">
+        <span>Cost</span>
+        <strong>$@Model.CostUsd.ToString("0.00")</strong>
+        <small>reported estimate</small>
+    </article>
+</section>
+
+<div class="dashboard-grid">
+    <section class="panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">RETENTION STATE</p>
+                <h2>Raw evidence</h2>
+            </div>
+        </div>
+        <div class="rows">
+            <div class="system-row">
+                <span class="status-dot healthy"></span>
+                <div class="row-main"><strong>@Model.StoredRawRuns.ToString("N0") raw runs stored</strong><span>Includes recent successes, running work, and forensic failures.</span></div>
+            </div>
+            <div class="system-row">
+                <span class="status-dot healthy"></span>
+                <div class="row-main"><strong>@Model.RetainedSuccessfulRuns.ToString("N0") successful runs retained</strong><span>Eligible for purge only after aggregation and the detail-retention window.</span></div>
+            </div>
+            <div class="system-row">
+                <span class="status-dot degraded"></span>
+                <div class="row-main"><strong>@Model.ForensicRuns.ToString("N0") forensic runs retained</strong><span>Failed and cancelled runs are never purged by the retention worker.</span></div>
+            </div>
+            <div class="system-row">
+                <span class="status-dot unknown"></span>
+                <div class="row-main"><strong>@Model.PendingAggregation.ToString("N0") terminal runs pending aggregation</strong><span>These remain counted from raw data until their durable aggregate is committed.</span></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">POLICY</p>
+                <h2>Current retention</h2>
+            </div>
+        </div>
+        <div class="rows">
+            <div class="system-row"><div class="row-main"><strong>@(Model.RetentionEnabled ? "Enabled" : "Disabled")</strong><span>Background retention worker</span></div></div>
+            <div class="system-row"><div class="row-main"><strong>@Model.AggregationDelayMinutes min</strong><span>Terminal-run aggregation delay</span></div></div>
+            <div class="system-row"><div class="row-main"><strong>@Model.SuccessfulRunDetailDays days</strong><span>Successful raw-detail retention</span></div></div>
+            <div class="system-row"><div class="row-main"><strong>@Model.SweepIntervalMinutes min</strong><span>Retention sweep interval</span></div></div>
+            <div class="system-row"><div class="row-main"><strong>Indefinite</strong><span>Failed and cancelled raw-detail retention</span></div></div>
+        </div>
+    </section>
+</div>
+
+<section class="panel table-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">HOURLY AGGREGATES</p>
+            <h2>Last 48 hours</h2>
+        </div>
+    </div>
+
+    @if (Model.RecentBuckets.Count == 0)
+    {
+        <div class="empty"><strong>No aggregate buckets yet.</strong><span>Terminal runs become eligible after the configured aggregation delay.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr><th>Hour UTC</th><th>Runs</th><th>Success</th><th>Failed</th><th>Cancelled</th><th>Avg duration</th><th>Tokens</th><th>Cost</th></tr>
+                </thead>
+                <tbody>
+                @foreach (var bucket in Model.RecentBuckets)
+                {
+                    <tr>
+                        <td><strong>@bucket.BucketStart.ToString("yyyy-MM-dd HH:00")</strong></td>
+                        <td>@bucket.TotalRuns.ToString("N0")</td>
+                        <td>@bucket.SuccessRuns.ToString("N0")</td>
+                        <td>@bucket.FailedRuns.ToString("N0")</td>
+                        <td>@bucket.CancelledRuns.ToString("N0")</td>
+                        <td>@bucket.AverageDurationMs.ToString("N0") ms</td>
+                        <td>@bucket.Tokens.ToString("N0")</td>
+                        <td>$@bucket.CostUsd.ToString("0.0000")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
