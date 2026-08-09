@@ -17,6 +17,8 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - Component registry with environment, version, type, enabled state, and heartbeat.
 - Run ingestion with input/output, model, token usage, cost, failure state, and timing.
 - Nested trace spans for agent/model/tool/http/internal work.
+- Runs history with server-side search/filtering and stable keyset pagination.
+- SignalR-backed live run updates: the latest page refreshes automatically while older history remains stable.
 - Private Razor control plane protected by ASP.NET Core Identity/cookie authentication.
 - Separate API-key authentication for autonomous components.
 - One-time local owner setup and production bootstrap administrator support.
@@ -68,6 +70,14 @@ If Monitor is listening on a different URL, set `Monitor__BaseUrl` to that addre
 The worker registers as `sample-website-auditor`, sends a heartbeat every 15 seconds, and starts a synthetic website-audit run every 30 seconds. Each run emits HTTP, tool, model, and agent spans plus synthetic token/cost data. Every fifth run intentionally fails so the dashboard has both healthy and failed telemetry to display.
 
 The sample does not call a real website or model provider; its delays and failures are synthetic so local development and CI remain deterministic and self-contained.
+
+## Runs history
+
+`/runs` loads data through the authenticated query API instead of rendering a fixed batch during the Razor page request. Available filters include component, status, environment, model, free-text search, date range, and page size.
+
+Pagination is keyset-based. Each run receives a database-generated monotonic sequence and the next page asks for rows older than the last visible sequence. This keeps browsing stable while new telemetry is arriving and avoids increasingly expensive deep SQL `OFFSET` queries.
+
+SignalR notifies the browser when a run starts or completes. On the latest page, the matching filtered slice refreshes automatically without a page navigation. When browsing older pages, Monitor leaves the current rows in place and surfaces a new-activity banner instead of shifting history underneath the operator.
 
 ## Client SDK
 
@@ -229,8 +239,8 @@ docs/
 
 ## Next
 
-1. Live activity stream using SignalR or SSE.
-2. OTLP receiver / OpenTelemetry semantic-convention mapping.
+1. OTLP receiver / OpenTelemetry semantic-convention mapping.
+2. Retention and aggregation, preserving full failed-run forensic detail.
 3. Per-component credentials and key rotation.
-4. Retention, aggregation, and cost/model dashboards.
+4. Cost/model dashboards and alerting.
 5. Control-plane commands (pause, disable, kill run, configuration).

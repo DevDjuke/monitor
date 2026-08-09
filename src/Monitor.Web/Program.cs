@@ -5,6 +5,7 @@ using Monitor.Infrastructure;
 using Monitor.Infrastructure.Auth;
 using Monitor.Web.Api;
 using Monitor.Web.Auth;
+using Monitor.Web.Realtime;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,6 +16,7 @@ builder.Services.AddRazorPages(options =>
     options.Conventions.AllowAnonymousToPage("/Account/Setup");
     options.Conventions.AllowAnonymousToPage("/Error");
 });
+builder.Services.AddSignalR();
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -51,6 +53,30 @@ builder.Services.ConfigureApplicationCookie(options =>
     options.AccessDeniedPath = "/account/login";
     options.SlidingExpiration = true;
     options.ExpireTimeSpan = TimeSpan.FromHours(12);
+
+    options.Events.OnRedirectToLogin = context =>
+    {
+        if (IsMachineEndpoint(context.Request.Path))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        }
+
+        context.Response.Redirect(context.RedirectUri);
+        return Task.CompletedTask;
+    };
+
+    options.Events.OnRedirectToAccessDenied = context =>
+    {
+        if (IsMachineEndpoint(context.Request.Path))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        }
+
+        context.Response.Redirect(context.RedirectUri);
+        return Task.CompletedTask;
+    };
 });
 
 var app = builder.Build();
@@ -68,6 +94,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapRazorPages();
+app.MapHub<MonitorHub>("/hubs/monitor").RequireAuthorization();
 app.MapMonitoringApi();
 
 await using (var scope = app.Services.CreateAsyncScope())
@@ -78,3 +105,6 @@ await using (var scope = app.Services.CreateAsyncScope())
 }
 
 app.Run();
+
+static bool IsMachineEndpoint(PathString path) =>
+    path.StartsWithSegments("/api") || path.StartsWithSegments("/hubs");

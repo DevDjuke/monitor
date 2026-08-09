@@ -31,7 +31,7 @@ jobs:
           dotnet-version: '10.0.x'
       - run: dotnet restore Monitor.sln
       - run: dotnet build Monitor.sln --configuration Release --no-restore
-      - name: Smoke test authentication, SQL Server, and sample telemetry
+      - name: Smoke test authentication, migration upgrade, and realtime run queries
         env:
           ASPNETCORE_ENVIRONMENT: Development
           ASPNETCORE_URLS: http://127.0.0.1:5080
@@ -40,30 +40,74 @@ jobs:
         run: |
           set -euo pipefail
 
-          dotnet run \
-            --project src/Monitor.Web \
-            --configuration Release \
-            --no-build \
-            > /tmp/monitor-ci.log 2>&1 &
+          dotnet tool install --global dotnet-ef --version 10.0.10
+          dotnet ef database update 20260809200032_InitialSqlServer \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --connection "$ConnectionStrings__Monitor"
+
+          sql_container=$(docker ps \
+            --filter 'ancestor=mcr.microsoft.com/mssql/server:2022-latest' \
+            --format '{{.ID}}' | head -n 1)
+          test -n "$sql_container"
+
+          docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorCi!2026Password' -C -b -d Monitor \
+            -Q "
+              DECLARE @ComponentId uniqueidentifier = NEWID();
+              INSERT INTO Components
+                  (Id, Name, Slug, Type, Environment, Version, Enabled, Status, LastHeartbeatAt, LastRunAt, CreatedAt, UpdatedAt)
+              VALUES
+                  (@ComponentId, N'Legacy CI', N'legacy-ci', 0, N'development', N'0.0.1', 1, 1, NULL, NULL, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET());
+
+              INSERT INTO Runs
+                  (Id, ComponentId, ExternalId, Name, [Trigger], Model, Status, StartedAt, CompletedAt, InputTokens, OutputTokens, CostUsd, InputJson, OutputJson, Error)
+              VALUES
+                  (NEWID(), @ComponentId, N'legacy-1', N'Legacy run 1', N'CI', N'ci-model', 1, DATEADD(second, -2, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), 1, 1, 0.0, NULL, NULL, NULL),
+                  (NEWID(), @ComponentId, N'legacy-2', N'Legacy run 2', N'CI', N'ci-model', 2, DATEADD(second, -1, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), 1, 0, 0.0, NULL, NULL, N'legacy failure');
+            "
+
+          dotnet ef database update \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --connection "$ConnectionStrings__Monitor"
+
+          (
+            cd src/Monitor.Web
+            exec dotnet bin/Release/net10.0/Monitor.Web.dll
+          ) > /tmp/monitor-ci.log 2>&1 &
           app_pid=$!
           worker_pid=""
 
           cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "=== Monitor log after failed smoke gate ==="
+              cat /tmp/monitor-ci.log 2>/dev/null || true
+              echo "=== End Monitor log ==="
+            fi
             if [ -n "$worker_pid" ]; then
               kill "$worker_pid" 2>/dev/null || true
               wait "$worker_pid" 2>/dev/null || true
             fi
             kill "$app_pid" 2>/dev/null || true
             wait "$app_pid" 2>/dev/null || true
+            return "$status"
           }
           trap cleanup EXIT
 
+          app_ready=false
           for attempt in {1..45}; do
             if curl -fsS http://127.0.0.1:5080/api/health > /dev/null; then
+              app_ready=true
               break
             fi
 
             if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "Monitor process exited during startup."
+              wait "$app_pid" || true
               cat /tmp/monitor-ci.log
               exit 1
             fi
@@ -71,28 +115,44 @@ jobs:
             sleep 1
           done
 
-          curl -fsS http://127.0.0.1:5080/api/health > /dev/null
+          if [ "$app_ready" != true ]; then
+            echo "Monitor did not become ready within the startup window."
+            cat /tmp/monitor-ci.log
+            exit 1
+          fi
+
           curl -fsS http://127.0.0.1:5080/account/login > /dev/null
           curl -fsS http://127.0.0.1:5080/account/setup > /dev/null
+          curl -fsS http://127.0.0.1:5080/lib/microsoft/signalr/dist/browser/signalr.min.js > /dev/null
 
           unauthenticated_status=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:5080/api/components)
           test "$unauthenticated_status" = "401"
 
-          curl -fsS \
-            -H 'X-Monitor-Key: ci-test-ingestion-key' \
-            http://127.0.0.1:5080/api/components \
-            > /dev/null
+          unauthenticated_hub_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -X POST 'http://127.0.0.1:5080/hubs/monitor/negotiate?negotiateVersion=1')
+          test "$unauthenticated_hub_status" = "401"
 
-          Monitor__BaseUrl=http://127.0.0.1:5080 \
-          Monitor__IngestionApiKey=ci-test-ingestion-key \
-          SampleWorker__HeartbeatIntervalSeconds=1 \
-          SampleWorker__RunIntervalSeconds=1 \
-          SampleWorker__FailureEvery=2 \
-          dotnet run \
-            --project samples/Monitor.SampleWorker \
-            --configuration Release \
-            --no-build \
-            > /tmp/monitor-worker-ci.log 2>&1 &
+          legacy_runs=$(curl -fsS \
+            -H 'X-Monitor-Key: ci-test-ingestion-key' \
+            'http://127.0.0.1:5080/api/runs/query?pageSize=25&search=Legacy')
+          python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["items"]
+          assert len(data) == 2, data
+          sequences = [row["sequence"] for row in data]
+          assert all(value > 0 for value in sequences), sequences
+          assert len(set(sequences)) == 2, sequences
+          ' <<< "$legacy_runs"
+
+          (
+            cd samples/Monitor.SampleWorker
+            Monitor__BaseUrl=http://127.0.0.1:5080 \
+            Monitor__IngestionApiKey=ci-test-ingestion-key \
+            SampleWorker__HeartbeatIntervalSeconds=1 \
+            SampleWorker__RunIntervalSeconds=1 \
+            SampleWorker__FailureEvery=2 \
+            exec dotnet bin/Release/net10.0/Monitor.SampleWorker.dll
+          ) > /tmp/monitor-worker-ci.log 2>&1 &
           worker_pid=$!
 
           telemetry_ready=false
@@ -103,11 +163,16 @@ jobs:
             fi
 
             components=$(curl -fsS -H 'X-Monitor-Key: ci-test-ingestion-key' http://127.0.0.1:5080/api/components)
-            runs=$(curl -fsS -H 'X-Monitor-Key: ci-test-ingestion-key' 'http://127.0.0.1:5080/api/runs?take=20')
+            filtered=$(curl -fsS \
+              -H 'X-Monitor-Key: ci-test-ingestion-key' \
+              'http://127.0.0.1:5080/api/runs/query?pageSize=25&status=Failed&environment=development&search=Synthetic')
 
             if echo "$components" | grep -q 'sample-website-auditor' \
-              && echo "$runs" | grep -q 'Synthetic website audit' \
-              && echo "$runs" | grep -q '"status":"Failed"'; then
+              && python3 -c '
+          import json, sys
+          items = json.load(sys.stdin)["items"]
+          raise SystemExit(0 if any(item["name"] == "Synthetic website audit" and item["status"] == "Failed" for item in items) else 1)
+          ' <<< "$filtered"; then
               telemetry_ready=true
               break
             fi
@@ -116,9 +181,57 @@ jobs:
           done
 
           if [ "$telemetry_ready" != true ]; then
-            echo "Sample telemetry did not reach Monitor."
+            echo "Failed sample telemetry did not reach Monitor."
             cat /tmp/monitor-worker-ci.log
             echo "Components: $components"
-            echo "Runs: $runs"
+            echo "Filtered failed runs: $filtered"
             exit 1
           fi
+
+          python3 -c '
+          import json, sys
+          items = json.load(sys.stdin)["items"]
+          assert any(item["name"] == "Synthetic website audit" and item["status"] == "Failed" for item in items), items
+          ' <<< "$filtered"
+
+          options=$(curl -fsS \
+            -H 'X-Monitor-Key: ci-test-ingestion-key' \
+            'http://127.0.0.1:5080/api/runs/options')
+          echo "$options" | grep -q 'Sample Website Auditor'
+          echo "$options" | grep -q 'sample-model'
+
+          component_id=$(python3 -c '
+          import json, sys
+          components = json.load(sys.stdin)
+          print(next(item["id"] for item in components if item["slug"] == "sample-website-auditor"))
+          ' <<< "$components")
+
+          for i in {1..30}; do
+            curl -fsS -X POST \
+              -H 'Content-Type: application/json' \
+              -H 'X-Monitor-Key: ci-test-ingestion-key' \
+              http://127.0.0.1:5080/api/runs \
+              -d "{\"componentId\":\"$component_id\",\"name\":\"Keyset smoke $i\",\"externalId\":\"keyset-$i\",\"trigger\":\"CI\",\"model\":\"ci-model\",\"inputJson\":null}" \
+              > /dev/null
+          done
+
+          first_page=$(curl -fsS \
+            -H 'X-Monitor-Key: ci-test-ingestion-key' \
+            'http://127.0.0.1:5080/api/runs/query?pageSize=25')
+          next_cursor=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("nextCursor") or "")' <<< "$first_page")
+          test -n "$next_cursor"
+
+          second_page=$(curl -fsS \
+            -H 'X-Monitor-Key: ci-test-ingestion-key' \
+            "http://127.0.0.1:5080/api/runs/query?pageSize=25&before=$next_cursor")
+          python3 -c '
+          import json, sys
+          first = json.loads(sys.argv[1])["items"]
+          second = json.loads(sys.argv[2])["items"]
+          assert len(first) == 25, len(first)
+          assert len(second) > 0, second
+          first_ids = {row["id"] for row in first}
+          second_ids = {row["id"] for row in second}
+          assert first_ids.isdisjoint(second_ids), (first_ids & second_ids)
+          assert max(row["sequence"] for row in second) < min(row["sequence"] for row in first), (first, second)
+          ' "$first_page" "$second_page"

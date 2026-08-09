@@ -4,41 +4,123 @@
     ViewData["Title"] = "Runs";
 }
 
-<header class="page-head compact">
+@section Head {
+    <link rel="stylesheet" href="~/css/runs.css" asp-append-version="true" />
+}
+
+<header class="page-head compact runs-head">
     <div>
         <p class="eyebrow">EXECUTION HISTORY</p>
         <h1>Runs</h1>
-        <p class="lede">The operational unit of work across every monitored component.</p>
+        <p class="lede">Filter and inspect execution history while new activity streams in live.</p>
+    </div>
+    <div class="runs-live" id="runs-live-state" aria-live="polite">
+        <span></span>
+        <strong>Connecting</strong>
     </div>
 </header>
 
-<section class="panel table-panel">
-    @if (Model.Runs.Count == 0)
-    {
-        <div class="empty"><strong>No runs received.</strong><span>Start one through <code>POST /api/runs</code>.</span></div>
-    }
-    else
-    {
-        <div class="table-wrap">
-            <table>
-                <thead><tr><th>Status</th><th>Run</th><th>Component</th><th>Model</th><th>Started</th><th>Duration</th><th>Tokens</th><th>Cost</th></tr></thead>
-                <tbody>
-                @foreach (var run in Model.Runs)
-                {
-                    var statusClass = run.Status.ToString().ToLowerInvariant();
-                    <tr>
-                        <td><span class="run-status @statusClass">@run.Status</span></td>
-                        <td><a class="table-link" href="/run/@run.Id">@run.Name</a></td>
-                        <td>@run.Component</td>
-                        <td>@(run.Model ?? "—")</td>
-                        <td>@run.StartedAt.ToString("u")</td>
-                        <td>@(run.Duration is null ? "running" : $"{run.Duration.Value.TotalMilliseconds:0} ms")</td>
-                        <td>@run.Tokens.ToString("N0")</td>
-                        <td>$@run.CostUsd.ToString("0.0000")</td>
-                    </tr>
-                }
-                </tbody>
-            </table>
-        </div>
-    }
+<section class="panel runs-filter-panel" aria-label="Run filters">
+    <div class="runs-filters">
+        <label class="runs-field runs-search">
+            <span>Search</span>
+            <input id="runs-search" type="search" autocomplete="off" placeholder="Run, component, model, external id…" />
+        </label>
+
+        <label class="runs-field">
+            <span>Component</span>
+            <select id="runs-component">
+                <option value="">All components</option>
+            </select>
+        </label>
+
+        <label class="runs-field">
+            <span>Status</span>
+            <select id="runs-status">
+                <option value="">All statuses</option>
+                <option value="Running">Running</option>
+                <option value="Success">Success</option>
+                <option value="Failed">Failed</option>
+                <option value="Cancelled">Cancelled</option>
+            </select>
+        </label>
+
+        <label class="runs-field">
+            <span>Environment</span>
+            <select id="runs-environment">
+                <option value="">All environments</option>
+            </select>
+        </label>
+
+        <label class="runs-field">
+            <span>Model</span>
+            <select id="runs-model">
+                <option value="">All models</option>
+            </select>
+        </label>
+
+        <label class="runs-field">
+            <span>From</span>
+            <input id="runs-from" type="date" />
+        </label>
+
+        <label class="runs-field">
+            <span>To</span>
+            <input id="runs-to" type="date" />
+        </label>
+
+        <label class="runs-field runs-page-size">
+            <span>Rows</span>
+            <select id="runs-page-size">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+            </select>
+        </label>
+
+        <button class="runs-clear" id="runs-clear" type="button">Clear filters</button>
+    </div>
 </section>
+
+<button class="runs-new-banner" id="runs-new-banner" type="button" hidden>
+    <strong id="runs-new-count">1 update available</strong>
+    <span>Return to latest</span>
+</button>
+
+<section class="panel table-panel runs-table-panel" aria-busy="true" id="runs-panel">
+    <div class="runs-loading" id="runs-loading">Loading runs…</div>
+    <div class="empty" id="runs-empty" hidden>
+        <strong>No runs match these filters.</strong>
+        <span>Change the filters or wait for new activity.</span>
+    </div>
+    <div class="table-wrap" id="runs-table-wrap" hidden>
+        <table>
+            <thead>
+                <tr>
+                    <th>Status</th>
+                    <th>Run</th>
+                    <th>Component</th>
+                    <th>Environment</th>
+                    <th>Model</th>
+                    <th>Started</th>
+                    <th>Duration</th>
+                    <th>Tokens</th>
+                    <th>Cost</th>
+                </tr>
+            </thead>
+            <tbody id="runs-body"></tbody>
+        </table>
+    </div>
+    <footer class="runs-pagination" id="runs-pagination" hidden>
+        <span id="runs-page-label">Page 1</span>
+        <div>
+            <button id="runs-newer" type="button" disabled>Newer</button>
+            <button id="runs-older" type="button">Older</button>
+        </div>
+    </footer>
+</section>
+
+@section Scripts {
+    <script src="~/lib/microsoft/signalr/dist/browser/signalr.min.js"></script>
+    <script src="~/js/runs.js" asp-append-version="true"></script>
+}

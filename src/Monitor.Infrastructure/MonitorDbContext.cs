@@ -16,6 +16,8 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     {
         base.OnModelCreating(modelBuilder);
 
+        modelBuilder.HasSequence<long>("RunSequence");
+
         var component = modelBuilder.Entity<MonitoredComponent>();
         component.ToTable("Components");
         component.HasKey(x => x.Id);
@@ -28,10 +30,13 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         var run = modelBuilder.Entity<AgentRun>();
         run.ToTable("Runs");
         run.HasKey(x => x.Id);
+        run.Property(x => x.Sequence)
+            .HasDefaultValueSql("NEXT VALUE FOR [RunSequence]");
         run.Property(x => x.Name).HasMaxLength(240);
         run.Property(x => x.ExternalId).HasMaxLength(200);
         run.Property(x => x.Trigger).HasMaxLength(120);
         run.Property(x => x.Model).HasMaxLength(160);
+        run.HasIndex(x => x.Sequence).IsUnique().IsDescending();
         run.HasIndex(x => x.StartedAt);
         run.HasIndex(x => new { x.ComponentId, x.ExternalId });
         run.HasOne(x => x.Component)
