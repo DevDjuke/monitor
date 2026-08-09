@@ -20,22 +20,35 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - Private Razor control plane protected by ASP.NET Core Identity/cookie authentication.
 - Separate API-key authentication for autonomous components.
 - One-time local owner setup and production bootstrap administrator support.
-- Versioned EF Core migrations, including a safe upgrade path from the early `EnsureCreated()` database.
-- SQLite development persistence with EF Core.
-- GitHub Actions build.
+- Versioned EF Core migrations.
+- SQL Server persistence with LocalDB as the default development instance.
+- GitHub Actions build and SQL Server-backed startup/authentication smoke test.
 
 This first API is intentionally simple HTTP. Native OpenTelemetry/OTLP ingestion is the next transport; the domain model is kept independent from the ingestion protocol.
 
 ## Run locally
 
-Requirements: .NET 10 SDK.
+Requirements:
+
+- .NET 10 SDK
+- SQL Server LocalDB available as `(localdb)\MSSQLLocalDB`, or another SQL Server instance supplied through `ConnectionStrings__Monitor`
+
+The default development connection string is:
+
+```text
+Server=(localdb)\MSSQLLocalDB;Database=Monitor;Trusted_Connection=True;TrustServerCertificate=True;MultipleActiveResultSets=True
+```
+
+Run Monitor:
 
 ```bash
 dotnet restore Monitor.sln
 dotnet run --project src/Monitor.Web
 ```
 
-The application creates or migrates `monitor.db` on startup. In Development, open `/account/setup` on the first run and create the owner account. The setup endpoint becomes unavailable as soon as a user exists.
+EF Core creates the `Monitor` database and applies pending migrations on startup. In Development, open `/account/setup` on the first run and create the owner account. The setup endpoint becomes unavailable as soon as a user exists.
+
+The old SQLite `monitor.db` file from the prototype is no longer used and can be deleted once you are sure it contains nothing you want to keep.
 
 Set an ingestion key before posting telemetry. Environment variables are preferred so secrets do not enter source control:
 

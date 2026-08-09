@@ -8,7 +8,7 @@ public sealed class MonitorDbContextFactory : IDesignTimeDbContextFactory<Monito
     public MonitorDbContext CreateDbContext(string[] args)
     {
         var options = new DbContextOptionsBuilder<MonitorDbContext>()
-            .UseSqlite("Data Source=monitor.db")
+            .UseSqlServer("Server=(localdb)\\MSSQLLocalDB;Database=Monitor;Trusted_Connection=True;TrustServerCertificate=True;MultipleActiveResultSets=True")
             .Options;
 
         return new MonitorDbContext(options);
