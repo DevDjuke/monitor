@@ -40,7 +40,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Prove AddRunSequence upgrades an already-populated Runs table.
+          # Build the old schema, seed legacy rows, then apply the current migration set.
+          # This proves AddRunSequence upgrades a populated Runs table safely.
           dotnet tool install --global dotnet-ef --version 10.0.10
           dotnet ef database update 20260809200032_InitialSqlServer \
             --project src/Monitor.Infrastructure \
@@ -68,6 +69,12 @@ jobs:
                   (NEWID(), @ComponentId, N'legacy-1', N'Legacy run 1', N'CI', N'ci-model', 1, DATEADD(second, -2, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), 1, 1, 0.0, NULL, NULL, NULL),
                   (NEWID(), @ComponentId, N'legacy-2', N'Legacy run 2', N'CI', N'ci-model', 2, DATEADD(second, -1, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), 1, 0, 0.0, NULL, NULL, N'legacy failure');
             "
+
+          dotnet ef database update \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --connection "$ConnectionStrings__Monitor"
 
           dotnet run \
             --project src/Monitor.Web \
