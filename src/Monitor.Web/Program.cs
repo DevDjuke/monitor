@@ -53,6 +53,30 @@ builder.Services.ConfigureApplicationCookie(options =>
     options.AccessDeniedPath = "/account/login";
     options.SlidingExpiration = true;
     options.ExpireTimeSpan = TimeSpan.FromHours(12);
+
+    options.Events.OnRedirectToLogin = context =>
+    {
+        if (IsMachineEndpoint(context.Request.Path))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        }
+
+        context.Response.Redirect(context.RedirectUri);
+        return Task.CompletedTask;
+    };
+
+    options.Events.OnRedirectToAccessDenied = context =>
+    {
+        if (IsMachineEndpoint(context.Request.Path))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        }
+
+        context.Response.Redirect(context.RedirectUri);
+        return Task.CompletedTask;
+    };
 });
 
 var app = builder.Build();
@@ -81,3 +105,6 @@ await using (var scope = app.Services.CreateAsyncScope())
 }
 
 app.Run();
+
+static bool IsMachineEndpoint(PathString path) =>
+    path.StartsWithSegments("/api") || path.StartsWithSegments("/hubs");
