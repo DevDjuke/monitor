@@ -31,6 +31,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
@@ -38,6 +39,10 @@ jobs:
       - name: Generate run sequence migration
         if: ${{ github.event_name == 'pull_request' && hashFiles('src/Monitor.Infrastructure/Migrations/*AddRunSequence.cs') == '' }}
         run: |
+          git show origin/main:src/Monitor.Infrastructure/Migrations/MonitorDbContextModelSnapshot.cs \
+            > src/Monitor.Infrastructure/Migrations/MonitorDbContextModelSnapshot.cs
+          rm -f src/Monitor.Infrastructure/Migrations/*AddRunSequence*.cs
+
           dotnet tool install --global dotnet-ef --version 10.0.10
           dotnet ef migrations add AddRunSequence \
             --project src/Monitor.Infrastructure \
@@ -84,20 +89,26 @@ jobs:
           }
           trap cleanup EXIT
 
+          app_ready=false
           for attempt in {1..45}; do
             if curl -fsS http://127.0.0.1:5080/api/health > /dev/null; then
+              app_ready=true
               break
             fi
 
             if ! kill -0 "$app_pid" 2>/dev/null; then
-              cat /tmp/monitor-ci.log
-              exit 1
+              break
             fi
 
             sleep 1
           done
 
-          curl -fsS http://127.0.0.1:5080/api/health > /dev/null
+          if [ "$app_ready" != true ]; then
+            echo "Monitor did not become ready."
+            cat /tmp/monitor-ci.log
+            exit 1
+          fi
+
           curl -fsS http://127.0.0.1:5080/account/login > /dev/null
           curl -fsS http://127.0.0.1:5080/account/setup > /dev/null
           curl -fsS http://127.0.0.1:5080/lib/microsoft/signalr/dist/browser/signalr.min.js > /dev/null
