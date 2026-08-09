@@ -76,11 +76,10 @@ jobs:
             --context MonitorDbContext \
             --connection "$ConnectionStrings__Monitor"
 
-          dotnet run \
-            --project src/Monitor.Web \
-            --configuration Release \
-            --no-build \
-            > /tmp/monitor-ci.log 2>&1 &
+          (
+            cd src/Monitor.Web
+            exec dotnet bin/Release/net10.0/Monitor.Web.dll
+          ) > /tmp/monitor-ci.log 2>&1 &
           app_pid=$!
           worker_pid=""
 
@@ -140,16 +139,15 @@ jobs:
           assert len(set(sequences)) == 2, sequences
           ' <<< "$legacy_runs"
 
-          Monitor__BaseUrl=http://127.0.0.1:5080 \
-          Monitor__IngestionApiKey=ci-test-ingestion-key \
-          SampleWorker__HeartbeatIntervalSeconds=1 \
-          SampleWorker__RunIntervalSeconds=1 \
-          SampleWorker__FailureEvery=2 \
-          dotnet run \
-            --project samples/Monitor.SampleWorker \
-            --configuration Release \
-            --no-build \
-            > /tmp/monitor-worker-ci.log 2>&1 &
+          (
+            cd samples/Monitor.SampleWorker
+            Monitor__BaseUrl=http://127.0.0.1:5080 \
+            Monitor__IngestionApiKey=ci-test-ingestion-key \
+            SampleWorker__HeartbeatIntervalSeconds=1 \
+            SampleWorker__RunIntervalSeconds=1 \
+            SampleWorker__FailureEvery=2 \
+            exec dotnet bin/Release/net10.0/Monitor.SampleWorker.dll
+          ) > /tmp/monitor-worker-ci.log 2>&1 &
           worker_pid=$!
 
           telemetry_ready=false
