@@ -6,39 +6,74 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: MonitorCi!2026Password
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorCi!2026Password' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
       - run: dotnet restore Monitor.sln
       - run: dotnet build Monitor.sln --configuration Release --no-restore
-      - name: Generate SQL Server migration
-        if: ${{ github.event_name == 'pull_request' && hashFiles('src/Monitor.Infrastructure/Migrations/*InitialSqlServer.cs') == '' }}
+      - name: Smoke test authentication and SQL Server migrations
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          ASPNETCORE_URLS: http://127.0.0.1:5080
+          ConnectionStrings__Monitor: Server=127.0.0.1,1433;Database=Monitor;User Id=sa;Password=MonitorCi!2026Password;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
+          Monitor__IngestionApiKey: ci-test-ingestion-key
         run: |
-          dotnet tool install --global dotnet-ef --version 10.0.10
-          dotnet ef migrations add InitialSqlServer \
-            --project src/Monitor.Infrastructure \
-            --startup-project src/Monitor.Web \
-            --context MonitorDbContext \
-            --output-dir Migrations
-      - name: Commit generated SQL Server migration
-        if: ${{ github.event_name == 'pull_request' && hashFiles('src/Monitor.Infrastructure/Migrations/*InitialSqlServer.cs') != '' }}
-        run: |
-          if git diff --quiet -- src/Monitor.Infrastructure/Migrations && [ -z "$(git status --porcelain src/Monitor.Infrastructure/Migrations)" ]; then
-            exit 0
-          fi
+          set -euo pipefail
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/Monitor.Infrastructure/Migrations
-          git commit -m "Add SQL Server migration baseline"
-          git push origin HEAD:${{ github.head_ref }}
+          dotnet run \
+            --project src/Monitor.Web \
+            --configuration Release \
+            --no-build \
+            > /tmp/monitor-ci.log 2>&1 &
+          app_pid=$!
+
+          cleanup() {
+            kill "$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for attempt in {1..45}; do
+            if curl -fsS http://127.0.0.1:5080/api/health > /dev/null; then
+              break
+            fi
+
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              cat /tmp/monitor-ci.log
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          curl -fsS http://127.0.0.1:5080/api/health > /dev/null
+          curl -fsS http://127.0.0.1:5080/account/login > /dev/null
+          curl -fsS http://127.0.0.1:5080/account/setup > /dev/null
+
+          unauthenticated_status=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:5080/api/components)
+          test "$unauthenticated_status" = "401"
+
+          curl -fsS \
+            -H 'X-Monitor-Key: ci-test-ingestion-key' \
+            http://127.0.0.1:5080/api/components \
+            > /dev/null
