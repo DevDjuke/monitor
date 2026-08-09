@@ -5,6 +5,7 @@ public sealed class AgentRun
     private AgentRun() { }
 
     public Guid Id { get; private set; }
+    public long Sequence { get; private set; }
     public Guid ComponentId { get; private set; }
     public string? ExternalId { get; private set; }
     public string Name { get; private set; } = string.Empty;
