@@ -38,7 +38,7 @@ jobs:
           ConnectionStrings__Monitor: Server=127.0.0.1,1433;Database=Monitor;User Id=sa;Password=MonitorCi!2026Password;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
           Monitor__IngestionApiKey: ci-test-ingestion-key
         run: |
-          set -euo pipefail
+          set -euxo pipefail
 
           dotnet run \
             --project src/Monitor.Web \
