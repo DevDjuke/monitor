@@ -5,6 +5,7 @@ using Monitor.Infrastructure;
 using Monitor.Infrastructure.Auth;
 using Monitor.Web.Api;
 using Monitor.Web.Auth;
+using Monitor.Web.Realtime;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,6 +16,7 @@ builder.Services.AddRazorPages(options =>
     options.Conventions.AllowAnonymousToPage("/Account/Setup");
     options.Conventions.AllowAnonymousToPage("/Error");
 });
+builder.Services.AddSignalR();
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -68,6 +70,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapRazorPages();
+app.MapHub<MonitorHub>("/hubs/monitor").RequireAuthorization();
 app.MapMonitoringApi();
 
 await using (var scope = app.Services.CreateAsyncScope())
