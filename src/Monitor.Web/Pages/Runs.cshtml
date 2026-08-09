@@ -4,6 +4,10 @@
     ViewData["Title"] = "Runs";
 }
 
+@section Head {
+    <link rel="stylesheet" href="~/css/runs.css" asp-append-version="true" />
+}
+
 <header class="page-head compact runs-head">
     <div>
         <p class="eyebrow">EXECUTION HISTORY</p>
@@ -116,5 +120,7 @@
     </footer>
 </section>
 
-<script src="~/lib/microsoft/signalr/dist/browser/signalr.min.js"></script>
-<script src="~/js/runs.js" asp-append-version="true"></script>
+@section Scripts {
+    <script src="~/lib/microsoft/signalr/dist/browser/signalr.min.js"></script>
+    <script src="~/js/runs.js" asp-append-version="true"></script>
+}
