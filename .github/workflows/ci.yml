@@ -40,8 +40,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Build the old schema, seed legacy rows, then apply the current migration set.
-          # This proves AddRunSequence upgrades a populated Runs table safely.
           dotnet tool install --global dotnet-ef --version 10.0.10
           dotnet ef database update 20260809200032_InitialSqlServer \
             --project src/Monitor.Infrastructure \
@@ -84,12 +82,19 @@ jobs:
           worker_pid=""
 
           cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "=== Monitor log after failed smoke gate ==="
+              cat /tmp/monitor-ci.log 2>/dev/null || true
+              echo "=== End Monitor log ==="
+            fi
             if [ -n "$worker_pid" ]; then
               kill "$worker_pid" 2>/dev/null || true
               wait "$worker_pid" 2>/dev/null || true
             fi
             kill "$app_pid" 2>/dev/null || true
             wait "$app_pid" 2>/dev/null || true
+            return "$status"
           }
           trap cleanup EXIT
 
@@ -116,20 +121,29 @@ jobs:
             exit 1
           fi
 
+          echo "Gate: login page"
           curl -fsS http://127.0.0.1:5080/account/login > /dev/null
+          echo "Gate: setup page"
           curl -fsS http://127.0.0.1:5080/account/setup > /dev/null
+          echo "Gate: SignalR browser asset"
           curl -fsS http://127.0.0.1:5080/lib/microsoft/signalr/dist/browser/signalr.min.js > /dev/null
 
+          echo "Gate: anonymous API status"
           unauthenticated_status=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:5080/api/components)
+          echo "API status: $unauthenticated_status"
           test "$unauthenticated_status" = "401"
 
+          echo "Gate: anonymous SignalR negotiate status"
           unauthenticated_hub_status=$(curl -sS -o /dev/null -w '%{http_code}' \
             -X POST 'http://127.0.0.1:5080/hubs/monitor/negotiate?negotiateVersion=1')
+          echo "Hub status: $unauthenticated_hub_status"
           test "$unauthenticated_hub_status" = "401"
 
+          echo "Gate: populated migration query"
           legacy_runs=$(curl -fsS \
             -H 'X-Monitor-Key: ci-test-ingestion-key' \
             'http://127.0.0.1:5080/api/runs/query?pageSize=25&search=Legacy')
+          echo "Legacy query: $legacy_runs"
           python3 -c '
           import json, sys
           data = json.load(sys.stdin)["items"]
@@ -196,7 +210,6 @@ jobs:
           print(next(item["id"] for item in components if item["slug"] == "sample-website-auditor"))
           ' <<< "$components")
 
-          # Create enough runs to exercise the supported 25-row keyset page size quickly.
           for i in {1..30}; do
             curl -fsS -X POST \
               -H 'Content-Type: application/json' \
