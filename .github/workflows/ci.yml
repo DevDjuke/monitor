@@ -121,29 +121,20 @@ jobs:
             exit 1
           fi
 
-          echo "Gate: login page"
           curl -fsS http://127.0.0.1:5080/account/login > /dev/null
-          echo "Gate: setup page"
           curl -fsS http://127.0.0.1:5080/account/setup > /dev/null
-          echo "Gate: SignalR browser asset"
           curl -fsS http://127.0.0.1:5080/lib/microsoft/signalr/dist/browser/signalr.min.js > /dev/null
 
-          echo "Gate: anonymous API status"
           unauthenticated_status=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:5080/api/components)
-          echo "API status: $unauthenticated_status"
           test "$unauthenticated_status" = "401"
 
-          echo "Gate: anonymous SignalR negotiate status"
           unauthenticated_hub_status=$(curl -sS -o /dev/null -w '%{http_code}' \
             -X POST 'http://127.0.0.1:5080/hubs/monitor/negotiate?negotiateVersion=1')
-          echo "Hub status: $unauthenticated_hub_status"
           test "$unauthenticated_hub_status" = "401"
 
-          echo "Gate: populated migration query"
           legacy_runs=$(curl -fsS \
             -H 'X-Monitor-Key: ci-test-ingestion-key' \
             'http://127.0.0.1:5080/api/runs/query?pageSize=25&search=Legacy')
-          echo "Legacy query: $legacy_runs"
           python3 -c '
           import json, sys
           data = json.load(sys.stdin)["items"]
@@ -172,11 +163,16 @@ jobs:
             fi
 
             components=$(curl -fsS -H 'X-Monitor-Key: ci-test-ingestion-key' http://127.0.0.1:5080/api/components)
-            runs=$(curl -fsS -H 'X-Monitor-Key: ci-test-ingestion-key' 'http://127.0.0.1:5080/api/runs?take=20')
+            filtered=$(curl -fsS \
+              -H 'X-Monitor-Key: ci-test-ingestion-key' \
+              'http://127.0.0.1:5080/api/runs/query?pageSize=25&status=Failed&environment=development&search=Synthetic')
 
             if echo "$components" | grep -q 'sample-website-auditor' \
-              && echo "$runs" | grep -q 'Synthetic website audit' \
-              && echo "$runs" | grep -q '"status":"Failed"'; then
+              && python3 -c '
+          import json, sys
+          items = json.load(sys.stdin)["items"]
+          raise SystemExit(0 if any(item["name"] == "Synthetic website audit" and item["status"] == "Failed" for item in items) else 1)
+          ' <<< "$filtered"; then
               telemetry_ready=true
               break
             fi
@@ -185,18 +181,18 @@ jobs:
           done
 
           if [ "$telemetry_ready" != true ]; then
-            echo "Sample telemetry did not reach Monitor."
+            echo "Failed sample telemetry did not reach Monitor."
             cat /tmp/monitor-worker-ci.log
             echo "Components: $components"
-            echo "Runs: $runs"
+            echo "Filtered failed runs: $filtered"
             exit 1
           fi
 
-          filtered=$(curl -fsS \
-            -H 'X-Monitor-Key: ci-test-ingestion-key' \
-            'http://127.0.0.1:5080/api/runs/query?pageSize=25&status=Failed&environment=development&search=Synthetic')
-          echo "$filtered" | grep -q 'Synthetic website audit'
-          echo "$filtered" | grep -q '"status":"Failed"'
+          python3 -c '
+          import json, sys
+          items = json.load(sys.stdin)["items"]
+          assert any(item["name"] == "Synthetic website audit" and item["status"] == "Failed" for item in items), items
+          ' <<< "$filtered"
 
           options=$(curl -fsS \
             -H 'X-Monitor-Key: ci-test-ingestion-key' \
