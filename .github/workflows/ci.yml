@@ -66,14 +66,17 @@ jobs:
             fi
 
             if ! kill -0 "$app_pid" 2>/dev/null; then
-              break
+              echo "Monitor process exited during startup."
+              wait "$app_pid" || true
+              cat /tmp/monitor-ci.log
+              exit 1
             fi
 
             sleep 1
           done
 
           if [ "$app_ready" != true ]; then
-            echo "Monitor did not become ready."
+            echo "Monitor did not become ready within the startup window."
             cat /tmp/monitor-ci.log
             exit 1
           fi
