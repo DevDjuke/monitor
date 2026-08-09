@@ -54,7 +54,7 @@ jobs:
           test -n "$sql_container"
 
           docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
-            -S localhost -U sa -P 'MonitorCi!2026Password' -C -d Monitor \
+            -S localhost -U sa -P 'MonitorCi!2026Password' -C -b -d Monitor \
             -Q "
               DECLARE @ComponentId uniqueidentifier = NEWID();
               INSERT INTO Components
@@ -63,7 +63,7 @@ jobs:
                   (@ComponentId, N'Legacy CI', N'legacy-ci', 0, N'development', N'0.0.1', 1, 1, NULL, NULL, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET());
 
               INSERT INTO Runs
-                  (Id, ComponentId, ExternalId, Name, Trigger, Model, Status, StartedAt, CompletedAt, InputTokens, OutputTokens, CostUsd, InputJson, OutputJson, Error)
+                  (Id, ComponentId, ExternalId, Name, [Trigger], Model, Status, StartedAt, CompletedAt, InputTokens, OutputTokens, CostUsd, InputJson, OutputJson, Error)
               VALUES
                   (NEWID(), @ComponentId, N'legacy-1', N'Legacy run 1', N'CI', N'ci-model', 1, DATEADD(second, -2, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), 1, 1, 0.0, NULL, NULL, NULL),
                   (NEWID(), @ComponentId, N'legacy-2', N'Legacy run 2', N'CI', N'ci-model', 2, DATEADD(second, -1, SYSDATETIMEOFFSET()), SYSDATETIMEOFFSET(), 1, 0, 0.0, NULL, NULL, N'legacy failure');
