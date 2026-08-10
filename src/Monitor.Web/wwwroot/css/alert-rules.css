@@ -1,0 +1,265 @@
+.page-actions,
+.rule-editor-actions,
+.rule-actions-cell {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+
+.button-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+}
+
+.danger-button {
+    color: var(--bad) !important;
+    border-color: rgba(255,102,125,.28) !important;
+}
+
+.danger-button:hover {
+    background: rgba(255,102,125,.08) !important;
+    border-color: rgba(255,102,125,.48) !important;
+}
+
+.rule-management-panel,
+.rule-editor,
+.rule-editor-actions {
+    max-width: 1480px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.rule-management-panel {
+    margin-bottom: 22px;
+}
+
+.rule-actions-cell {
+    flex-wrap: wrap;
+    min-width: 190px;
+}
+
+.rule-actions-cell form {
+    margin: 0;
+}
+
+.rule-deleted {
+    opacity: .62;
+}
+
+.rule-editor {
+    display: grid;
+    gap: 22px;
+}
+
+.rule-editor-panel {
+    overflow: visible;
+}
+
+.rule-editor-body {
+    display: grid;
+    gap: 18px;
+    padding: 20px;
+}
+
+.rule-field {
+    min-width: 0;
+    display: grid;
+    gap: 7px;
+}
+
+.rule-field > span,
+.selected-failure-card > div > span {
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: .05em;
+}
+
+.rule-field input,
+.rule-field select {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    outline: 0;
+    padding: 10px 11px;
+    background: #0b0d12;
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    transition: border-color .14s ease, box-shadow .14s ease;
+}
+
+.rule-field input:focus,
+.rule-field select:focus {
+    border-color: rgba(124,108,255,.62);
+    box-shadow: 0 0 0 3px rgba(124,108,255,.08);
+}
+
+.rule-field small,
+.selected-failure-card small,
+.delivery-mode-card small,
+.destination-option small {
+    color: var(--faint);
+    font-size: 10px;
+    line-height: 1.5;
+}
+
+.rule-number-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.rule-toggle {
+    display: flex;
+    align-items: flex-start;
+    gap: 11px;
+    padding: 13px 14px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: rgba(17,20,27,.56);
+    cursor: pointer;
+}
+
+.rule-toggle input,
+.delivery-mode-card input,
+.destination-option input {
+    margin-top: 2px;
+    accent-color: #7c6cff;
+}
+
+.rule-toggle span,
+.delivery-mode-card span,
+.destination-option span {
+    min-width: 0;
+    display: grid;
+    gap: 4px;
+}
+
+.rule-toggle strong,
+.delivery-mode-card strong,
+.destination-option strong {
+    color: var(--text);
+    font-size: 12px;
+}
+
+.selected-failure-card {
+    display: grid;
+    grid-template-columns: 1fr 1.4fr .8fr;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    background: rgba(17,20,27,.56);
+}
+
+.selected-failure-card > div {
+    min-width: 0;
+    display: grid;
+    gap: 6px;
+    padding: 15px 17px;
+    border-right: 1px solid var(--line);
+}
+
+.selected-failure-card > div:last-child {
+    border-right: 0;
+}
+
+.selected-failure-card code {
+    color: var(--muted);
+    overflow-wrap: anywhere;
+    font-size: 10px;
+}
+
+.failure-category {
+    color: var(--accent) !important;
+    text-transform: uppercase;
+    letter-spacing: .08em !important;
+}
+
+.delivery-mode-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.delivery-mode-card,
+.destination-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 11px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: rgba(17,20,27,.56);
+    cursor: pointer;
+    transition: border-color .14s ease, background .14s ease;
+}
+
+.delivery-mode-card {
+    padding: 15px 16px;
+}
+
+.delivery-mode-card:hover,
+.destination-option:hover {
+    border-color: #454d5d;
+    background: var(--panel-2);
+}
+
+.destination-picker[hidden] {
+    display: none;
+}
+
+.destination-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.destination-option {
+    padding: 13px 14px;
+}
+
+.destination-option code {
+    color: var(--faint);
+    font-size: 9px;
+    overflow-wrap: anywhere;
+}
+
+.rule-editor-actions {
+    justify-content: flex-end;
+    padding-bottom: 30px;
+}
+
+@media (max-width: 900px) {
+    .rule-number-grid,
+    .delivery-mode-grid,
+    .destination-options,
+    .selected-failure-card {
+        grid-template-columns: 1fr;
+    }
+
+    .selected-failure-card > div {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .selected-failure-card > div:last-child {
+        border-bottom: 0;
+    }
+}
+
+@media (max-width: 640px) {
+    .page-actions,
+    .rule-editor-actions {
+        width: 100%;
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .page-actions > *,
+    .rule-editor-actions > * {
+        text-align: center;
+    }
+}
