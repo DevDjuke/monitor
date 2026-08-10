@@ -18,6 +18,7 @@ public sealed class MonitoredComponent
     public DateTimeOffset UpdatedAt { get; private set; }
 
     public ICollection<AgentRun> Runs { get; private set; } = new List<AgentRun>();
+    public ICollection<ComponentIngestionCredential> IngestionCredentials { get; private set; } = new List<ComponentIngestionCredential>();
 
     public static MonitoredComponent Create(
         string name,
