@@ -21,17 +21,18 @@
     {
         <div class="table-wrap">
             <table>
-                <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Environment</th><th>Version</th><th>Heartbeat</th><th>Last run</th></tr></thead>
+                <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Environment</th><th>Version</th><th>Credentials</th><th>Heartbeat</th><th>Last run</th></tr></thead>
                 <tbody>
                 @foreach (var component in Model.Components)
                 {
                     var statusClass = component.Status.ToString().ToLowerInvariant();
                     <tr>
                         <td><span class="status-label"><i class="status-dot @statusClass"></i>@component.Status</span></td>
-                        <td><strong>@component.Name</strong><small>@component.Slug</small></td>
+                        <td><a class="table-link" href="/components/@component.Id"><strong>@component.Name</strong></a><small>@component.Slug</small></td>
                         <td>@component.Type</td>
                         <td>@component.Environment</td>
                         <td>@(component.Version ?? "—")</td>
+                        <td><a class="table-link" href="/components/@component.Id">@component.ActiveCredentials active</a></td>
                         <td>@(component.LastHeartbeatAt?.ToString("u") ?? "—")</td>
                         <td>@(component.LastRunAt?.ToString("u") ?? "—")</td>
                     </tr>
