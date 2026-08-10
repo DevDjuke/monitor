@@ -12,7 +12,7 @@ using Monitor.Infrastructure;
 namespace Monitor.Infrastructure.Migrations
 {
     [DbContext(typeof(MonitorDbContext))]
-    [Migration("20260810202743_AlertRuleManagement")]
+    [Migration("20260810203004_AlertRuleManagement")]
     partial class AlertRuleManagement
     {
         /// <inheritdoc />
@@ -422,7 +422,9 @@ namespace Monitor.Infrastructure.Migrations
                         .HasColumnType("datetimeoffset");
 
                     b.Property<bool>("DeliverToAllEnabledDestinations")
-                        .HasColumnType("bit");
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
 
                     b.Property<bool>("Enabled")
                         .HasColumnType("bit");
@@ -461,6 +463,8 @@ namespace Monitor.Infrastructure.Migrations
                     b.HasIndex("Enabled", "LastEvaluatedAt");
 
                     b.HasIndex("FailureGroupId", "Enabled");
+
+                    b.HasIndex("IsDeleted", "Enabled", "LastEvaluatedAt");
 
                     b.ToTable("FailureAlertRules", (string)null);
                 });

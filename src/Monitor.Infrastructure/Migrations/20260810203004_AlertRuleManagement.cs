@@ -22,7 +22,7 @@ namespace Monitor.Infrastructure.Migrations
                 table: "FailureAlertRules",
                 type: "bit",
                 nullable: false,
-                defaultValue: false);
+                defaultValue: true);
 
             migrationBuilder.AddColumn<bool>(
                 name: "IsDeleted",
@@ -56,6 +56,11 @@ namespace Monitor.Infrastructure.Migrations
                 });
 
             migrationBuilder.CreateIndex(
+                name: "IX_FailureAlertRules_IsDeleted_Enabled_LastEvaluatedAt",
+                table: "FailureAlertRules",
+                columns: new[] { "IsDeleted", "Enabled", "LastEvaluatedAt" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_FailureAlertRuleDestinations_DestinationId",
                 table: "FailureAlertRuleDestinations",
                 column: "DestinationId");
@@ -66,6 +71,10 @@ namespace Monitor.Infrastructure.Migrations
         {
             migrationBuilder.DropTable(
                 name: "FailureAlertRuleDestinations");
+
+            migrationBuilder.DropIndex(
+                name: "IX_FailureAlertRules_IsDeleted_Enabled_LastEvaluatedAt",
+                table: "FailureAlertRules");
 
             migrationBuilder.DropColumn(
                 name: "DeletedAt",
