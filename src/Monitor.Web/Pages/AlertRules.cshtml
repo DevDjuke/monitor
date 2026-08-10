@@ -1,0 +1,154 @@
+@page "/alerts/rules"
+@model AlertRulesModel
+@{
+    ViewData["Title"] = "Alert rules";
+}
+
+@section Head {
+    <link rel="stylesheet" href="~/css/filters.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/alert-rules.css" asp-append-version="true" />
+}
+
+<header class="page-head compact">
+    <div>
+        <p class="eyebrow">ALERT CONFIGURATION</p>
+        <h1>Alert rules</h1>
+        <p class="lede">Manage recurrence thresholds and decide where each failure fingerprint sends its alert notifications.</p>
+    </div>
+    <div class="page-actions">
+        <a class="secondary-action" href="/alerts">Back to alerts</a>
+        <a class="primary-action" href="/alerts/rules/edit">New alert rule</a>
+    </div>
+</header>
+
+@if (TempData["StatusMessage"] is string statusMessage)
+{
+    <div class="notice success-notice">@statusMessage</div>
+}
+
+<section class="metrics" aria-label="Alert rule summary">
+    <article class="metric">
+        <span>Enabled</span>
+        <strong>@Model.EnabledRules.ToString("N0")</strong>
+        <small>actively evaluated</small>
+    </article>
+    <article class="metric">
+        <span>Disabled</span>
+        <strong>@Model.DisabledRules.ToString("N0")</strong>
+        <small>retained but paused</small>
+    </article>
+    <article class="metric">
+        <span>Deleted</span>
+        <strong>@Model.DeletedRules.ToString("N0")</strong>
+        <small>historical configuration</small>
+    </article>
+    <article class="metric">
+        <span>Matching</span>
+        <strong>@Model.MatchingRules.ToString("N0")</strong>
+        <small>current filter</small>
+    </article>
+</section>
+
+<section class="panel filter-panel" aria-label="Alert rule filters">
+    <form method="get" class="filter-grid">
+        <label class="filter-field wide">
+            <span>Search</span>
+            <input asp-for="Search" type="search" autocomplete="off" placeholder="Rule, operation, fingerprint, type, dependency, destination…" />
+        </label>
+
+        <label class="filter-field">
+            <span>State</span>
+            <select asp-for="State">
+                <option value="all">Active + disabled</option>
+                <option value="enabled">Enabled</option>
+                <option value="disabled">Disabled</option>
+                <option value="deleted">Deleted</option>
+            </select>
+        </label>
+
+        <label class="filter-field">
+            <span>Failure category</span>
+            <select asp-for="Category">
+                <option value="">All categories</option>
+                @foreach (var category in Model.FailureCategories)
+                {
+                    <option value="@category">@category</option>
+                }
+            </select>
+        </label>
+
+        <div class="filter-actions">
+            <button class="filter-apply" type="submit">Apply filters</button>
+            <a class="filter-clear" href="/alerts/rules">Clear</a>
+        </div>
+    </form>
+</section>
+
+<section class="panel table-panel rule-management-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">DETECTION POLICIES</p>
+            <h2>Configured rules</h2>
+        </div>
+        <span>@Model.Rules.Count shown · @Model.MatchingRules.ToString("N0") matching</span>
+    </div>
+
+    @if (Model.Rules.Count == 0)
+    {
+        <div class="empty"><strong>No rules match this view.</strong><span>Create a rule or change the filters.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr><th>Rule</th><th>Failure fingerprint</th><th>Condition</th><th>Delivery</th><th>Last fired</th><th>Open</th><th></th></tr>
+                </thead>
+                <tbody>
+                @foreach (var rule in Model.Rules)
+                {
+                    <tr class="@(rule.IsDeleted ? "rule-deleted" : "")">
+                        <td>
+                            <strong>@rule.Name</strong>
+                            @if (rule.IsDeleted)
+                            {
+                                <small><span class="status-dot unknown"></span> Deleted @rule.DeletedAt?.ToString("yyyy-MM-dd HH:mm") UTC</small>
+                            }
+                            else
+                            {
+                                <small><span class="status-dot @(rule.Enabled ? "healthy" : "unknown")"></span> @(rule.Enabled ? "Enabled" : "Disabled")</small>
+                            }
+                        </td>
+                        <td>
+                            <a class="table-link" href="/failures/@rule.FailureGroupId">@rule.Category · @rule.Operation</a>
+                            <small>@(rule.FailureType ?? rule.Dependency ?? "Unknown type")</small>
+                        </td>
+                        <td><strong>@rule.Threshold / @rule.WindowMinutes min</strong><small>@rule.CooldownMinutes min cooldown</small></td>
+                        <td><strong>@rule.DeliveryScope</strong></td>
+                        <td>@(rule.LastTriggeredAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "Never") UTC</td>
+                        <td>@rule.OpenAlerts.ToString("N0")</td>
+                        <td class="rule-actions-cell">
+                            @if (!rule.IsDeleted)
+                            {
+                                <a class="inline-button button-link" href="/alerts/rules/edit/@rule.Id">Edit</a>
+                                <form method="post" asp-page-handler="Toggle" asp-route-id="@rule.Id">
+                                    <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
+                                    <button class="inline-button" type="submit">@(rule.Enabled ? "Disable" : "Enable")</button>
+                                </form>
+                                <form method="post" asp-page-handler="Delete" asp-route-id="@rule.Id" onsubmit="return confirm('Delete this alert rule? Historical alert events will be preserved.');">
+                                    <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
+                                    <button class="inline-button danger-button" type="submit">Delete</button>
+                                </form>
+                            }
+                            else
+                            {
+                                <span class="muted">Historical only</span>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
