@@ -73,7 +73,8 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
 
     public async Task<IActionResult> OnPostToggleRuleAsync(Guid ruleId, string? returnUrl, CancellationToken cancellationToken)
     {
-        var rule = await db.FailureAlertRules.SingleOrDefaultAsync(x => x.Id == ruleId, cancellationToken);
+        var rule = await db.FailureAlertRules
+            .SingleOrDefaultAsync(x => x.Id == ruleId && !x.IsDeleted, cancellationToken);
         if (rule is null)
         {
             return NotFound();
@@ -325,6 +326,8 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
 
     private IQueryable<FailureAlertRule> ApplyRuleFilters(IQueryable<FailureAlertRule> query)
     {
+        query = query.Where(x => !x.IsDeleted);
+
         if (Category is not null)
         {
             query = query.Where(x => x.FailureGroup.Category == Category.Value);
