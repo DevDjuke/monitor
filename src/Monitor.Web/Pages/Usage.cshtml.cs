@@ -209,17 +209,17 @@ public sealed class UsageModel(
         }
 
         TopFailureGroups = await (
-                from group in groups
-                join stats in failureStats on group.Id equals stats.FailureGroupId
+                from failureGroup in groups
+                join stats in failureStats on failureGroup.Id equals stats.FailureGroupId
                 orderby stats.Occurrences descending, stats.LastSeenAt descending
                 select new FailureGroupRow(
-                    group.Id,
-                    group.Category,
-                    group.Operation,
-                    group.FailureType,
-                    group.Dependency,
-                    group.HttpStatusCode,
-                    group.MessageTemplate,
+                    failureGroup.Id,
+                    failureGroup.Category,
+                    failureGroup.Operation,
+                    failureGroup.FailureType,
+                    failureGroup.Dependency,
+                    failureGroup.HttpStatusCode,
+                    failureGroup.MessageTemplate,
                     stats.Occurrences,
                     stats.FirstSeenAt,
                     stats.LastSeenAt))
