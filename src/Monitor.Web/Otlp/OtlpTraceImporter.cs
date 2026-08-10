@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.SignalR;
@@ -19,6 +20,8 @@ public sealed partial class OtlpTraceImporter(
     IHubContext<MonitorHub> hub,
     ILogger<OtlpTraceImporter> logger)
 {
+    private const string ImportLockResource = "Monitor.OtlpTraceImport";
+
     public async Task<OtlpImportResult> ImportAsync(
         ExportTraceServiceRequest request,
         CancellationToken cancellationToken)
@@ -26,95 +29,115 @@ public sealed partial class OtlpTraceImporter(
         var rejected = 0L;
         var affectedRuns = new Dictionary<Guid, (AgentRun Run, MonitoredComponent Component)>();
 
-        foreach (var resourceSpans in request.ResourceSpans)
+        await db.Database.OpenConnectionAsync(cancellationToken);
+        try
         {
-            var resourceAttributes = ToDictionary(resourceSpans.Resource?.Attributes ?? []);
-            var serviceName = GetString(resourceAttributes, "service.name") ?? "unknown_service";
-            var serviceNamespace = GetString(resourceAttributes, "service.namespace");
-            var environment = GetString(resourceAttributes, "deployment.environment.name")
-                ?? GetString(resourceAttributes, "deployment.environment")
-                ?? "unknown";
-            var version = GetString(resourceAttributes, "service.version");
-            var slug = BuildSlug(serviceNamespace, serviceName);
-            var now = DateTimeOffset.UtcNow;
-
-            var allIncomingSpans = resourceSpans.ScopeSpans.SelectMany(x => x.Spans).ToList();
-            var componentType = allIncomingSpans.Any(HasAgentAttributes)
-                ? ComponentType.Agent
-                : ComponentType.Service;
-            var component = await GetOrCreateComponentAsync(
-                serviceName,
-                slug,
-                componentType,
-                environment,
-                version,
-                now,
-                cancellationToken);
-
-            component.Heartbeat(now);
-
-            foreach (var traceGroup in allIncomingSpans.GroupBy(GetTraceId))
+            if (!await TryAcquireImportLockAsync(db.Database.GetDbConnection(), cancellationToken))
             {
-                if (string.IsNullOrWhiteSpace(traceGroup.Key))
-                {
-                    rejected += traceGroup.LongCount();
-                    continue;
-                }
+                throw new TimeoutException("Monitor could not acquire the OTLP ingestion lock within 15 seconds.");
+            }
 
-                var validIncoming = traceGroup
-                    .Where(x => x.SpanId.Length == 8 && x.TraceId.Length == 16)
-                    .ToList();
-                rejected += traceGroup.Count() - validIncoming.Count;
-                if (validIncoming.Count == 0)
+            try
+            {
+                foreach (var resourceSpans in request.ResourceSpans)
                 {
-                    continue;
-                }
+                    var resourceAttributes = ToDictionary(resourceSpans.Resource?.Attributes ?? []);
+                    var serviceName = GetString(resourceAttributes, "service.name") ?? "unknown_service";
+                    var serviceNamespace = GetString(resourceAttributes, "service.namespace");
+                    var environment = GetString(resourceAttributes, "deployment.environment.name")
+                        ?? GetString(resourceAttributes, "deployment.environment")
+                        ?? "unknown";
+                    var version = GetString(resourceAttributes, "service.version");
+                    var slug = BuildSlug(serviceNamespace, serviceName);
+                    var now = DateTimeOffset.UtcNow;
 
-                var traceId = traceGroup.Key!;
-                var run = await db.Runs
-                    .Include(x => x.Spans)
-                    .SingleOrDefaultAsync(
-                        x => x.ComponentId == component.Id && x.TraceId == traceId,
+                    var allIncomingSpans = resourceSpans.ScopeSpans.SelectMany(x => x.Spans).ToList();
+                    var componentType = allIncomingSpans.Any(HasAgentAttributes)
+                        ? ComponentType.Agent
+                        : ComponentType.Service;
+                    var component = await GetOrCreateComponentAsync(
+                        serviceName,
+                        slug,
+                        componentType,
+                        environment,
+                        version,
+                        now,
                         cancellationToken);
 
-                if (run is null)
-                {
-                    var first = validIncoming.MinBy(x => x.StartTimeUnixNano)!;
-                    run = AgentRun.StartOtlp(
-                        component.Id,
-                        traceId,
-                        first.Name.Length == 0 ? "OTLP trace" : first.Name,
-                        FromUnixNano(first.StartTimeUnixNano));
-                    db.Runs.Add(run);
-                }
+                    component.Heartbeat(now);
 
-                var knownSpanIds = run.Spans
-                    .Where(x => x.ExternalSpanId != null)
-                    .Select(x => x.ExternalSpanId!)
-                    .ToHashSet(StringComparer.Ordinal);
-                var materializedSpans = run.Spans.ToList();
-
-                foreach (var incoming in validIncoming)
-                {
-                    var spanId = ToHex(incoming.SpanId);
-                    if (!knownSpanIds.Add(spanId))
+                    foreach (var traceGroup in allIncomingSpans.GroupBy(GetTraceId))
                     {
-                        continue;
-                    }
+                        if (string.IsNullOrWhiteSpace(traceGroup.Key))
+                        {
+                            rejected += traceGroup.LongCount();
+                            continue;
+                        }
 
-                    var span = MapSpan(run.Id, incoming);
-                    db.Spans.Add(span);
-                    materializedSpans.Add(span);
+                        var validIncoming = traceGroup
+                            .Where(x => x.SpanId.Length == 8 && x.TraceId.Length == 16)
+                            .ToList();
+                        rejected += traceGroup.Count() - validIncoming.Count;
+                        if (validIncoming.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        var traceId = traceGroup.Key!;
+                        var run = await db.Runs
+                            .Include(x => x.Spans)
+                            .SingleOrDefaultAsync(
+                                x => x.ComponentId == component.Id && x.TraceId == traceId,
+                                cancellationToken);
+
+                        if (run is null)
+                        {
+                            var first = validIncoming.MinBy(x => x.StartTimeUnixNano)!;
+                            run = AgentRun.StartOtlp(
+                                component.Id,
+                                traceId,
+                                first.Name.Length == 0 ? "OTLP trace" : first.Name,
+                                FromUnixNano(first.StartTimeUnixNano));
+                            db.Runs.Add(run);
+                        }
+
+                        var knownSpanIds = run.Spans
+                            .Where(x => x.ExternalSpanId != null)
+                            .Select(x => x.ExternalSpanId!)
+                            .ToHashSet(StringComparer.Ordinal);
+                        var materializedSpans = run.Spans.ToList();
+
+                        foreach (var incoming in validIncoming)
+                        {
+                            var spanId = ToHex(incoming.SpanId);
+                            if (!knownSpanIds.Add(spanId))
+                            {
+                                continue;
+                            }
+
+                            var span = MapSpan(run.Id, incoming);
+                            db.Spans.Add(span);
+                            materializedSpans.Add(span);
+                        }
+
+                        ResolveParents(materializedSpans);
+                        RecomputeRun(run, materializedSpans);
+                        component.MarkRunStarted(now);
+                        affectedRuns[run.Id] = (run, component);
+                    }
                 }
 
-                ResolveParents(materializedSpans);
-                RecomputeRun(run, materializedSpans);
-                component.MarkRunStarted(now);
-                affectedRuns[run.Id] = (run, component);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            finally
+            {
+                await ReleaseImportLockAsync(db.Database.GetDbConnection(), cancellationToken);
             }
         }
-
-        await db.SaveChangesAsync(cancellationToken);
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
 
         if (affectedRuns.Values.Any(x => x.Run.Status is RunStatus.Failed or RunStatus.Cancelled))
         {
@@ -298,6 +321,37 @@ public sealed partial class OtlpTraceImporter(
         return probe.Contains("operationcanceled") || probe.Contains("operationcancelled") ||
                probe.Contains("taskcanceled") || probe.Contains("taskcancelled") ||
                probe.Contains("cancelled") || probe.Contains("canceled");
+    }
+
+    private static async Task<bool> TryAcquireImportLockAsync(DbConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            DECLARE @result int;
+            EXEC @result = sys.sp_getapplock
+                @Resource = @resource,
+                @LockMode = 'Exclusive',
+                @LockOwner = 'Session',
+                @LockTimeout = 15000;
+            SELECT @result;
+            """;
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "@resource";
+        parameter.Value = ImportLockResource;
+        command.Parameters.Add(parameter);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result) >= 0;
+    }
+
+    private static async Task ReleaseImportLockAsync(DbConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "EXEC sys.sp_releaseapplock @Resource = @resource, @LockOwner = 'Session';";
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "@resource";
+        parameter.Value = ImportLockResource;
+        command.Parameters.Add(parameter);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static string? GetTraceId(OtlpSpan span) => span.TraceId.Length == 16 ? ToHex(span.TraceId) : null;
