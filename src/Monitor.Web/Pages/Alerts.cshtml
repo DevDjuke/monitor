@@ -8,7 +8,7 @@
     <div>
         <p class="eyebrow">FAILURE ALERTING</p>
         <h1>Alerts</h1>
-        <p class="lede">Operational alert events generated from recurring failure fingerprints. Detection is durable and auditable; notification delivery channels can be layered on later.</p>
+        <p class="lede">Operational alert events generated from recurring failure fingerprints, with durable signed webhook delivery, retries, and dead-letter inspection.</p>
     </div>
 </header>
 
@@ -16,6 +16,8 @@
 {
     <div class="notice success-notice">@statusMessage</div>
 }
+
+<div asp-validation-summary="All" class="validation-summary"></div>
 
 <section class="metrics" aria-label="Alert summary">
     <article class="metric">
@@ -40,6 +42,179 @@
     </article>
 </section>
 
+<section class="metrics delivery-metrics" aria-label="Delivery summary">
+    <article class="metric">
+        <span>Enabled destinations</span>
+        <strong>@Model.EnabledDestinations.ToString("N0")</strong>
+        <small>receiving future alerts</small>
+    </article>
+    <article class="metric">
+        <span>Queued / retrying</span>
+        <strong>@Model.PendingDeliveries.ToString("N0")</strong>
+        <small>durable outbox items</small>
+    </article>
+    <article class="metric">
+        <span>Dead letters</span>
+        <strong>@Model.DeadLetterDeliveries.ToString("N0")</strong>
+        <small>require operator attention</small>
+    </article>
+</section>
+
+<section class="failure-alert-grid delivery-config-grid">
+    <article class="panel table-panel delivery-destinations-panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">DELIVERY DESTINATIONS</p>
+                <h2>Signed webhooks</h2>
+            </div>
+            <span>@Model.Destinations.Count configured</span>
+        </div>
+
+        @if (Model.Destinations.Count == 0)
+        {
+            <div class="empty compact-empty"><strong>No delivery destinations.</strong><span>Add a webhook and future alert events will enqueue one durable delivery for it.</span></div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr><th>Destination</th><th>Health</th><th>Delivered</th><th>Dead</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var destination in Model.Destinations)
+                    {
+                        <tr>
+                            <td>
+                                <strong>@destination.Name</strong>
+                                <small class="endpoint-url">@destination.EndpointUrl</small>
+                                <small><span class="status-dot @(destination.Enabled ? "healthy" : "unknown")"></span> @(destination.Enabled ? "Enabled" : "Disabled") · @destination.Kind</small>
+                            </td>
+                            <td>
+                                @if (destination.LastFailureAt is not null && (destination.LastSuccessAt is null || destination.LastFailureAt > destination.LastSuccessAt))
+                                {
+                                    <span class="alert-state open">Failing</span>
+                                    <small title="@destination.LastFailure">@destination.LastFailureAt.Value.ToString("MM-dd HH:mm:ss") UTC</small>
+                                }
+                                else if (destination.LastSuccessAt is not null)
+                                {
+                                    <span class="alert-state acknowledged">Healthy</span>
+                                    <small>@destination.LastSuccessAt.Value.ToString("MM-dd HH:mm:ss") UTC</small>
+                                }
+                                else
+                                {
+                                    <span class="alert-state neutral">Untested</span>
+                                }
+                            </td>
+                            <td>@destination.Delivered.ToString("N0")</td>
+                            <td>@destination.DeadLetters.ToString("N0")</td>
+                            <td class="delivery-actions">
+                                <form method="post" asp-page-handler="TestDestination" asp-route-destinationId="@destination.Id">
+                                    <button class="inline-button" type="submit">Test</button>
+                                </form>
+                                <form method="post" asp-page-handler="ToggleDestination" asp-route-destinationId="@destination.Id">
+                                    <button class="inline-button" type="submit">@(destination.Enabled ? "Disable" : "Enable")</button>
+                                </form>
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </article>
+
+    <article class="panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">ADD DESTINATION</p>
+                <h2>Webhook endpoint</h2>
+            </div>
+        </div>
+        <form method="post" asp-page-handler="CreateDestination" class="alert-form">
+            <label>
+                <span>Name</span>
+                <input asp-for="DestinationInput.Name" placeholder="Ops webhook" autocomplete="off" />
+            </label>
+            <label>
+                <span>Endpoint URL</span>
+                <input asp-for="DestinationInput.EndpointUrl" placeholder="https://example.com/hooks/monitor" autocomplete="url" />
+            </label>
+            <label>
+                <span>Signing secret</span>
+                <input asp-for="DestinationInput.Secret" type="password" placeholder="At least 16 characters" autocomplete="new-password" />
+                <small>Stored encrypted through ASP.NET Core Data Protection. Monitor signs <code>timestamp.body</code> with HMAC-SHA256.</small>
+            </label>
+            <button class="primary-action" type="submit">Add webhook</button>
+            <p class="form-hint">Each future alert event receives one outbox row per enabled destination. Disabling a destination pauses its queued work without deleting history.</p>
+        </form>
+    </article>
+</section>
+
+<section class="panel table-panel alert-deliveries-table-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">DELIVERY OUTBOX</p>
+            <h2>Recent notifications</h2>
+        </div>
+        <span>@Model.RecentDeliveries.Count shown</span>
+    </div>
+
+    @if (Model.RecentDeliveries.Count == 0)
+    {
+        <div class="empty"><strong>No notification deliveries yet.</strong><span>Delivery rows are created transactionally when an alert fires.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr><th>Destination</th><th>Alert</th><th>Status</th><th>Attempts</th><th>HTTP</th><th>Last attempt</th><th>Error</th><th></th></tr>
+                </thead>
+                <tbody>
+                @foreach (var delivery in Model.RecentDeliveries)
+                {
+                    <tr>
+                        <td><strong>@delivery.DestinationName</strong><small>@delivery.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</small></td>
+                        <td><a class="table-link" href="/failures/@delivery.FailureGroupId">@delivery.AlertEventId.ToString()[..8]</a></td>
+                        <td><span class="delivery-state @delivery.Status.ToString().ToLowerInvariant()">@delivery.Status</span></td>
+                        <td>@delivery.AttemptCount</td>
+                        <td>@(delivery.ResponseStatusCode?.ToString() ?? "—")</td>
+                        <td>
+                            @if (delivery.DeliveredAt is not null)
+                            {
+                                <span>@delivery.DeliveredAt.Value.ToString("MM-dd HH:mm:ss") UTC</span>
+                            }
+                            else if (delivery.LastAttemptAt is not null)
+                            {
+                                <span>@delivery.LastAttemptAt.Value.ToString("MM-dd HH:mm:ss") UTC</span>
+                                @if (delivery.Status == Monitor.Domain.AlertDeliveryStatus.RetryScheduled)
+                                {
+                                    <small>next @delivery.NextAttemptAt.ToString("MM-dd HH:mm:ss") UTC</small>
+                                }
+                            }
+                            else
+                            {
+                                <span>Not attempted</span>
+                            }
+                        </td>
+                        <td class="error-cell" title="@delivery.LastError">@(delivery.LastError ?? "—")</td>
+                        <td>
+                            @if (delivery.Status != Monitor.Domain.AlertDeliveryStatus.Delivered)
+                            {
+                                <form method="post" asp-page-handler="RequeueDelivery" asp-route-deliveryId="@delivery.Id">
+                                    <button class="inline-button" type="submit">Retry now</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
 <section class="panel table-panel alerts-table-panel">
     <div class="panel-head">
         <div>
@@ -58,7 +233,7 @@
         <div class="table-wrap">
             <table>
                 <thead>
-                    <tr><th>Failure group</th><th>Rule</th><th>Observed</th><th>Triggered</th><th>State</th><th></th></tr>
+                    <tr><th>Failure group</th><th>Rule</th><th>Observed</th><th>Delivery</th><th>Triggered</th><th>State</th><th></th></tr>
                 </thead>
                 <tbody>
                 @foreach (var alert in Model.RecentAlerts)
@@ -70,6 +245,10 @@
                         </td>
                         <td><strong>@alert.RuleName</strong><small>@alert.WindowStart.ToString("HH:mm")–@alert.WindowEnd.ToString("HH:mm") UTC window</small></td>
                         <td><strong>@alert.OccurrencesInWindow / @alert.Threshold</strong><small>occurrences / threshold</small></td>
+                        <td>
+                            <strong>@alert.DeliveredNotifications delivered</strong>
+                            <small>@alert.PendingNotifications queued · @alert.DeadLetterNotifications dead</small>
+                        </td>
                         <td>@alert.TriggeredAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</td>
                         <td>
                             @if (alert.AcknowledgedAt is null)
