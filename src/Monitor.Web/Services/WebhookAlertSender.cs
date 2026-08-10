@@ -73,7 +73,7 @@ public sealed class WebhookAlertSender(
             }
         };
 
-        var body = JsonSerializer.Serialize(payload, WebhookJsonContext.Default.Object);
+        var body = JsonSerializer.Serialize(payload);
         return await SendAsync(
             delivery.Destination,
             delivery.Id,
