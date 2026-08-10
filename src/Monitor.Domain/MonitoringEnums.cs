@@ -43,3 +43,22 @@ public enum SpanStatus
     Success,
     Failed
 }
+
+public enum FailureCategory
+{
+    Unknown,
+    Timeout,
+    RateLimit,
+    Authentication,
+    Authorization,
+    Network,
+    Http,
+    Database,
+    Validation,
+    Serialization,
+    ModelProvider,
+    Tool,
+    Dependency,
+    Cancellation,
+    Internal
+}

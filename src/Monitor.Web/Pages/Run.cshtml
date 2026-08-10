@@ -24,6 +24,44 @@
     <div><span>Trigger</span><strong>@(Model.Run.Trigger ?? "—")</strong></div>
 </section>
 
+@if (!string.IsNullOrWhiteSpace(Model.Run.TraceId))
+{
+    <section class="panel">
+        <div class="panel-head"><div><p class="eyebrow">OPENTELEMETRY</p><h2>Trace identity</h2></div></div>
+        <div class="rows">
+            <div class="system-row"><div class="row-main"><strong>@Model.Run.TraceId</strong><span>OTLP trace id</span></div></div>
+        </div>
+    </section>
+}
+
+@if (Model.Run.FailureGroup is not null)
+{
+    var failure = Model.Run.FailureGroup;
+    <section class="panel">
+        <div class="panel-head"><div><p class="eyebrow">FAILURE FINGERPRINT</p><h2>@failure.Category</h2></div><span>@failure.Occurrences.ToString("N0") occurrences</span></div>
+        <div class="rows">
+            <div class="system-row"><div class="row-main"><strong>@failure.Operation</strong><span>Operation</span></div></div>
+            @if (!string.IsNullOrWhiteSpace(failure.FailureType))
+            {
+                <div class="system-row"><div class="row-main"><strong>@failure.FailureType</strong><span>Failure type</span></div></div>
+            }
+            @if (!string.IsNullOrWhiteSpace(failure.Dependency))
+            {
+                <div class="system-row"><div class="row-main"><strong>@failure.Dependency</strong><span>Dependency</span></div></div>
+            }
+            @if (failure.HttpStatusCode.HasValue)
+            {
+                <div class="system-row"><div class="row-main"><strong>HTTP @failure.HttpStatusCode</strong><span>Status signal</span></div></div>
+            }
+            @if (!string.IsNullOrWhiteSpace(failure.MessageTemplate))
+            {
+                <div class="system-row"><div class="row-main"><strong>@failure.MessageTemplate</strong><span>Normalized message template</span></div></div>
+            }
+            <div class="system-row"><div class="row-main"><strong>@failure.Fingerprint</strong><span>Deterministic fingerprint</span></div></div>
+        </div>
+    </section>
+}
+
 <section class="panel trace-panel">
     <div class="panel-head"><div><p class="eyebrow">TRACE</p><h2>Execution</h2></div><span>@Model.Spans.Count spans</span></div>
     @if (Model.Spans.Count == 0)
@@ -44,6 +82,10 @@
                 <strong>@span.Name</strong>
                 <span class="trace-duration">@(spanDuration is null ? "running" : $"{spanDuration.Value.TotalMilliseconds:0} ms")</span>
             </div>
+            @if (!string.IsNullOrWhiteSpace(span.ErrorType) || span.HttpStatusCode.HasValue)
+            {
+                <div class="muted">@(span.ErrorType ?? "error")@(span.HttpStatusCode.HasValue ? $" · HTTP {span.HttpStatusCode}" : string.Empty)</div>
+            }
         }
         </div>
     }

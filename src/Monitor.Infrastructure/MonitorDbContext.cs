@@ -12,6 +12,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     public DbSet<AgentRun> Runs => Set<AgentRun>();
     public DbSet<TraceSpan> Spans => Set<TraceSpan>();
     public DbSet<RunAggregate> RunAggregates => Set<RunAggregate>();
+    public DbSet<FailureGroup> FailureGroups => Set<FailureGroup>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -28,6 +29,18 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         component.Property(x => x.Version).HasMaxLength(80);
         component.HasIndex(x => new { x.Slug, x.Environment }).IsUnique();
 
+        var failureGroup = modelBuilder.Entity<FailureGroup>();
+        failureGroup.ToTable("FailureGroups");
+        failureGroup.HasKey(x => x.Id);
+        failureGroup.Property(x => x.Fingerprint).HasMaxLength(64);
+        failureGroup.Property(x => x.FailureType).HasMaxLength(240);
+        failureGroup.Property(x => x.Operation).HasMaxLength(240);
+        failureGroup.Property(x => x.Dependency).HasMaxLength(240);
+        failureGroup.Property(x => x.MessageTemplate).HasMaxLength(500);
+        failureGroup.HasIndex(x => x.Fingerprint).IsUnique();
+        failureGroup.HasIndex(x => new { x.Category, x.LastSeenAt });
+        failureGroup.HasIndex(x => x.LastSeenAt);
+
         var run = modelBuilder.Entity<AgentRun>();
         run.ToTable("Runs");
         run.HasKey(x => x.Id);
@@ -35,23 +48,35 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
             .HasDefaultValueSql("NEXT VALUE FOR [RunSequence]");
         run.Property(x => x.Name).HasMaxLength(240);
         run.Property(x => x.ExternalId).HasMaxLength(200);
+        run.Property(x => x.TraceId).HasMaxLength(32);
         run.Property(x => x.Trigger).HasMaxLength(120);
         run.Property(x => x.Model).HasMaxLength(160);
         run.HasIndex(x => x.Sequence).IsUnique().IsDescending();
         run.HasIndex(x => x.StartedAt);
         run.HasIndex(x => x.AggregatedAt);
         run.HasIndex(x => new { x.ComponentId, x.ExternalId });
+        run.HasIndex(x => new { x.ComponentId, x.TraceId });
+        run.HasIndex(x => x.FailureGroupId);
         run.HasIndex(x => new { x.Status, x.CompletedAt, x.AggregatedAt });
         run.HasOne(x => x.Component)
             .WithMany(x => x.Runs)
             .HasForeignKey(x => x.ComponentId)
             .OnDelete(DeleteBehavior.Cascade);
+        run.HasOne(x => x.FailureGroup)
+            .WithMany(x => x.Runs)
+            .HasForeignKey(x => x.FailureGroupId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         var span = modelBuilder.Entity<TraceSpan>();
         span.ToTable("Spans");
         span.HasKey(x => x.Id);
         span.Property(x => x.Name).HasMaxLength(240);
+        span.Property(x => x.ExternalSpanId).HasMaxLength(16);
+        span.Property(x => x.ExternalParentSpanId).HasMaxLength(16);
+        span.Property(x => x.ErrorType).HasMaxLength(240);
+        span.Property(x => x.Model).HasMaxLength(160);
         span.HasIndex(x => new { x.RunId, x.StartedAt });
+        span.HasIndex(x => new { x.RunId, x.ExternalSpanId });
         span.HasOne(x => x.Run)
             .WithMany(x => x.Spans)
             .HasForeignKey(x => x.RunId)

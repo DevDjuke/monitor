@@ -3,6 +3,10 @@
     <RootNamespace>Monitor.Web</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.35.1" />
+    <PackageReference Include="Grpc.Tools" Version="2.83.0">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -12,5 +16,8 @@
   <ItemGroup>
     <ProjectReference Include="..\Monitor.Domain\Monitor.Domain.csproj" />
     <ProjectReference Include="..\Monitor.Infrastructure\Monitor.Infrastructure.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Protobuf Include="OtlpProtos\**\*.proto" ProtoRoot="OtlpProtos" GrpcServices="None" />
   </ItemGroup>
 </Project>

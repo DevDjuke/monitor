@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Monitor.Infrastructure;
 
@@ -11,9 +12,11 @@ using Monitor.Infrastructure;
 namespace Monitor.Infrastructure.Migrations
 {
     [DbContext(typeof(MonitorDbContext))]
-    partial class MonitorDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260810112356_OtlpAndFailureGroups")]
+    partial class OtlpAndFailureGroups
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -239,7 +242,9 @@ namespace Monitor.Infrastructure.Migrations
 
                     b.HasIndex("ComponentId", "ExternalId");
 
-                    b.HasIndex("ComponentId", "TraceId");
+                    b.HasIndex("ComponentId", "TraceId")
+                        .IsUnique()
+                        .HasFilter("[TraceId] IS NOT NULL");
 
                     b.HasIndex("Status", "CompletedAt", "AggregatedAt");
 
@@ -501,7 +506,9 @@ namespace Monitor.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("RunId", "ExternalSpanId");
+                    b.HasIndex("RunId", "ExternalSpanId")
+                        .IsUnique()
+                        .HasFilter("[ExternalSpanId] IS NOT NULL");
 
                     b.HasIndex("RunId", "StartedAt");
 
