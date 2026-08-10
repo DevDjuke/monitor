@@ -15,6 +15,8 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     public DbSet<FailureGroup> FailureGroups => Set<FailureGroup>();
     public DbSet<FailureAlertRule> FailureAlertRules => Set<FailureAlertRule>();
     public DbSet<FailureAlertEvent> FailureAlertEvents => Set<FailureAlertEvent>();
+    public DbSet<AlertDeliveryDestination> AlertDeliveryDestinations => Set<AlertDeliveryDestination>();
+    public DbSet<AlertDelivery> AlertDeliveries => Set<AlertDelivery>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -69,6 +71,32 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         alertEvent.HasOne(x => x.FailureGroup)
             .WithMany(x => x.AlertEvents)
             .HasForeignKey(x => x.FailureGroupId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        var destination = modelBuilder.Entity<AlertDeliveryDestination>();
+        destination.ToTable("AlertDeliveryDestinations");
+        destination.HasKey(x => x.Id);
+        destination.Property(x => x.Name).HasMaxLength(200);
+        destination.Property(x => x.EndpointUrl).HasMaxLength(2000);
+        destination.Property(x => x.ProtectedSecret).HasMaxLength(4000);
+        destination.Property(x => x.LastFailure).HasMaxLength(2000);
+        destination.HasIndex(x => new { x.Enabled, x.Kind });
+        destination.HasIndex(x => x.Name);
+
+        var delivery = modelBuilder.Entity<AlertDelivery>();
+        delivery.ToTable("AlertDeliveries");
+        delivery.HasKey(x => x.Id);
+        delivery.Property(x => x.LastError).HasMaxLength(4000);
+        delivery.HasIndex(x => new { x.Status, x.NextAttemptAt });
+        delivery.HasIndex(x => new { x.AlertEventId, x.DestinationId }).IsUnique();
+        delivery.HasIndex(x => new { x.DestinationId, x.CreatedAt }).IsDescending(false, true);
+        delivery.HasOne(x => x.AlertEvent)
+            .WithMany(x => x.Deliveries)
+            .HasForeignKey(x => x.AlertEventId)
+            .OnDelete(DeleteBehavior.Restrict);
+        delivery.HasOne(x => x.Destination)
+            .WithMany(x => x.Deliveries)
+            .HasForeignKey(x => x.DestinationId)
             .OnDelete(DeleteBehavior.Restrict);
 
         var run = modelBuilder.Entity<AgentRun>();
