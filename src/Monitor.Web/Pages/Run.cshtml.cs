@@ -41,7 +41,7 @@ public sealed class RunModel(MonitorDbContext db) : PageModel
     {
         var spanRows = spans.Select(span =>
         {
-            var duration = span.CompletedAt is null
+            TimeSpan? duration = span.CompletedAt is null
                 ? null
                 : span.CompletedAt.Value - span.StartedAt;
             return new TimelineRow(
