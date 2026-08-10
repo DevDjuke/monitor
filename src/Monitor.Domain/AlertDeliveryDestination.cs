@@ -22,6 +22,7 @@ public sealed class AlertDeliveryDestination
     public string? LastFailure { get; private set; }
 
     public ICollection<AlertDelivery> Deliveries { get; private set; } = new List<AlertDelivery>();
+    public ICollection<FailureAlertRuleDestination> AlertRuleAssignments { get; private set; } = new List<FailureAlertRuleDestination>();
 
     public static AlertDeliveryDestination CreateWebhook(
         string name,
