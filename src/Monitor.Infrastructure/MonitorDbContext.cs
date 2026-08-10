@@ -55,9 +55,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         run.HasIndex(x => x.StartedAt);
         run.HasIndex(x => x.AggregatedAt);
         run.HasIndex(x => new { x.ComponentId, x.ExternalId });
-        run.HasIndex(x => new { x.ComponentId, x.TraceId })
-            .IsUnique()
-            .HasFilter("[TraceId] IS NOT NULL");
+        run.HasIndex(x => new { x.ComponentId, x.TraceId });
         run.HasIndex(x => x.FailureGroupId);
         run.HasIndex(x => new { x.Status, x.CompletedAt, x.AggregatedAt });
         run.HasOne(x => x.Component)
@@ -78,9 +76,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         span.Property(x => x.ErrorType).HasMaxLength(240);
         span.Property(x => x.Model).HasMaxLength(160);
         span.HasIndex(x => new { x.RunId, x.StartedAt });
-        span.HasIndex(x => new { x.RunId, x.ExternalSpanId })
-            .IsUnique()
-            .HasFilter("[ExternalSpanId] IS NOT NULL");
+        span.HasIndex(x => new { x.RunId, x.ExternalSpanId });
         span.HasOne(x => x.Run)
             .WithMany(x => x.Spans)
             .HasForeignKey(x => x.RunId)
