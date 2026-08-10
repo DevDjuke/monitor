@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
+using Monitor.Infrastructure.Failures;
 using Monitor.Web.Realtime;
 
 namespace Monitor.Web.Api;
@@ -387,6 +388,7 @@ public static class MonitoringEndpoints
         Guid id,
         CompleteRunRequest request,
         MonitorDbContext db,
+        FailureGroupingService failureGrouping,
         IHubContext<MonitorHub> hub,
         CancellationToken cancellationToken)
     {
@@ -413,6 +415,11 @@ public static class MonitoringEndpoints
             DateTimeOffset.UtcNow);
 
         await db.SaveChangesAsync(cancellationToken);
+        if (request.Status is RunStatus.Failed or RunStatus.Cancelled)
+        {
+            await failureGrouping.GroupPendingAsync(cancellationToken);
+        }
+
         await BroadcastRunChangedAsync(hub, run, run.Component, "Completed", cancellationToken);
         return Results.NoContent();
     }
