@@ -1,0 +1,266 @@
+@page "/failures/{id:guid}"
+@model FailureModel
+@{
+    ViewData["Title"] = "Failure group";
+    var failure = Model.Failure!;
+}
+
+<header class="page-head compact run-head">
+    <div>
+        <p class="eyebrow">FAILURE FINGERPRINT</p>
+        <h1>@failure.Operation</h1>
+        <p class="lede">@failure.Category · @(failure.FailureType ?? "Unknown type")@(string.IsNullOrWhiteSpace(failure.Dependency) ? "" : $" · {failure.Dependency}")</p>
+    </div>
+    <a class="secondary-action" href="/usage">Back to usage</a>
+</header>
+
+@if (TempData["StatusMessage"] is string statusMessage)
+{
+    <div class="notice success-notice">@statusMessage</div>
+}
+
+<div asp-validation-summary="All" class="validation-summary"></div>
+
+<section class="run-facts failure-facts" aria-label="Failure fingerprint facts">
+    <div><span>Category</span><strong>@failure.Category</strong></div>
+    <div><span>Type</span><strong>@(failure.FailureType ?? "—")</strong></div>
+    <div><span>Dependency</span><strong>@(failure.Dependency ?? "—")</strong></div>
+    <div><span>HTTP status</span><strong>@(failure.HttpStatusCode?.ToString() ?? "—")</strong></div>
+    <div><span>Total occurrences</span><strong>@failure.Occurrences.ToString("N0")</strong></div>
+    <div><span>Last seen</span><strong>@failure.LastSeenAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</strong></div>
+</section>
+
+<section class="panel failure-signature-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">GROUPING SIGNATURE</p>
+            <h2>Stable identity</h2>
+        </div>
+    </div>
+    <div class="failure-signature-grid">
+        <div>
+            <span>Fingerprint</span>
+            <code>@failure.Fingerprint</code>
+        </div>
+        <div>
+            <span>Message template</span>
+            <code>@(failure.MessageTemplate ?? "—")</code>
+        </div>
+        <div>
+            <span>First seen</span>
+            <strong>@failure.FirstSeenAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</strong>
+        </div>
+    </div>
+</section>
+
+<section class="metrics failure-rate-metrics" aria-label="Failure rate summary">
+    <article class="metric">
+        <span>Last 15 minutes</span>
+        <strong>@Model.Last15Minutes.ToString("N0")</strong>
+        <small>current burst rate</small>
+    </article>
+    <article class="metric">
+        <span>Last hour</span>
+        <strong>@Model.LastHour.ToString("N0")</strong>
+        <small>rolling 60 minutes</small>
+    </article>
+    <article class="metric">
+        <span>Last 24 hours</span>
+        <strong>@Model.Last24Hours.ToString("N0")</strong>
+        <small>for this fingerprint</small>
+    </article>
+    <article class="metric">
+        <span>Peak hour</span>
+        <strong>@Model.PeakHourly.ToString("N0")</strong>
+        <small>within the last 24 hours</small>
+    </article>
+</section>
+
+<section class="panel trend-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">RECURRENCE TREND</p>
+            <h2>Hourly failures · last 24 hours</h2>
+        </div>
+    </div>
+    <div class="failure-trend" aria-label="Hourly failure occurrence chart">
+        @foreach (var bucket in Model.Trend)
+        {
+            var height = Model.PeakHourly == 0
+                ? 0
+                : Math.Max(bucket.Occurrences > 0 ? 5 : 0, (int)Math.Round(bucket.Occurrences * 100d / Model.PeakHourly));
+            <div class="trend-column" title="@bucket.Start.ToString("yyyy-MM-dd HH:00") UTC · @bucket.Occurrences occurrence(s)">
+                <span class="trend-value">@(bucket.Occurrences == 0 ? "" : bucket.Occurrences.ToString())</span>
+                <div class="trend-track"><i style="height:@height%"></i></div>
+                <small>@bucket.Start.ToString("HH")</small>
+            </div>
+        }
+    </div>
+</section>
+
+<div class="failure-alert-grid">
+    <section class="panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">ALERT RULES</p>
+                <h2>Detection policy</h2>
+            </div>
+            <a href="/alerts">All alerts</a>
+        </div>
+
+        @if (Model.AlertRules.Count == 0)
+        {
+            <div class="empty compact-empty"><strong>No alert rules yet.</strong><span>Create one to detect bursts or sustained recurrence of this fingerprint.</span></div>
+        }
+        else
+        {
+            <div class="rows">
+                @foreach (var rule in Model.AlertRules)
+                {
+                    <div class="alert-rule-row">
+                        <span class="status-dot @(rule.Enabled ? "healthy" : "unknown")"></span>
+                        <div class="row-main">
+                            <strong>@rule.Name</strong>
+                            <span>@rule.Threshold occurrences / @rule.WindowMinutes min · @rule.CooldownMinutes min cooldown · @rule.OpenAlerts open</span>
+                        </div>
+                        <div class="rule-meta">
+                            <span>@(rule.LastTriggeredAt is null ? "Never fired" : $"Fired {rule.LastTriggeredAt:MM-dd HH:mm} UTC")</span>
+                            <form method="post" asp-page-handler="ToggleAlert" asp-route-id="@failure.Id" asp-route-ruleId="@rule.Id">
+                                <button class="inline-button" type="submit">@(rule.Enabled ? "Disable" : "Enable")</button>
+                            </form>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </section>
+
+    <section class="panel alert-create-panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">NEW RULE</p>
+                <h2>Alert on recurrence</h2>
+            </div>
+        </div>
+        <form method="post" asp-page-handler="CreateAlert" asp-route-id="@failure.Id" class="alert-form">
+            <label>
+                <span>Name</span>
+                <input asp-for="AlertInput.Name" placeholder="@failure.Category: @failure.Operation" />
+            </label>
+            <div class="form-grid-3">
+                <label>
+                    <span>Threshold</span>
+                    <input asp-for="AlertInput.Threshold" type="number" min="1" max="100000" />
+                    <small>occurrences</small>
+                </label>
+                <label>
+                    <span>Window</span>
+                    <input asp-for="AlertInput.WindowMinutes" type="number" min="1" max="10080" />
+                    <small>minutes</small>
+                </label>
+                <label>
+                    <span>Cooldown</span>
+                    <input asp-for="AlertInput.CooldownMinutes" type="number" min="0" max="10080" />
+                    <small>minutes</small>
+                </label>
+            </div>
+            <p class="form-hint">Fires when the threshold is met inside the rolling window. The same evidence cannot trigger twice; new occurrences wait through the cooldown.</p>
+            <button class="primary-action" type="submit">Create alert rule</button>
+        </form>
+    </section>
+</div>
+
+<section class="panel table-panel failure-occurrences-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">FORENSIC OCCURRENCES</p>
+            <h2>Latest raw failed runs</h2>
+        </div>
+        <span>@Model.RecentOccurrences.Count shown</span>
+    </div>
+
+    @if (Model.RecentOccurrences.Count == 0)
+    {
+        <div class="empty"><strong>No raw occurrences found.</strong><span>The failure group exists, but its linked raw runs are unavailable.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr><th>Run</th><th>Component</th><th>Status</th><th>Model</th><th>Completed</th><th>Raw error</th></tr>
+                </thead>
+                <tbody>
+                @foreach (var occurrence in Model.RecentOccurrences)
+                {
+                    var errorPreview = occurrence.Error is { Length: > 180 }
+                        ? occurrence.Error[..180] + "…"
+                        : occurrence.Error ?? "—";
+                    <tr>
+                        <td><a class="table-link" href="/runs/@occurrence.RunId">#@occurrence.Sequence · @occurrence.Name</a></td>
+                        <td><strong>@occurrence.ComponentName</strong><small>@occurrence.Environment</small></td>
+                        <td><span class="run-status @occurrence.Status.ToString().ToLowerInvariant()">@occurrence.Status</span></td>
+                        <td>@(occurrence.Model ?? "—")</td>
+                        <td>@(occurrence.CompletedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—") UTC</td>
+                        <td class="error-cell" title="@occurrence.Error">@errorPreview</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<section class="panel table-panel failure-alert-events-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">ALERT HISTORY</p>
+            <h2>Triggered events</h2>
+        </div>
+    </div>
+
+    @if (Model.RecentAlertEvents.Count == 0)
+    {
+        <div class="empty compact-empty"><strong>No alert events yet.</strong><span>Configured rules have not crossed their thresholds.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr><th>Rule</th><th>Triggered</th><th>Observed</th><th>Window</th><th>State</th><th></th></tr>
+                </thead>
+                <tbody>
+                @foreach (var alert in Model.RecentAlertEvents)
+                {
+                    <tr>
+                        <td><strong>@alert.RuleName</strong></td>
+                        <td>@alert.TriggeredAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</td>
+                        <td><strong>@alert.OccurrencesInWindow / @alert.Threshold</strong></td>
+                        <td>@alert.WindowStart.ToString("HH:mm")–@alert.WindowEnd.ToString("HH:mm") UTC</td>
+                        <td>
+                            @if (alert.AcknowledgedAt is null)
+                            {
+                                <span class="alert-state open">Open</span>
+                            }
+                            else
+                            {
+                                <span class="alert-state acknowledged">Acknowledged</span>
+                                <small>@alert.AcknowledgedBy · @alert.AcknowledgedAt.Value.ToString("MM-dd HH:mm") UTC</small>
+                            }
+                        </td>
+                        <td>
+                            @if (alert.AcknowledgedAt is null)
+                            {
+                                <form method="post" asp-page-handler="Acknowledge" asp-route-id="@failure.Id" asp-route-eventId="@alert.Id">
+                                    <button class="inline-button" type="submit">Acknowledge</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
