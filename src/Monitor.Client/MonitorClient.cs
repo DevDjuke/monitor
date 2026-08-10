@@ -104,6 +104,37 @@ public sealed class MonitorClient
         return created.Id;
     }
 
+    public async Task<Guid> RecordEventAsync(
+        Guid runId,
+        LogEventRecord logEvent,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(logEvent);
+
+        var payload = new CreateLogEventRequest(
+            logEvent.Level,
+            logEvent.Message,
+            logEvent.Timestamp,
+            logEvent.ObservedAt,
+            logEvent.SpanId,
+            logEvent.MessageTemplate,
+            SerializePayload(logEvent.Properties),
+            logEvent.ExceptionType,
+            logEvent.ExceptionMessage,
+            logEvent.ExceptionStackTrace,
+            logEvent.Source,
+            logEvent.EventName);
+
+        using var response = await SendAsync(
+            HttpMethod.Post,
+            $"/api/runs/{runId:D}/events",
+            payload,
+            cancellationToken);
+
+        var created = await ReadRequiredAsync<CreateLogEventResponse>(response, cancellationToken);
+        return created.Id;
+    }
+
     internal async Task CompleteRunAsync(
         Guid runId,
         RunStatus status,
@@ -224,6 +255,22 @@ public sealed class MonitorClient
         string? Error);
 
     private sealed record CreateSpanResponse(Guid Id);
+
+    private sealed record CreateLogEventRequest(
+        LogEventLevel Level,
+        string? Message,
+        DateTimeOffset? Timestamp,
+        DateTimeOffset? ObservedAt,
+        Guid? SpanId,
+        string? MessageTemplate,
+        string? PropertiesJson,
+        string? ExceptionType,
+        string? ExceptionMessage,
+        string? ExceptionStackTrace,
+        string? Source,
+        string? EventName);
+
+    private sealed record CreateLogEventResponse(Guid Id, DateTimeOffset Timestamp);
 }
 
 public sealed class MonitorRun
@@ -246,6 +293,33 @@ public sealed class MonitorRun
     {
         EnsureActive();
         return _client.RecordSpanAsync(Id, span, cancellationToken);
+    }
+
+    public Task<Guid> RecordEventAsync(LogEventRecord logEvent, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return _client.RecordEventAsync(Id, logEvent, cancellationToken);
+    }
+
+    public Task<Guid> LogAsync(
+        LogEventLevel level,
+        string message,
+        object? properties = null,
+        Guid? spanId = null,
+        string? source = null,
+        string? messageTemplate = null,
+        CancellationToken cancellationToken = default)
+    {
+        return RecordEventAsync(
+            new LogEventRecord(
+                level,
+                message,
+                DateTimeOffset.UtcNow,
+                SpanId: spanId,
+                MessageTemplate: messageTemplate,
+                Properties: properties,
+                Source: source),
+            cancellationToken);
     }
 
     public async Task MeasureSpanAsync(
@@ -450,6 +524,20 @@ public sealed record SpanRecord(
     Guid? ParentSpanId = null,
     object? Attributes = null,
     string? Error = null);
+
+public sealed record LogEventRecord(
+    LogEventLevel Level,
+    string Message,
+    DateTimeOffset? Timestamp = null,
+    DateTimeOffset? ObservedAt = null,
+    Guid? SpanId = null,
+    string? MessageTemplate = null,
+    object? Properties = null,
+    string? ExceptionType = null,
+    string? ExceptionMessage = null,
+    string? ExceptionStackTrace = null,
+    string? Source = null,
+    string? EventName = null);
 
 public sealed class MonitorApiException : HttpRequestException
 {
