@@ -6,13 +6,14 @@ This roadmap is the current product sequence for turning Monitor from an observa
 
 - Component registry, heartbeats, runs, spans, costs, tokens, and run history.
 - SQL Server persistence and versioned EF Core migrations.
-- Monitor-native ingestion plus OTLP/HTTP protobuf trace ingestion.
+- Monitor-native ingestion plus OTLP/HTTP protobuf trace and log ingestion.
+- Structured component/run log events with trace/span correlation and filtered log search.
 - SignalR-backed live run updates.
 - Durable usage aggregation and success-only retention with failed/cancelled forensic preservation.
 - Failure fingerprint/category grouping and failure drill-down.
 - Threshold/window/cooldown failure alerting with duplicate-evidence suppression.
 - Durable alert-delivery outbox with HMAC-signed webhook delivery, retry, and dead-letter handling.
-- Server-side filters on Runs, Usage, and Alerts.
+- Server-side filters on Runs, Logs, Usage, and Alerts.
 
 ## Next
 
@@ -42,11 +43,17 @@ Status: **complete**
 
 ### 3. Logs and run events
 
-- Structured log/event records linked to runs and optionally spans.
-- Level, timestamp, message template, properties, exception data, and source.
-- Search/filter by component, level, run, span, environment, and text.
-- OTLP log ingestion after the internal model is stable.
-- Inline event timeline on run drill-down.
+Status: **complete**
+
+- Persist structured log/event records at component scope with optional run and span correlation.
+- Capture level, event timestamp/observed time, event name, message/template, JSON properties, exception type/message/stack, and instrumentation source.
+- Provide Monitor-native run-event ingestion through `Monitor.Client` plus standard OTLP/HTTP protobuf logs at `/v1/logs`.
+- Apply the same per-component ingestion credential scope to OTLP logs as traces.
+- Correlate OTLP trace/span ids immediately when possible and backfill logs that arrive before their trace.
+- Deduplicate OTLP retry payloads without discarding distinct real log occurrences.
+- Search/filter `/logs` by time, component, environment, minimum level, source, run, span, and text.
+- Merge spans and structured events into a timestamp-ordered timeline on run drill-down.
+- Cascade run-linked logs with successful raw-run retention; retain failed/cancelled run-linked log evidence with the forensic run, and expire unlinked/component-only logs on their own bounded retention window.
 
 ## Then
 
@@ -83,14 +90,14 @@ Status: **complete**
 
 - Incremental live run/span tree rather than only list refreshes.
 - Live status and duration updates for active spans.
-- Streaming run events/logs when the logs model exists.
+- Streaming run events/logs now that the logs model exists.
 - Clear latest-vs-historical behavior so realtime updates never destabilize forensic browsing.
 
 ## Later platform work
 
 - Additional alert-delivery adapters: email, Slack, Teams, Discord, PagerDuty-style integrations.
 - OTLP/HTTP JSON and OTLP/gRPC support.
-- OTLP metrics and logs.
+- OTLP metrics.
 - Daily/monthly aggregate rollups when real data volume makes hourly-only retention inefficient.
 - Multi-node operational hardening, shared Data Protection key management, and deployment packaging.
 - Roles/permissions if Monitor grows beyond a single-owner control plane.
