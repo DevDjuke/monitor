@@ -4,12 +4,13 @@
     ViewData["Title"] = "Alerts";
 }
 
-<header class="page-head compact">
+<header class="page-head compact delivery-page-head">
     <div>
         <p class="eyebrow">FAILURE ALERTING</p>
         <h1>Alerts</h1>
-        <p class="lede">Operational alert events generated from recurring failure fingerprints. Detection is durable and auditable; notification delivery channels can be layered on later.</p>
+        <p class="lede">Operational alert events generated from recurring failure fingerprints. Detection is durable and auditable; configured routes deliver those events through the webhook outbox.</p>
     </div>
+    <a class="secondary-action" href="/alerts/delivery">Delivery</a>
 </header>
 
 @if (TempData["StatusMessage"] is string statusMessage)
