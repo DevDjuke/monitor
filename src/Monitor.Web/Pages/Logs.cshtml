@@ -1,0 +1,186 @@
+@page "/logs"
+@model LogsModel
+@{
+    ViewData["Title"] = "Logs";
+}
+
+<header class="page-head compact">
+    <div>
+        <p class="eyebrow">TELEMETRY</p>
+        <h1>Logs</h1>
+        <p class="lede">Structured component and run events from Monitor-native ingestion and OTLP.</p>
+    </div>
+</header>
+
+<section class="panel log-filters">
+    <form method="get" class="filter-grid">
+        <label>
+            <span>Window</span>
+            <select asp-for="Window">
+                <option value="1h">Last hour</option>
+                <option value="6h">Last 6 hours</option>
+                <option value="24h">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="all">All retained</option>
+            </select>
+        </label>
+        <label>
+            <span>Component</span>
+            <select asp-for="ComponentId">
+                <option value="">All components</option>
+                @foreach (var component in Model.Components)
+                {
+                    <option value="@component.Id">@component.Name · @component.Environment</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Environment</span>
+            <select asp-for="Environment">
+                <option value="">All environments</option>
+                @foreach (var environment in Model.Environments)
+                {
+                    <option value="@environment">@environment</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Minimum level</span>
+            <select asp-for="MinimumLevel">
+                <option value="">All levels</option>
+                @foreach (var level in Model.Levels)
+                {
+                    <option value="@level">@level</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Source</span>
+            <select asp-for="Source">
+                <option value="">All sources</option>
+                @foreach (var source in Model.Sources)
+                {
+                    <option value="@source">@source</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Run ID</span>
+            <input asp-for="RunId" placeholder="optional run GUID" />
+        </label>
+        <label>
+            <span>Span ID</span>
+            <input asp-for="SpanId" placeholder="optional span GUID" />
+        </label>
+        <label class="filter-search">
+            <span>Search</span>
+            <input asp-for="Search" placeholder="message, template, exception, properties…" />
+        </label>
+        <label>
+            <span>Rows</span>
+            <select asp-for="Take">
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+                <option value="500">500</option>
+            </select>
+        </label>
+        <div class="filter-actions">
+            <button type="submit">Apply filters</button>
+            <a href="/logs">Reset</a>
+        </div>
+    </form>
+</section>
+
+<section class="log-summary">
+    <div><span>Matching</span><strong>@Model.MatchingCount.ToString("N0")</strong></div>
+    <div><span>Error / critical</span><strong>@Model.ErrorCount.ToString("N0")</strong></div>
+    <div><span>Warnings</span><strong>@Model.WarningCount.ToString("N0")</strong></div>
+    <div><span>Unlinked to run</span><strong>@Model.UnlinkedCount.ToString("N0")</strong></div>
+</section>
+
+<section class="panel table-panel logs-panel">
+    <div class="panel-head">
+        <div><p class="eyebrow">EVENT STREAM</p><h2>Latest matching records</h2></div>
+        <span>showing @Model.Rows.Count</span>
+    </div>
+
+    @if (Model.Rows.Count == 0)
+    {
+        <div class="empty"><strong>No matching log records.</strong><span>Adjust the filters or ingest structured events through Monitor.Client or OTLP.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table class="logs-table">
+                <thead>
+                    <tr><th>Time</th><th>Level</th><th>Component</th><th>Message</th><th>Source</th><th>Correlation</th></tr>
+                </thead>
+                <tbody>
+                @foreach (var row in Model.Rows)
+                {
+                    var levelClass = row.Level.ToString().ToLowerInvariant();
+                    <tr>
+                        <td class="log-time">@row.Timestamp.ToString("u")</td>
+                        <td><span class="log-level @levelClass">@row.Level</span></td>
+                        <td><strong>@row.ComponentName</strong><small>@row.Environment</small></td>
+                        <td class="log-message">
+                            <strong>@row.Message</strong>
+                            @if (!string.IsNullOrWhiteSpace(row.EventName))
+                            {
+                                <small>@row.EventName</small>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(row.ExceptionType) || !string.IsNullOrWhiteSpace(row.ExceptionMessage) || !string.IsNullOrWhiteSpace(row.PropertiesJson))
+                            {
+                                <details>
+                                    <summary>Structured details</summary>
+                                    @if (!string.IsNullOrWhiteSpace(row.MessageTemplate))
+                                    {
+                                        <div><span>Template</span><code>@row.MessageTemplate</code></div>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(row.ExceptionType))
+                                    {
+                                        <div><span>Exception</span><code>@row.ExceptionType</code></div>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(row.ExceptionMessage))
+                                    {
+                                        <pre>@row.ExceptionMessage</pre>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(row.ExceptionStackTrace))
+                                    {
+                                        <pre>@row.ExceptionStackTrace</pre>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(row.PropertiesJson))
+                                    {
+                                        <pre>@row.PropertiesJson</pre>
+                                    }
+                                </details>
+                            }
+                        </td>
+                        <td>@(row.Source ?? row.SeverityText ?? "—")</td>
+                        <td>
+                            @if (row.RunId.HasValue)
+                            {
+                                <a href="/run/@row.RunId">Run</a>
+                            }
+                            else if (!string.IsNullOrWhiteSpace(row.ExternalTraceId))
+                            {
+                                <span class="muted">trace @row.ExternalTraceId[..Math.Min(8, row.ExternalTraceId.Length)]…</span>
+                            }
+                            else
+                            {
+                                <span class="muted">component only</span>
+                            }
+                            @if (row.SpanId.HasValue)
+                            {
+                                <small>span @row.SpanId</small>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
