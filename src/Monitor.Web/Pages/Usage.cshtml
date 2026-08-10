@@ -86,6 +86,7 @@
             <p class="eyebrow">FAILURE FINGERPRINTS</p>
             <h2>Recurring failure groups</h2>
         </div>
+        <a href="/alerts">Alert operations</a>
     </div>
 
     @if (Model.TopFailureGroups.Count == 0)
@@ -103,9 +104,9 @@
                 @foreach (var failure in Model.TopFailureGroups)
                 {
                     <tr>
-                        <td><strong>@failure.Category</strong></td>
+                        <td><a class="table-link" href="/failures/@failure.Id">@failure.Category</a></td>
                         <td>
-                            <strong>@failure.Operation</strong>
+                            <a class="table-link" href="/failures/@failure.Id">@failure.Operation</a>
                             @if (!string.IsNullOrWhiteSpace(failure.MessageTemplate))
                             {
                                 <div class="muted">@failure.MessageTemplate</div>
