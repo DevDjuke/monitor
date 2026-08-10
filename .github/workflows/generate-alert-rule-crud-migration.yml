@@ -1,0 +1,47 @@
+name: generate-alert-rule-crud-migration
+
+on:
+  push:
+    branches:
+      - feature/alert-rule-crud
+    paths:
+      - .github/workflows/generate-alert-rule-crud-migration.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/alert-rule-crud
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - run: dotnet restore Monitor.sln
+
+      - name: Generate EF Core migration
+        run: |
+          dotnet tool install --global dotnet-ef --version 10.0.10
+          dotnet ef migrations add AlertRuleManagement \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --output-dir Migrations
+
+      - name: Commit generated migration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/Monitor.Infrastructure/Migrations
+          if git diff --cached --quiet; then
+            echo "No migration changes generated."
+            exit 0
+          fi
+          git commit -m "chore: generate alert rule management migration"
+          git push origin HEAD:feature/alert-rule-crud
