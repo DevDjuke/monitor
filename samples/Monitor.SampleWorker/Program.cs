@@ -151,6 +151,13 @@ internal sealed class SampleWorker(
             cancellationToken);
 
         logger.LogInformation("Started sample run {RunId} (sequence {Sequence}).", run.Id, sequence);
+        await run.LogAsync(
+            LogEventLevel.Information,
+            $"Synthetic audit started for {_options.TargetUrl}.",
+            new { target = _options.TargetUrl, sequence, synthetic = true },
+            source: "Monitor.SampleWorker",
+            messageTemplate: "Synthetic audit started for {Target}.",
+            cancellationToken: cancellationToken);
 
         try
         {
@@ -159,6 +166,13 @@ internal sealed class SampleWorker(
                 SpanKind.Http,
                 ct => SyntheticDelayAsync(140, 360, ct),
                 new { method = "GET", url = _options.TargetUrl, statusCode = 200, synthetic = true },
+                cancellationToken: cancellationToken);
+
+            await run.LogAsync(
+                LogEventLevel.Debug,
+                "Homepage fetched successfully.",
+                new { target = _options.TargetUrl, statusCode = 200, synthetic = true },
+                source: "Monitor.SampleWorker",
                 cancellationToken: cancellationToken);
 
             await run.MeasureSpanAsync(
@@ -194,6 +208,13 @@ internal sealed class SampleWorker(
                 new { outputTokens, synthetic = true },
                 cancellationToken: cancellationToken);
 
+            await run.LogAsync(
+                LogEventLevel.Information,
+                "Synthetic audit completed successfully.",
+                new { inputTokens, outputTokens, costUsd, synthetic = true },
+                source: "Monitor.SampleWorker",
+                cancellationToken: cancellationToken);
+
             await run.CompleteAsync(
                 new RunCompletion(
                     inputTokens,
@@ -223,6 +244,26 @@ internal sealed class SampleWorker(
         catch (Exception exception)
         {
             costUsd = Math.Round(0.002 + Random.Shared.NextDouble() * 0.008, 6);
+
+            try
+            {
+                await run.RecordEventAsync(
+                    new LogEventRecord(
+                        LogEventLevel.Error,
+                        exception.Message,
+                        DateTimeOffset.UtcNow,
+                        Properties: new { sequence, synthetic = true },
+                        ExceptionType: exception.GetType().FullName,
+                        ExceptionMessage: exception.Message,
+                        ExceptionStackTrace: exception.StackTrace,
+                        Source: "Monitor.SampleWorker",
+                        EventName: "sample.audit.failed"),
+                    CancellationToken.None);
+            }
+            catch (Exception telemetryException)
+            {
+                logger.LogDebug(telemetryException, "Could not record failure event for sample run {RunId}.", run.Id);
+            }
 
             try
             {
