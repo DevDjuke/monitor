@@ -16,6 +16,7 @@ public static class OtlpEndpoints
     private static async Task<IResult> ImportTraces(
         HttpContext httpContext,
         OtlpTraceImporter importer,
+        OtlpComponentScopeValidator scopeValidator,
         IngestionCredentialAuthenticator authenticator,
         CancellationToken cancellationToken)
     {
@@ -65,16 +66,12 @@ public static class OtlpEndpoints
                 return Results.BadRequest();
             }
 
-            OtlpImportResult result;
-            try
-            {
-                result = await importer.ImportAsync(request, identity.ComponentId, cancellationToken);
-            }
-            catch (OtlpComponentScopeException)
+            if (!await scopeValidator.CanIngestAsync(request, identity.ComponentId, cancellationToken))
             {
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
 
+            var result = await importer.ImportAsync(request, cancellationToken);
             var response = new ExportTraceServiceResponse();
             if (result.RejectedSpans > 0)
             {
