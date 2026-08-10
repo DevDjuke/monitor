@@ -8,7 +8,7 @@
     <div>
         <p class="eyebrow">RETENTION / AGGREGATION</p>
         <h1>Usage</h1>
-        <p class="lede">Durable execution metrics backed by hourly aggregates, with failure evidence kept raw for investigation.</p>
+        <p class="lede">Durable execution metrics backed by hourly aggregates, with failure evidence kept raw and recurring failures grouped for investigation.</p>
     </div>
 </header>
 
@@ -79,6 +79,49 @@
         </div>
     </section>
 </div>
+
+<section class="panel table-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">FAILURE FINGERPRINTS</p>
+            <h2>Recurring failure groups</h2>
+        </div>
+    </div>
+
+    @if (Model.TopFailureGroups.Count == 0)
+    {
+        <div class="empty"><strong>No grouped failures yet.</strong><span>Failed and cancelled runs are classified without removing their raw forensic data.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr><th>Category</th><th>Operation</th><th>Type / dependency</th><th>Status</th><th>Occurrences</th><th>Last seen</th></tr>
+                </thead>
+                <tbody>
+                @foreach (var failure in Model.TopFailureGroups)
+                {
+                    <tr>
+                        <td><strong>@failure.Category</strong></td>
+                        <td>
+                            <strong>@failure.Operation</strong>
+                            @if (!string.IsNullOrWhiteSpace(failure.MessageTemplate))
+                            {
+                                <div class="muted">@failure.MessageTemplate</div>
+                            }
+                        </td>
+                        <td>@(failure.FailureType ?? failure.Dependency ?? "—")</td>
+                        <td>@(failure.HttpStatusCode?.ToString() ?? "—")</td>
+                        <td>@failure.Occurrences.ToString("N0")</td>
+                        <td>@failure.LastSeenAt.ToString("yyyy-MM-dd HH:mm") UTC</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
 
 <section class="panel table-panel">
     <div class="panel-head">
