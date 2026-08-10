@@ -32,6 +32,18 @@ One nested operation inside a run. Spans can represent agent reasoning steps, mo
 
 OTLP spans retain their external span id and parent span id in addition to the internal Monitor GUID relationship. Structured diagnostic fields include error type, HTTP status, model, token counts, and reported cost. The full OTLP attribute map is also retained as JSON for inspection. Exception events are promoted into the same structured error fields without discarding their attributes.
 
+### LogEvent
+
+A durable structured operational event. Every log belongs to a `MonitoredComponent`; correlation to an `AgentRun` and `TraceSpan` is optional because service-level logs and logs that arrive before their trace must remain valid telemetry.
+
+Stored data includes event/observed timestamps, normalized severity plus original severity text, event name, formatted message, message template, structured JSON properties, exception type/message/stack trace, instrumentation source, and optional external trace/span/log-record identities.
+
+Monitor-native events are explicitly written against a run. OTLP logs retain `trace_id` and `span_id`; when the trace is already present those ids resolve immediately to Monitor run/span GUIDs. `LogCorrelationWorker` backfills the relationship when logs arrive before their trace.
+
+OTLP log retries use a deterministic SHA-256 dedupe identity under a SQL Server application lock. A stable `log.record.uid` is preferred when supplied; otherwise the identity includes component, source, correlation ids, event/severity, OTLP timestamps, message, and structured properties. This suppresses transport retries without grouping independent real events that happen to share message text.
+
+The authenticated `/logs` view is a server-filtered operational projection over this model. Run drill-down separately merges spans and log events into one timestamp-ordered timeline while retaining the hierarchical trace view.
+
 ### FailureGroup
 
 A durable grouping identity for recurring failed or cancelled runs. A group stores a deterministic SHA-256 fingerprint plus stable diagnostic dimensions: category, failure type, operation, dependency, HTTP status, a normalized message template, occurrence count, and first/last seen timestamps.
@@ -70,13 +82,20 @@ Monitor supports two complementary ingestion paths.
 
 ### Monitor HTTP API / `Monitor.Client`
 
-The custom HTTP API remains the richer Monitor-native path for explicit component registration, heartbeats, run lifecycle, spans, and future control-plane-specific behavior. The .NET `Monitor.Client` wraps this API.
+The custom HTTP API remains the richer Monitor-native path for explicit component registration, heartbeats, run lifecycle, spans, structured run events, and future control-plane-specific behavior. The .NET `Monitor.Client` wraps this API.
+
+Structured events are written to `POST /api/runs/{runId}/events`. Component credentials are checked against the run's owning component before the event can be created.
 
 ### OpenTelemetry / OTLP
 
-Monitor accepts standard OTLP trace export requests at `POST /v1/traces` using OTLP/HTTP with Protocol Buffers (`application/x-protobuf` or `application/protobuf`). The endpoint uses the same `X-Monitor-Key` ingestion credential as the custom HTTP API and accepts optional gzip request compression.
+Monitor accepts standard OTLP exports over HTTP with Protocol Buffers (`application/x-protobuf` or `application/protobuf`) and optional gzip request compression:
 
-The current OTLP mapping is:
+- traces: `POST /v1/traces`;
+- logs: `POST /v1/logs`.
+
+Both endpoints use the same `X-Monitor-Key` ingestion credential contract. Component-scoped credentials must match the OTLP resource-derived component identity before any records in the request are imported.
+
+The current trace mapping is:
 
 - OpenTelemetry Resource -> `MonitoredComponent`;
 - trace id -> `AgentRun`;
@@ -88,9 +107,23 @@ The current OTLP mapping is:
 - `http.response.status_code` -> HTTP failure signal;
 - `monitor.cost_usd` -> optional reported cost extension.
 
-A failed child span makes the enclosing Monitor run failed even when the root span itself was exported with an OK status. Late-arriving spans cause the run to be recomputed from the complete stored trace.
+The current log mapping is:
 
-OTLP/JSON, OTLP/gRPC, metrics, and logs are deliberately not claimed yet. They can be added as additional transports/signals over the same protocol-independent domain.
+- OpenTelemetry Resource -> `MonitoredComponent`;
+- instrumentation scope name -> source;
+- severity number -> `LogEventLevel`;
+- severity text -> original severity text;
+- body -> formatted message;
+- event name -> event name;
+- attributes -> structured properties;
+- original format/message-template attributes -> message template;
+- `exception.type`, `exception.message`, `exception.stacktrace` -> exception detail;
+- trace id -> optional `AgentRun` correlation;
+- span id -> optional `TraceSpan` correlation.
+
+A failed child span makes the enclosing Monitor run failed even when the root span itself was exported with an OK status. Late-arriving spans cause the run to be recomputed from the complete stored trace. Late-arriving trace data also allows the log-correlation worker to attach previously unlinked logs to their run/span.
+
+OTLP/HTTP JSON, OTLP/gRPC, and metrics are deliberately not claimed yet. They can be added as additional transports/signals over the same protocol-independent domain.
 
 ## Failure alert evaluation
 
@@ -122,7 +155,7 @@ OTLP-created and OTLP-updated runs publish the same `RunChanged` notification us
 
 The Runs history uses keyset pagination. The latest page can refresh automatically when matching runs change. Older pages remain stable; matching activity is surfaced as an update notification that can return the operator to the latest slice.
 
-Alert events currently become visible on the next page request/refresh. A dedicated SignalR alert event can be added when the UI needs push notifications; persistence remains authoritative either way.
+Alert events and individual log events currently become visible on the next relevant page request/refresh. Dedicated SignalR alert/log events can be added when the richer live UI needs push updates; persistence remains authoritative either way.
 
 A distributed message bus or SignalR backplane is intentionally deferred until Monitor itself needs multiple web nodes. The domain should not depend on the chosen realtime transport.
 
@@ -130,7 +163,7 @@ A distributed message bus or SignalR backplane is intentionally deferred until M
 
 SQL Server is the current persistence provider, with `(localdb)\MSSQLLocalDB` as the default development instance. `MonitorDbContext` remains isolated in Infrastructure so persistence concerns do not leak into the monitoring domain or UI contract.
 
-OTLP trace/span identity columns use ordinary lookup indexes rather than filtered unique indexes. Idempotent OTLP upserts are enforced by the ingestion application lock and explicit identity lookup. This keeps ordinary SQL writers compatible without requiring filtered-index-specific session `SET` options.
+OTLP trace/span/log identity columns use ordinary lookup indexes rather than filtered unique indexes. Idempotent OTLP imports are enforced by SQL Server application locks and explicit identity/dedupe lookup. This keeps ordinary SQL writers compatible without requiring filtered-index-specific session `SET` options.
 
 Failure alert rules and events are durable database entities. Foreign keys use restrictive deletion so an alert audit trail cannot disappear as an accidental cascade from a rule or failure group.
 
@@ -145,20 +178,23 @@ Only `Success` is purge-eligible. A successful run can be deleted only when both
 1. it has already been aggregated (`AggregatedAt != null`), and
 2. its completion timestamp is older than the configured successful-run detail window.
 
-Deleting a successful run cascades to its trace spans, which is where much of the raw telemetry volume is expected to live.
+Deleting a successful run cascades to its trace spans and run-linked log events, which are part of the same raw-detail retention tier.
 
-`Failed` and `Cancelled` runs also contribute to aggregate metrics, but their raw records are forensic evidence and are not purged by the retention worker. Their error/failure reason, input/output payloads, trace spans, and failure-group link remain available for later inspection. A failure fingerprint is an index into that evidence, never a replacement for it.
+`Failed` and `Cancelled` runs also contribute to aggregate metrics, but their raw records are forensic evidence and are not purged by the retention worker. Their error/failure reason, input/output payloads, trace spans, run-linked log events, and failure-group link remain available for later inspection. A failure fingerprint is an index into that evidence, never a replacement for it.
 
-The worker uses a SQL Server application lock (`Monitor.RetentionAggregation`) so only one Monitor node can execute a retention sweep at a time. This prevents concurrent nodes from selecting and aggregating the same unmarked runs.
+Logs that are not linked to a run cannot inherit a success/failure outcome. They therefore use a separate bounded `UnlinkedLogDetailDays` retention window rather than growing indefinitely. Logs that arrive before their trace get a chance to correlate through the background worker before normal age-based expiry.
+
+The worker uses a SQL Server application lock (`Monitor.RetentionAggregation`) so only one Monitor node can execute a retention sweep at a time. This prevents concurrent nodes from selecting and aggregating/purging the same data.
 
 The default policy is intentionally conservative:
 
 - aggregation delay: 5 minutes;
 - successful raw-detail retention: 30 days;
+- unlinked/component-only log retention: 30 days;
 - sweep interval: 15 minutes;
 - failed/cancelled raw-detail retention: indefinite.
 
-Changing the successful retention window affects future purge eligibility only. Aggregate buckets are not rewritten. Disabling the worker leaves raw data untouched.
+Changing a detail-retention window affects future purge eligibility only. Aggregate buckets are not rewritten. Disabling the worker leaves raw data untouched.
 
 The `/usage` page combines durable aggregate totals with only terminal runs whose `AggregatedAt` is still null. This prevents double-counting during the period where aggregated successful runs are intentionally retained in raw form. It also surfaces recurring failure groups by occurrence count and links directly into their drill-down pages while preserving links back to raw failed/cancelled runs.
 
@@ -166,4 +202,4 @@ Longer-term archival tiers or aggregate rollups (hourly -> daily/monthly) can be
 
 ## Control plane
 
-Commands are intentionally absent from the first slice. Observability and detection must be trustworthy before Monitor is allowed to alter remote workloads. Future commands should be auditable entities with requested/accepted/completed states rather than fire-and-forget HTTP actions.
+Commands are intentionally absent from the current foundation. Observability and detection must be trustworthy before Monitor is allowed to alter remote workloads. Future commands should be auditable entities with requested/accepted/completed states rather than fire-and-forget HTTP actions.
