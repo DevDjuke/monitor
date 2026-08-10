@@ -9,6 +9,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     : IdentityDbContext<MonitorUser>(options)
 {
     public DbSet<MonitoredComponent> Components => Set<MonitoredComponent>();
+    public DbSet<ComponentIngestionCredential> ComponentIngestionCredentials => Set<ComponentIngestionCredential>();
     public DbSet<AgentRun> Runs => Set<AgentRun>();
     public DbSet<TraceSpan> Spans => Set<TraceSpan>();
     public DbSet<RunAggregate> RunAggregates => Set<RunAggregate>();
@@ -33,6 +34,22 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         component.Property(x => x.Environment).HasMaxLength(80);
         component.Property(x => x.Version).HasMaxLength(80);
         component.HasIndex(x => new { x.Slug, x.Environment }).IsUnique();
+
+        var ingestionCredential = modelBuilder.Entity<ComponentIngestionCredential>();
+        ingestionCredential.ToTable("ComponentIngestionCredentials");
+        ingestionCredential.HasKey(x => x.Id);
+        ingestionCredential.Property(x => x.Name).HasMaxLength(200);
+        ingestionCredential.Property(x => x.KeyId).HasMaxLength(64);
+        ingestionCredential.Property(x => x.KeyHash).HasMaxLength(32);
+        ingestionCredential.Property(x => x.CreatedBy).HasMaxLength(256);
+        ingestionCredential.Property(x => x.RevokedBy).HasMaxLength(256);
+        ingestionCredential.HasIndex(x => x.KeyId).IsUnique();
+        ingestionCredential.HasIndex(x => new { x.ComponentId, x.RevokedAt });
+        ingestionCredential.HasIndex(x => x.LastUsedAt);
+        ingestionCredential.HasOne(x => x.Component)
+            .WithMany(x => x.IngestionCredentials)
+            .HasForeignKey(x => x.ComponentId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         var failureGroup = modelBuilder.Entity<FailureGroup>();
         failureGroup.ToTable("FailureGroups");

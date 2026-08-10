@@ -12,7 +12,12 @@ public sealed class ComponentsModel(MonitorDbContext db) : PageModel
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-        var components = await db.Components.AsNoTracking().OrderBy(x => x.Name).ToListAsync(cancellationToken);
+        var components = await db.Components
+            .AsNoTracking()
+            .Include(x => x.IngestionCredentials)
+            .OrderBy(x => x.Name)
+            .ToListAsync(cancellationToken);
+
         Components = components.Select(x => new Row(
             x.Id,
             x.Name,
@@ -22,7 +27,8 @@ public sealed class ComponentsModel(MonitorDbContext db) : PageModel
             x.Version,
             x.GetEffectiveStatus(now, TimeSpan.FromMinutes(2)),
             x.LastHeartbeatAt,
-            x.LastRunAt)).ToList();
+            x.LastRunAt,
+            x.IngestionCredentials.LongCount(credential => !credential.IsRevoked))).ToList();
     }
 
     public sealed record Row(
@@ -34,5 +40,6 @@ public sealed class ComponentsModel(MonitorDbContext db) : PageModel
         string? Version,
         ComponentStatus Status,
         DateTimeOffset? LastHeartbeatAt,
-        DateTimeOffset? LastRunAt);
+        DateTimeOffset? LastRunAt,
+        long ActiveCredentials);
 }

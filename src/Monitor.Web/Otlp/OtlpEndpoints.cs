@@ -1,7 +1,6 @@
 using System.IO.Compression;
-using System.Security.Cryptography;
-using System.Text;
 using Google.Protobuf;
+using Monitor.Web.Auth;
 using OpenTelemetry.Proto.Collector.Trace.V1;
 
 namespace Monitor.Web.Otlp;
@@ -17,19 +16,15 @@ public static class OtlpEndpoints
     private static async Task<IResult> ImportTraces(
         HttpContext httpContext,
         OtlpTraceImporter importer,
-        IConfiguration configuration,
+        OtlpComponentScopeValidator scopeValidator,
+        IngestionCredentialAuthenticator authenticator,
         CancellationToken cancellationToken)
     {
-        var expectedApiKey = configuration["Monitor:IngestionApiKey"];
-        if (string.IsNullOrWhiteSpace(expectedApiKey))
-        {
-            return Results.Json(
-                new { error = "The ingestion API key is not configured." },
-                statusCode: StatusCodes.Status503ServiceUnavailable);
-        }
-
-        var suppliedApiKey = httpContext.Request.Headers["X-Monitor-Key"].ToString();
-        if (!ApiKeysMatch(expectedApiKey, suppliedApiKey))
+        var identity = await authenticator.AuthenticateAsync(
+            httpContext,
+            allowOperator: false,
+            cancellationToken);
+        if (identity is null)
         {
             return Results.Unauthorized();
         }
@@ -71,6 +66,11 @@ public static class OtlpEndpoints
                 return Results.BadRequest();
             }
 
+            if (!await scopeValidator.CanIngestAsync(request, identity.ComponentId, cancellationToken))
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             var result = await importer.ImportAsync(request, cancellationToken);
             var response = new ExportTraceServiceResponse();
             if (result.RejectedSpans > 0)
@@ -91,13 +91,5 @@ public static class OtlpEndpoints
                 await gzip.DisposeAsync();
             }
         }
-    }
-
-    private static bool ApiKeysMatch(string expected, string supplied)
-    {
-        if (string.IsNullOrEmpty(supplied)) return false;
-        var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(expected));
-        var suppliedHash = SHA256.HashData(Encoding.UTF8.GetBytes(supplied));
-        return CryptographicOperations.FixedTimeEquals(expectedHash, suppliedHash);
     }
 }

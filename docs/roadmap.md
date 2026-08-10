@@ -28,12 +28,17 @@ Status: **complete**
 
 ### 2. Per-component ingestion credentials
 
-- Issue ingestion keys to individual monitored components/exporters.
-- Store only protected/hashed credential material where possible.
-- Last-used timestamps and credential metadata.
-- Rotate/revoke credentials without changing unrelated components.
-- Preserve a controlled bootstrap/admin ingestion path for setup and migration.
-- Move shared/local development secrets from repository configuration to a proper vault/secret store.
+Status: **complete**
+
+- Issue independent ingestion keys from each component's detail page and show plaintext only at issue/rotation time.
+- Store only a random public key id plus the SHA-256 hash of the complete token; no plaintext secret is persisted.
+- Track creation/revocation actors and timestamps plus write-throttled last-used metadata.
+- Rotate or revoke one component credential without changing unrelated components.
+- Enforce component scope across Monitor-native registration, heartbeat, run/span access, queries, and OTLP ingestion.
+- Reject valid component credentials with HTTP 403 when they target another component; revoked/invalid credentials return 401.
+- Preserve the shared `Monitor__IngestionApiKey` as a controlled bootstrap/migration path while deployments move to scoped keys.
+- Detailed security and migration contract: `docs/component-ingestion-credentials.md`.
+- Move shared/local development secrets from repository configuration to a proper vault/secret store remains explicit security debt.
 
 ### 3. Logs and run events
 

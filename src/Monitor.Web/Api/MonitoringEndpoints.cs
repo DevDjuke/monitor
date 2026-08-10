@@ -1,10 +1,9 @@
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
 using Monitor.Infrastructure.Failures;
+using Monitor.Web.Auth;
 using Monitor.Web.Realtime;
 
 namespace Monitor.Web.Api;
@@ -15,31 +14,22 @@ public static class MonitoringEndpoints
     {
         endpoints.MapGet("/api/health", () => Results.Ok(new { status = "ok", now = DateTimeOffset.UtcNow }));
 
-        var expectedApiKey = endpoints.ServiceProvider
-            .GetRequiredService<IConfiguration>()["Monitor:IngestionApiKey"];
-
         var api = endpoints.MapGroup("/api");
         api.AddEndpointFilter(async (context, next) =>
         {
             var httpContext = context.HttpContext;
-            if (httpContext.User.Identity?.IsAuthenticated == true)
-            {
-                return await next(context);
-            }
+            var authenticator = httpContext.RequestServices.GetRequiredService<IngestionCredentialAuthenticator>();
+            var identity = await authenticator.AuthenticateAsync(
+                httpContext,
+                allowOperator: true,
+                httpContext.RequestAborted);
 
-            if (string.IsNullOrWhiteSpace(expectedApiKey))
-            {
-                return Results.Json(
-                    new { error = "The ingestion API key is not configured." },
-                    statusCode: StatusCodes.Status503ServiceUnavailable);
-            }
-
-            var suppliedApiKey = httpContext.Request.Headers["X-Monitor-Key"].ToString();
-            if (!ApiKeysMatch(expectedApiKey, suppliedApiKey))
+            if (identity is null)
             {
                 return Results.Unauthorized();
             }
 
+            IngestionCredentialAuthenticator.SetIdentity(httpContext, identity);
             return await next(context);
         });
 
@@ -58,23 +48,20 @@ public static class MonitoringEndpoints
         return endpoints;
     }
 
-    private static bool ApiKeysMatch(string expected, string supplied)
+    private static async Task<IResult> GetComponents(
+        HttpContext httpContext,
+        MonitorDbContext db,
+        CancellationToken cancellationToken)
     {
-        if (string.IsNullOrEmpty(supplied))
+        var identity = IngestionCredentialAuthenticator.GetIdentity(httpContext);
+        var query = db.Components.AsNoTracking().AsQueryable();
+        if (identity.ComponentId is Guid componentId)
         {
-            return false;
+            query = query.Where(x => x.Id == componentId);
         }
 
-        var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(expected));
-        var suppliedHash = SHA256.HashData(Encoding.UTF8.GetBytes(supplied));
-        return CryptographicOperations.FixedTimeEquals(expectedHash, suppliedHash);
-    }
-
-    private static async Task<IResult> GetComponents(MonitorDbContext db, CancellationToken cancellationToken)
-    {
         var now = DateTimeOffset.UtcNow;
-        var components = await db.Components
-            .AsNoTracking()
+        var components = await query
             .OrderBy(x => x.Name)
             .ToListAsync(cancellationToken);
 
@@ -95,6 +82,7 @@ public static class MonitoringEndpoints
 
     private static async Task<IResult> RegisterComponent(
         RegisterComponentRequest request,
+        HttpContext httpContext,
         MonitorDbContext db,
         CancellationToken cancellationToken)
     {
@@ -105,28 +93,52 @@ public static class MonitoringEndpoints
             return Results.BadRequest(new { error = "name, slug and environment are required" });
         }
 
+        var identity = IngestionCredentialAuthenticator.GetIdentity(httpContext);
         var slug = request.Slug.Trim().ToLowerInvariant();
         var environment = request.Environment.Trim().ToLowerInvariant();
         var now = DateTimeOffset.UtcNow;
 
-        var component = await db.Components.SingleOrDefaultAsync(
-            x => x.Slug == slug && x.Environment == environment,
-            cancellationToken);
-
-        if (component is null)
+        MonitoredComponent? component;
+        if (identity.ComponentId is Guid scopedComponentId)
         {
-            component = MonitoredComponent.Create(
-                request.Name.Trim(),
-                slug,
-                request.Type,
-                environment,
-                request.Version?.Trim(),
-                now);
-            db.Components.Add(component);
+            component = await db.Components.SingleOrDefaultAsync(
+                x => x.Id == scopedComponentId,
+                cancellationToken);
+
+            if (component is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            if (!string.Equals(component.Slug, slug, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(component.Environment, environment, StringComparison.OrdinalIgnoreCase))
+            {
+                return Forbidden();
+            }
+
+            component.UpdateRegistration(request.Name.Trim(), request.Type, request.Version?.Trim(), now);
         }
         else
         {
-            component.UpdateRegistration(request.Name.Trim(), request.Type, request.Version?.Trim(), now);
+            component = await db.Components.SingleOrDefaultAsync(
+                x => x.Slug == slug && x.Environment == environment,
+                cancellationToken);
+
+            if (component is null)
+            {
+                component = MonitoredComponent.Create(
+                    request.Name.Trim(),
+                    slug,
+                    request.Type,
+                    environment,
+                    request.Version?.Trim(),
+                    now);
+                db.Components.Add(component);
+            }
+            else
+            {
+                component.UpdateRegistration(request.Name.Trim(), request.Type, request.Version?.Trim(), now);
+            }
         }
 
         await db.SaveChangesAsync(cancellationToken);
@@ -135,9 +147,16 @@ public static class MonitoringEndpoints
 
     private static async Task<IResult> Heartbeat(
         Guid id,
+        HttpContext httpContext,
         MonitorDbContext db,
         CancellationToken cancellationToken)
     {
+        var identity = IngestionCredentialAuthenticator.GetIdentity(httpContext);
+        if (!identity.CanAccess(id))
+        {
+            return Forbidden();
+        }
+
         var component = await db.Components.FindAsync([id], cancellationToken);
         if (component is null)
         {
@@ -151,12 +170,19 @@ public static class MonitoringEndpoints
 
     private static async Task<IResult> GetRuns(
         int? take,
+        HttpContext httpContext,
         MonitorDbContext db,
         CancellationToken cancellationToken)
     {
+        var identity = IngestionCredentialAuthenticator.GetIdentity(httpContext);
         var limit = Math.Clamp(take ?? 50, 1, 250);
-        var runs = await db.Runs
-            .AsNoTracking()
+        var query = db.Runs.AsNoTracking().AsQueryable();
+        if (identity.ComponentId is Guid componentId)
+        {
+            query = query.Where(x => x.ComponentId == componentId);
+        }
+
+        var runs = await query
             .OrderByDescending(x => x.Sequence)
             .Take(limit)
             .Select(x => new
@@ -189,20 +215,33 @@ public static class MonitoringEndpoints
         string? search,
         DateTimeOffset? from,
         DateTimeOffset? to,
+        HttpContext httpContext,
         MonitorDbContext db,
         CancellationToken cancellationToken)
     {
+        var identity = IngestionCredentialAuthenticator.GetIdentity(httpContext);
+        if (identity.ComponentId is Guid scopedComponentId &&
+            componentId.HasValue &&
+            componentId.Value != scopedComponentId)
+        {
+            return Forbidden();
+        }
+
         var limit = pageSize is 25 or 50 or 100 ? pageSize.Value : 50;
         var query = db.Runs.AsNoTracking().AsQueryable();
+
+        if (identity.ComponentId is Guid authorizedComponentId)
+        {
+            query = query.Where(x => x.ComponentId == authorizedComponentId);
+        }
+        else if (componentId.HasValue)
+        {
+            query = query.Where(x => x.ComponentId == componentId.Value);
+        }
 
         if (before is > 0)
         {
             query = query.Where(x => x.Sequence < before.Value);
-        }
-
-        if (componentId.HasValue)
-        {
-            query = query.Where(x => x.ComponentId == componentId.Value);
         }
 
         if (status.HasValue)
@@ -271,11 +310,20 @@ public static class MonitoringEndpoints
     }
 
     private static async Task<IResult> GetRunOptions(
+        HttpContext httpContext,
         MonitorDbContext db,
         CancellationToken cancellationToken)
     {
-        var components = await db.Components
-            .AsNoTracking()
+        var identity = IngestionCredentialAuthenticator.GetIdentity(httpContext);
+        var componentQuery = db.Components.AsNoTracking().AsQueryable();
+        var runQuery = db.Runs.AsNoTracking().AsQueryable();
+        if (identity.ComponentId is Guid componentId)
+        {
+            componentQuery = componentQuery.Where(x => x.Id == componentId);
+            runQuery = runQuery.Where(x => x.ComponentId == componentId);
+        }
+
+        var components = await componentQuery
             .OrderBy(x => x.Name)
             .ThenBy(x => x.Environment)
             .Select(x => new { x.Id, x.Name, x.Environment })
@@ -287,8 +335,7 @@ public static class MonitoringEndpoints
             .OrderBy(x => x)
             .ToArray();
 
-        var models = await db.Runs
-            .AsNoTracking()
+        var models = await runQuery
             .Where(x => x.Model != null && x.Model != "")
             .Select(x => x.Model!)
             .Distinct()
@@ -301,6 +348,7 @@ public static class MonitoringEndpoints
 
     private static async Task<IResult> GetRun(
         Guid id,
+        HttpContext httpContext,
         MonitorDbContext db,
         CancellationToken cancellationToken)
     {
@@ -313,6 +361,12 @@ public static class MonitoringEndpoints
         if (run is null)
         {
             return Results.NotFound();
+        }
+
+        var identity = IngestionCredentialAuthenticator.GetIdentity(httpContext);
+        if (!identity.CanAccess(run.ComponentId))
+        {
+            return Forbidden();
         }
 
         return Results.Ok(new
@@ -351,6 +405,7 @@ public static class MonitoringEndpoints
 
     private static async Task<IResult> StartRun(
         StartRunRequest request,
+        HttpContext httpContext,
         MonitorDbContext db,
         IHubContext<MonitorHub> hub,
         CancellationToken cancellationToken)
@@ -358,6 +413,12 @@ public static class MonitoringEndpoints
         if (string.IsNullOrWhiteSpace(request.Name))
         {
             return Results.BadRequest(new { error = "name is required" });
+        }
+
+        var identity = IngestionCredentialAuthenticator.GetIdentity(httpContext);
+        if (!identity.CanAccess(request.ComponentId))
+        {
+            return Forbidden();
         }
 
         var component = await db.Components.FindAsync([request.ComponentId], cancellationToken);
@@ -387,6 +448,7 @@ public static class MonitoringEndpoints
     private static async Task<IResult> CompleteRun(
         Guid id,
         CompleteRunRequest request,
+        HttpContext httpContext,
         MonitorDbContext db,
         FailureGroupingService failureGrouping,
         IHubContext<MonitorHub> hub,
@@ -403,6 +465,12 @@ public static class MonitoringEndpoints
         if (run is null)
         {
             return Results.NotFound();
+        }
+
+        var identity = IngestionCredentialAuthenticator.GetIdentity(httpContext);
+        if (!identity.CanAccess(run.ComponentId))
+        {
+            return Forbidden();
         }
 
         run.Complete(
@@ -427,6 +495,7 @@ public static class MonitoringEndpoints
     private static async Task<IResult> CreateSpan(
         Guid runId,
         CreateSpanRequest request,
+        HttpContext httpContext,
         MonitorDbContext db,
         CancellationToken cancellationToken)
     {
@@ -435,9 +504,19 @@ public static class MonitoringEndpoints
             return Results.BadRequest(new { error = "name is required" });
         }
 
-        if (!await db.Runs.AnyAsync(x => x.Id == runId, cancellationToken))
+        var runComponentId = await db.Runs
+            .Where(x => x.Id == runId)
+            .Select(x => (Guid?)x.ComponentId)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (runComponentId is null)
         {
             return Results.NotFound();
+        }
+
+        var identity = IngestionCredentialAuthenticator.GetIdentity(httpContext);
+        if (!identity.CanAccess(runComponentId.Value))
+        {
+            return Forbidden();
         }
 
         if (request.ParentSpanId is not null &&
@@ -461,6 +540,8 @@ public static class MonitoringEndpoints
         await db.SaveChangesAsync(cancellationToken);
         return Results.Created($"/api/runs/{runId}/spans/{span.Id}", new { span.Id });
     }
+
+    private static IResult Forbidden() => Results.StatusCode(StatusCodes.Status403Forbidden);
 
     private static Task BroadcastRunChangedAsync(
         IHubContext<MonitorHub> hub,
