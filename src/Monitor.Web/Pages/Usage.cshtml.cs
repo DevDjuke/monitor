@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -13,6 +14,24 @@ public sealed class UsageModel(
 {
     private readonly RetentionOptions _retention = retentionOptions.Value;
 
+    [BindProperty(SupportsGet = true)]
+    public string Window { get; set; } = "48h";
+
+    [BindProperty(SupportsGet = true)]
+    public Guid? ComponentId { get; set; }
+
+    [BindProperty(SupportsGet = true)]
+    public string? Environment { get; set; }
+
+    [BindProperty(SupportsGet = true)]
+    public string? Model { get; set; }
+
+    [BindProperty(SupportsGet = true)]
+    public FailureCategory? FailureCategory { get; set; }
+
+    [BindProperty(SupportsGet = true)]
+    public string? FailureSearch { get; set; }
+
     public long TotalRuns { get; private set; }
     public long SuccessRuns { get; private set; }
     public long FailedRuns { get; private set; }
@@ -24,6 +43,11 @@ public sealed class UsageModel(
     public long PendingAggregation { get; private set; }
     public long RetainedSuccessfulRuns { get; private set; }
     public long ForensicRuns { get; private set; }
+
+    public IReadOnlyList<ComponentOption> ComponentOptions { get; private set; } = [];
+    public IReadOnlyList<string> EnvironmentOptions { get; private set; } = [];
+    public IReadOnlyList<string> ModelOptions { get; private set; } = [];
+    public IReadOnlyList<FailureCategory> FailureCategories { get; } = Enum.GetValues<FailureCategory>();
     public IReadOnlyList<BucketRow> RecentBuckets { get; private set; } = [];
     public IReadOnlyList<FailureGroupRow> TopFailureGroups { get; private set; } = [];
 
@@ -31,13 +55,25 @@ public sealed class UsageModel(
     public int SuccessfulRunDetailDays => _retention.SuccessfulRunDetailDays;
     public int AggregationDelayMinutes => _retention.AggregationDelayMinutes;
     public int SweepIntervalMinutes => _retention.SweepIntervalMinutes;
-
     public double SuccessRate => TotalRuns == 0 ? 0 : SuccessRuns * 100d / TotalRuns;
+    public string ScopeLabel { get; private set; } = "Last 48 hours";
+    public string RecentBucketLabel { get; private set; } = "Last 48 hours";
 
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        var aggregateSummary = await db.RunAggregates
-            .AsNoTracking()
+        NormalizeFilters();
+        await LoadFilterOptionsAsync(cancellationToken);
+
+        var now = DateTimeOffset.UtcNow;
+        var since = ResolveWindowStart(now, Window);
+        ScopeLabel = BuildScopeLabel();
+        RecentBucketLabel = BuildBucketLabel(Window);
+
+        var aggregateScope = ApplyAggregateScope(
+            db.RunAggregates.AsNoTracking(),
+            since);
+
+        var aggregateSummary = await aggregateScope
             .GroupBy(_ => 1)
             .Select(group => new Summary(
                 group.Sum(x => x.TotalRuns),
@@ -50,12 +86,17 @@ public sealed class UsageModel(
             .SingleOrDefaultAsync(cancellationToken)
             ?? Summary.Empty;
 
-        var pendingSummary = await db.Runs
-            .AsNoTracking()
-            .Where(x =>
-                x.Status != RunStatus.Running &&
-                x.CompletedAt != null &&
-                x.AggregatedAt == null)
+        var pendingScope = ApplyRunScope(
+            db.Runs
+                .AsNoTracking()
+                .Where(x =>
+                    x.Status != RunStatus.Running &&
+                    x.CompletedAt != null &&
+                    x.AggregatedAt == null),
+            since,
+            useCompletedAt: true);
+
+        var pendingSummary = await pendingScope
             .GroupBy(_ => 1)
             .Select(group => new Summary(
                 group.LongCount(),
@@ -77,34 +118,127 @@ public sealed class UsageModel(
         CostUsd = aggregateSummary.CostUsd + pendingSummary.CostUsd;
         PendingAggregation = pendingSummary.TotalRuns;
 
-        StoredRawRuns = await db.Runs.LongCountAsync(cancellationToken);
-        RetainedSuccessfulRuns = await db.Runs.LongCountAsync(x => x.Status == RunStatus.Success, cancellationToken);
-        ForensicRuns = await db.Runs.LongCountAsync(
+        var rawScope = ApplyRunScope(db.Runs.AsNoTracking(), since, useCompletedAt: false);
+        StoredRawRuns = await rawScope.LongCountAsync(cancellationToken);
+        RetainedSuccessfulRuns = await rawScope.LongCountAsync(
+            x => x.Status == RunStatus.Success,
+            cancellationToken);
+        ForensicRuns = await rawScope.LongCountAsync(
             x => x.Status == RunStatus.Failed || x.Status == RunStatus.Cancelled,
             cancellationToken);
 
-        TopFailureGroups = await db.FailureGroups
+        await LoadFailureGroupsAsync(since, cancellationToken);
+        await LoadBucketsAsync(aggregateScope, cancellationToken);
+    }
+
+    private async Task LoadFilterOptionsAsync(CancellationToken cancellationToken)
+    {
+        ComponentOptions = await db.Components
             .AsNoTracking()
-            .OrderByDescending(x => x.Occurrences)
-            .ThenByDescending(x => x.LastSeenAt)
-            .Take(10)
-            .Select(x => new FailureGroupRow(
-                x.Id,
-                x.Category,
-                x.Operation,
-                x.FailureType,
-                x.Dependency,
-                x.HttpStatusCode,
-                x.MessageTemplate,
-                x.Occurrences,
-                x.FirstSeenAt,
-                x.LastSeenAt))
+            .OrderBy(x => x.Name)
+            .ThenBy(x => x.Environment)
+            .Select(x => new ComponentOption(x.Id, x.Name, x.Environment))
             .ToListAsync(cancellationToken);
 
-        var since = DateTimeOffset.UtcNow.AddHours(-48);
-        var bucketData = await db.RunAggregates
+        EnvironmentOptions = await db.Components
             .AsNoTracking()
-            .Where(x => x.BucketStart >= since)
+            .Select(x => x.Environment)
+            .Where(x => x != "")
+            .Distinct()
+            .OrderBy(x => x)
+            .ToListAsync(cancellationToken);
+
+        var rawModels = await db.Runs
+            .AsNoTracking()
+            .Where(x => x.Model != null && x.Model != "")
+            .Select(x => x.Model!)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        var aggregateModels = await db.RunAggregates
+            .AsNoTracking()
+            .Where(x => x.Model != null && x.Model != "")
+            .Select(x => x.Model!)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        ModelOptions = rawModels
+            .Concat(aggregateModels)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task LoadFailureGroupsAsync(DateTimeOffset? since, CancellationToken cancellationToken)
+    {
+        var failureRuns = ApplyRunScope(
+            db.Runs
+                .AsNoTracking()
+                .Where(x =>
+                    x.FailureGroupId != null &&
+                    x.CompletedAt != null &&
+                    (x.Status == RunStatus.Failed || x.Status == RunStatus.Cancelled)),
+            since,
+            useCompletedAt: true);
+
+        var failureStats = failureRuns
+            .GroupBy(x => x.FailureGroupId!.Value)
+            .Select(group => new
+            {
+                FailureGroupId = group.Key,
+                Occurrences = group.LongCount(),
+                FirstSeenAt = group.Min(x => x.CompletedAt),
+                LastSeenAt = group.Max(x => x.CompletedAt)
+            });
+
+        var groups = db.FailureGroups.AsNoTracking().AsQueryable();
+        if (FailureCategory is not null)
+        {
+            groups = groups.Where(x => x.Category == FailureCategory.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(FailureSearch))
+        {
+            var search = FailureSearch;
+            groups = groups.Where(x =>
+                x.Operation.Contains(search) ||
+                (x.FailureType != null && x.FailureType.Contains(search)) ||
+                (x.Dependency != null && x.Dependency.Contains(search)) ||
+                (x.MessageTemplate != null && x.MessageTemplate.Contains(search)) ||
+                x.Fingerprint.Contains(search));
+        }
+
+        TopFailureGroups = await (
+                from group in groups
+                join stats in failureStats on group.Id equals stats.FailureGroupId
+                orderby stats.Occurrences descending, stats.LastSeenAt descending
+                select new FailureGroupRow(
+                    group.Id,
+                    group.Category,
+                    group.Operation,
+                    group.FailureType,
+                    group.Dependency,
+                    group.HttpStatusCode,
+                    group.MessageTemplate,
+                    stats.Occurrences,
+                    stats.FirstSeenAt,
+                    stats.LastSeenAt))
+            .Take(25)
+            .ToListAsync(cancellationToken);
+    }
+
+    private async Task LoadBucketsAsync(
+        IQueryable<RunAggregate> aggregateScope,
+        CancellationToken cancellationToken)
+    {
+        var bucketLimit = Window switch
+        {
+            "24h" => 24,
+            "48h" => 48,
+            _ => 168
+        };
+
+        var bucketData = await aggregateScope
             .GroupBy(x => x.BucketStart)
             .Select(group => new
             {
@@ -119,7 +253,7 @@ public sealed class UsageModel(
                 TotalDurationMs = group.Sum(x => x.TotalDurationMs)
             })
             .OrderByDescending(x => x.BucketStart)
-            .Take(48)
+            .Take(bucketLimit)
             .ToListAsync(cancellationToken);
 
         RecentBuckets = bucketData
@@ -135,6 +269,151 @@ public sealed class UsageModel(
             .ToList();
     }
 
+    private IQueryable<RunAggregate> ApplyAggregateScope(
+        IQueryable<RunAggregate> query,
+        DateTimeOffset? since)
+    {
+        if (ComponentId is not null)
+        {
+            query = query.Where(x => x.ComponentId == ComponentId.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Environment))
+        {
+            query = query.Where(x => x.Environment == Environment);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Model))
+        {
+            query = query.Where(x => x.Model == Model);
+        }
+
+        if (since is not null)
+        {
+            query = query.Where(x => x.BucketStart >= since.Value);
+        }
+
+        return query;
+    }
+
+    private IQueryable<AgentRun> ApplyRunScope(
+        IQueryable<AgentRun> query,
+        DateTimeOffset? since,
+        bool useCompletedAt)
+    {
+        if (ComponentId is not null)
+        {
+            query = query.Where(x => x.ComponentId == ComponentId.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Environment))
+        {
+            query = query.Where(x => x.Component.Environment == Environment);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Model))
+        {
+            query = query.Where(x => x.Model == Model);
+        }
+
+        if (since is not null)
+        {
+            query = useCompletedAt
+                ? query.Where(x => x.CompletedAt >= since.Value)
+                : query.Where(x => x.StartedAt >= since.Value);
+        }
+
+        return query;
+    }
+
+    private void NormalizeFilters()
+    {
+        Window = Window?.Trim().ToLowerInvariant() switch
+        {
+            "24h" => "24h",
+            "48h" => "48h",
+            "7d" => "7d",
+            "30d" => "30d",
+            "all" => "all",
+            _ => "48h"
+        };
+
+        Environment = NormalizeOptional(Environment);
+        Model = NormalizeOptional(Model);
+        FailureSearch = NormalizeOptional(FailureSearch);
+    }
+
+    private string BuildScopeLabel()
+    {
+        var parts = new List<string>
+        {
+            Window switch
+            {
+                "24h" => "Last 24 hours",
+                "48h" => "Last 48 hours",
+                "7d" => "Last 7 days",
+                "30d" => "Last 30 days",
+                _ => "All retained history"
+            }
+        };
+
+        if (ComponentId is not null)
+        {
+            var component = ComponentOptions.FirstOrDefault(x => x.Id == ComponentId.Value);
+            parts.Add(component is null ? "selected component" : component.Name);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Environment))
+        {
+            parts.Add(Environment);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Model))
+        {
+            parts.Add(Model);
+        }
+
+        return string.Join(" · ", parts);
+    }
+
+    private static string BuildBucketLabel(string window) => window switch
+    {
+        "24h" => "Last 24 hourly buckets",
+        "48h" => "Last 48 hourly buckets",
+        "7d" => "Last 7 days · hourly",
+        "30d" => "Latest 168 hourly buckets in 30-day scope",
+        _ => "Latest 168 hourly buckets in retained history"
+    };
+
+    private static DateTimeOffset? ResolveWindowStart(DateTimeOffset now, string window)
+    {
+        DateTimeOffset? start = window switch
+        {
+            "24h" => now.AddHours(-24),
+            "48h" => now.AddHours(-48),
+            "7d" => now.AddDays(-7),
+            "30d" => now.AddDays(-30),
+            _ => null
+        };
+
+        if (start is null)
+        {
+            return null;
+        }
+
+        return new DateTimeOffset(
+            start.Value.Year,
+            start.Value.Month,
+            start.Value.Day,
+            start.Value.Hour,
+            0,
+            0,
+            TimeSpan.Zero);
+    }
+
+    private static string? NormalizeOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
     private sealed record Summary(
         long TotalRuns,
         long SuccessRuns,
@@ -146,6 +425,8 @@ public sealed class UsageModel(
     {
         public static Summary Empty { get; } = new(0, 0, 0, 0, 0, 0, 0);
     }
+
+    public sealed record ComponentOption(Guid Id, string Name, string Environment);
 
     public sealed record BucketRow(
         DateTimeOffset BucketStart,
@@ -169,6 +450,6 @@ public sealed class UsageModel(
         int? HttpStatusCode,
         string? MessageTemplate,
         long Occurrences,
-        DateTimeOffset FirstSeenAt,
-        DateTimeOffset LastSeenAt);
+        DateTimeOffset? FirstSeenAt,
+        DateTimeOffset? LastSeenAt);
 }
