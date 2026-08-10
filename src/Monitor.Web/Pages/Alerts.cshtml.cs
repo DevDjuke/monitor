@@ -10,18 +10,44 @@ namespace Monitor.Web.Pages;
 
 public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookSender) : PageModel
 {
-    public long ActiveRules { get; private set; }
+    [BindProperty(SupportsGet = true)]
+    public string Window { get; set; } = "24h";
+
+    [BindProperty(SupportsGet = true)]
+    public string? Search { get; set; }
+
+    [BindProperty(SupportsGet = true)]
+    public FailureCategory? Category { get; set; }
+
+    [BindProperty(SupportsGet = true)]
+    public string AlertState { get; set; } = "all";
+
+    [BindProperty(SupportsGet = true)]
+    public string RuleState { get; set; } = "all";
+
+    [BindProperty(SupportsGet = true)]
+    public AlertDeliveryStatus? DeliveryStatus { get; set; }
+
+    [BindProperty(SupportsGet = true)]
+    public Guid? DestinationId { get; set; }
+
+    public long MatchingAlerts { get; private set; }
     public long OpenAlerts { get; private set; }
-    public long TriggeredLast24Hours { get; private set; }
+    public long MatchingRules { get; private set; }
     public long AffectedGroups { get; private set; }
     public long EnabledDestinations { get; private set; }
+    public long MatchingDeliveries { get; private set; }
     public long PendingDeliveries { get; private set; }
     public long DeadLetterDeliveries { get; private set; }
 
+    public IReadOnlyList<FailureCategory> FailureCategories { get; } = Enum.GetValues<FailureCategory>();
+    public IReadOnlyList<AlertDeliveryStatus> DeliveryStatuses { get; } = Enum.GetValues<AlertDeliveryStatus>();
     public IReadOnlyList<AlertEventRow> RecentAlerts { get; private set; } = [];
     public IReadOnlyList<AlertRuleRow> Rules { get; private set; } = [];
     public IReadOnlyList<DestinationRow> Destinations { get; private set; } = [];
     public IReadOnlyList<DeliveryRow> RecentDeliveries { get; private set; } = [];
+    public string ScopeLabel { get; private set; } = "Last 24 hours";
+    public string ReturnUrl => $"{Request.Path}{Request.QueryString}";
 
     [BindProperty]
     public CreateDestinationInput DestinationInput { get; set; } = new();
@@ -31,7 +57,7 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
         await LoadAsync(cancellationToken);
     }
 
-    public async Task<IActionResult> OnPostAcknowledgeAsync(Guid eventId, CancellationToken cancellationToken)
+    public async Task<IActionResult> OnPostAcknowledgeAsync(Guid eventId, string? returnUrl, CancellationToken cancellationToken)
     {
         var alertEvent = await db.FailureAlertEvents.SingleOrDefaultAsync(x => x.Id == eventId, cancellationToken);
         if (alertEvent is null)
@@ -42,10 +68,10 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
         alertEvent.Acknowledge(User.Identity?.Name, DateTimeOffset.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
         TempData["StatusMessage"] = "Alert acknowledged.";
-        return RedirectToPage();
+        return RedirectBack(returnUrl);
     }
 
-    public async Task<IActionResult> OnPostToggleRuleAsync(Guid ruleId, CancellationToken cancellationToken)
+    public async Task<IActionResult> OnPostToggleRuleAsync(Guid ruleId, string? returnUrl, CancellationToken cancellationToken)
     {
         var rule = await db.FailureAlertRules.SingleOrDefaultAsync(x => x.Id == ruleId, cancellationToken);
         if (rule is null)
@@ -56,10 +82,10 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
         rule.SetEnabled(!rule.Enabled, DateTimeOffset.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
         TempData["StatusMessage"] = rule.Enabled ? "Alert rule enabled." : "Alert rule disabled.";
-        return RedirectToPage();
+        return RedirectBack(returnUrl);
     }
 
-    public async Task<IActionResult> OnPostCreateDestinationAsync(CancellationToken cancellationToken)
+    public async Task<IActionResult> OnPostCreateDestinationAsync(string? returnUrl, CancellationToken cancellationToken)
     {
         if (!ModelState.IsValid)
         {
@@ -79,7 +105,7 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
             db.AlertDeliveryDestinations.Add(destination);
             await db.SaveChangesAsync(cancellationToken);
             TempData["StatusMessage"] = "Webhook destination created. Future alert events will be queued for delivery.";
-            return RedirectToPage();
+            return RedirectBack(returnUrl);
         }
         catch (ArgumentException exception)
         {
@@ -89,7 +115,7 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
         }
     }
 
-    public async Task<IActionResult> OnPostToggleDestinationAsync(Guid destinationId, CancellationToken cancellationToken)
+    public async Task<IActionResult> OnPostToggleDestinationAsync(Guid destinationId, string? returnUrl, CancellationToken cancellationToken)
     {
         var destination = await db.AlertDeliveryDestinations
             .SingleOrDefaultAsync(x => x.Id == destinationId, cancellationToken);
@@ -103,10 +129,10 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
         TempData["StatusMessage"] = destination.Enabled
             ? "Webhook destination enabled."
             : "Webhook destination disabled. Existing queued deliveries are retained and will resume if it is enabled again.";
-        return RedirectToPage();
+        return RedirectBack(returnUrl);
     }
 
-    public async Task<IActionResult> OnPostTestDestinationAsync(Guid destinationId, CancellationToken cancellationToken)
+    public async Task<IActionResult> OnPostTestDestinationAsync(Guid destinationId, string? returnUrl, CancellationToken cancellationToken)
     {
         var destination = await db.AlertDeliveryDestinations
             .SingleOrDefaultAsync(x => x.Id == destinationId, cancellationToken);
@@ -129,10 +155,10 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
         }
 
         await db.SaveChangesAsync(cancellationToken);
-        return RedirectToPage();
+        return RedirectBack(returnUrl);
     }
 
-    public async Task<IActionResult> OnPostRequeueDeliveryAsync(Guid deliveryId, CancellationToken cancellationToken)
+    public async Task<IActionResult> OnPostRequeueDeliveryAsync(Guid deliveryId, string? returnUrl, CancellationToken cancellationToken)
     {
         var delivery = await db.AlertDeliveries.SingleOrDefaultAsync(x => x.Id == deliveryId, cancellationToken);
         if (delivery is null)
@@ -143,40 +169,33 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
         if (delivery.Status == AlertDeliveryStatus.Delivered)
         {
             TempData["StatusMessage"] = "Delivered notifications cannot be requeued.";
-            return RedirectToPage();
+            return RedirectBack(returnUrl);
         }
 
         delivery.Requeue(DateTimeOffset.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
         TempData["StatusMessage"] = "Alert delivery requeued for immediate retry.";
-        return RedirectToPage();
+        return RedirectBack(returnUrl);
     }
 
     private async Task LoadAsync(CancellationToken cancellationToken)
     {
-        var since = DateTimeOffset.UtcNow.AddHours(-24);
+        NormalizeFilters();
+        var since = ResolveWindowStart(DateTimeOffset.UtcNow, Window);
+        ScopeLabel = BuildScopeLabel();
 
-        ActiveRules = await db.FailureAlertRules.LongCountAsync(x => x.Enabled, cancellationToken);
-        OpenAlerts = await db.FailureAlertEvents.LongCountAsync(x => x.AcknowledgedAt == null, cancellationToken);
-        TriggeredLast24Hours = await db.FailureAlertEvents.LongCountAsync(x => x.TriggeredAt >= since, cancellationToken);
-        AffectedGroups = await db.FailureAlertEvents
-            .Where(x => x.TriggeredAt >= since)
+        var alertQuery = ApplyAlertFilters(db.FailureAlertEvents.AsNoTracking(), since);
+        MatchingAlerts = await alertQuery.LongCountAsync(cancellationToken);
+        OpenAlerts = await alertQuery.LongCountAsync(x => x.AcknowledgedAt == null, cancellationToken);
+        AffectedGroups = await alertQuery
             .Select(x => x.FailureGroupId)
             .Distinct()
             .LongCountAsync(cancellationToken);
-        EnabledDestinations = await db.AlertDeliveryDestinations.LongCountAsync(x => x.Enabled, cancellationToken);
-        PendingDeliveries = await db.AlertDeliveries.LongCountAsync(
-            x => x.Status == AlertDeliveryStatus.Pending || x.Status == AlertDeliveryStatus.RetryScheduled,
-            cancellationToken);
-        DeadLetterDeliveries = await db.AlertDeliveries.LongCountAsync(
-            x => x.Status == AlertDeliveryStatus.DeadLetter,
-            cancellationToken);
 
-        RecentAlerts = await db.FailureAlertEvents
-            .AsNoTracking()
+        RecentAlerts = await alertQuery
             .OrderBy(x => x.AcknowledgedAt != null)
             .ThenByDescending(x => x.TriggeredAt)
-            .Take(50)
+            .Take(100)
             .Select(x => new AlertEventRow(
                 x.Id,
                 x.FailureGroupId,
@@ -197,8 +216,9 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
                 x.Deliveries.LongCount(d => d.Status == AlertDeliveryStatus.Pending || d.Status == AlertDeliveryStatus.RetryScheduled)))
             .ToListAsync(cancellationToken);
 
-        Rules = await db.FailureAlertRules
-            .AsNoTracking()
+        var ruleQuery = ApplyRuleFilters(db.FailureAlertRules.AsNoTracking());
+        MatchingRules = await ruleQuery.LongCountAsync(cancellationToken);
+        Rules = await ruleQuery
             .OrderByDescending(x => x.Enabled)
             .ThenByDescending(x => x.LastTriggeredAt)
             .ThenBy(x => x.Name)
@@ -235,8 +255,18 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
                 x.Deliveries.LongCount(d => d.Status == AlertDeliveryStatus.DeadLetter)))
             .ToListAsync(cancellationToken);
 
-        RecentDeliveries = await db.AlertDeliveries
-            .AsNoTracking()
+        EnabledDestinations = Destinations.LongCount(x => x.Enabled);
+
+        var deliveryQuery = ApplyDeliveryFilters(db.AlertDeliveries.AsNoTracking(), since);
+        MatchingDeliveries = await deliveryQuery.LongCountAsync(cancellationToken);
+        PendingDeliveries = await deliveryQuery.LongCountAsync(
+            x => x.Status == AlertDeliveryStatus.Pending || x.Status == AlertDeliveryStatus.RetryScheduled,
+            cancellationToken);
+        DeadLetterDeliveries = await deliveryQuery.LongCountAsync(
+            x => x.Status == AlertDeliveryStatus.DeadLetter,
+            cancellationToken);
+
+        RecentDeliveries = await deliveryQuery
             .OrderByDescending(x => x.CreatedAt)
             .Take(100)
             .Select(x => new DeliveryRow(
@@ -254,6 +284,175 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
                 x.LastError))
             .ToListAsync(cancellationToken);
     }
+
+    private IQueryable<FailureAlertEvent> ApplyAlertFilters(
+        IQueryable<FailureAlertEvent> query,
+        DateTimeOffset? since)
+    {
+        if (since is not null)
+        {
+            query = query.Where(x => x.TriggeredAt >= since.Value);
+        }
+
+        if (Category is not null)
+        {
+            query = query.Where(x => x.FailureGroup.Category == Category.Value);
+        }
+
+        query = AlertState switch
+        {
+            "open" => query.Where(x => x.AcknowledgedAt == null),
+            "acknowledged" => query.Where(x => x.AcknowledgedAt != null),
+            _ => query
+        };
+
+        if (!string.IsNullOrWhiteSpace(Search))
+        {
+            var search = Search;
+            query = query.Where(x =>
+                x.AlertRule.Name.Contains(search) ||
+                x.FailureGroup.Operation.Contains(search) ||
+                (x.FailureGroup.FailureType != null && x.FailureGroup.FailureType.Contains(search)) ||
+                (x.FailureGroup.Dependency != null && x.FailureGroup.Dependency.Contains(search)) ||
+                x.FailureGroup.Fingerprint.Contains(search));
+        }
+
+        return query;
+    }
+
+    private IQueryable<FailureAlertRule> ApplyRuleFilters(IQueryable<FailureAlertRule> query)
+    {
+        if (Category is not null)
+        {
+            query = query.Where(x => x.FailureGroup.Category == Category.Value);
+        }
+
+        query = RuleState switch
+        {
+            "enabled" => query.Where(x => x.Enabled),
+            "disabled" => query.Where(x => !x.Enabled),
+            _ => query
+        };
+
+        if (!string.IsNullOrWhiteSpace(Search))
+        {
+            var search = Search;
+            query = query.Where(x =>
+                x.Name.Contains(search) ||
+                x.FailureGroup.Operation.Contains(search) ||
+                (x.FailureGroup.FailureType != null && x.FailureGroup.FailureType.Contains(search)) ||
+                (x.FailureGroup.Dependency != null && x.FailureGroup.Dependency.Contains(search)) ||
+                x.FailureGroup.Fingerprint.Contains(search));
+        }
+
+        return query;
+    }
+
+    private IQueryable<AlertDelivery> ApplyDeliveryFilters(
+        IQueryable<AlertDelivery> query,
+        DateTimeOffset? since)
+    {
+        if (since is not null)
+        {
+            query = query.Where(x => x.CreatedAt >= since.Value);
+        }
+
+        if (Category is not null)
+        {
+            query = query.Where(x => x.AlertEvent.FailureGroup.Category == Category.Value);
+        }
+
+        if (DeliveryStatus is not null)
+        {
+            query = query.Where(x => x.Status == DeliveryStatus.Value);
+        }
+
+        if (DestinationId is not null)
+        {
+            query = query.Where(x => x.DestinationId == DestinationId.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Search))
+        {
+            var search = Search;
+            query = query.Where(x =>
+                x.Destination.Name.Contains(search) ||
+                x.AlertEvent.AlertRule.Name.Contains(search) ||
+                x.AlertEvent.FailureGroup.Operation.Contains(search) ||
+                (x.AlertEvent.FailureGroup.FailureType != null && x.AlertEvent.FailureGroup.FailureType.Contains(search)) ||
+                (x.AlertEvent.FailureGroup.Dependency != null && x.AlertEvent.FailureGroup.Dependency.Contains(search)) ||
+                (x.LastError != null && x.LastError.Contains(search)));
+        }
+
+        return query;
+    }
+
+    private void NormalizeFilters()
+    {
+        Window = Window?.Trim().ToLowerInvariant() switch
+        {
+            "24h" => "24h",
+            "7d" => "7d",
+            "30d" => "30d",
+            "all" => "all",
+            _ => "24h"
+        };
+
+        AlertState = AlertState?.Trim().ToLowerInvariant() switch
+        {
+            "open" => "open",
+            "acknowledged" => "acknowledged",
+            _ => "all"
+        };
+
+        RuleState = RuleState?.Trim().ToLowerInvariant() switch
+        {
+            "enabled" => "enabled",
+            "disabled" => "disabled",
+            _ => "all"
+        };
+
+        Search = string.IsNullOrWhiteSpace(Search) ? null : Search.Trim();
+    }
+
+    private string BuildScopeLabel()
+    {
+        var parts = new List<string>
+        {
+            Window switch
+            {
+                "24h" => "Last 24 hours",
+                "7d" => "Last 7 days",
+                "30d" => "Last 30 days",
+                _ => "All retained history"
+            }
+        };
+
+        if (Category is not null)
+        {
+            parts.Add(Category.Value.ToString());
+        }
+
+        if (!string.IsNullOrWhiteSpace(Search))
+        {
+            parts.Add($"search: {Search}");
+        }
+
+        return string.Join(" · ", parts);
+    }
+
+    private static DateTimeOffset? ResolveWindowStart(DateTimeOffset now, string window) => window switch
+    {
+        "24h" => now.AddHours(-24),
+        "7d" => now.AddDays(-7),
+        "30d" => now.AddDays(-30),
+        _ => null
+    };
+
+    private IActionResult RedirectBack(string? returnUrl) =>
+        !string.IsNullOrWhiteSpace(returnUrl) && Url.IsLocalUrl(returnUrl)
+            ? LocalRedirect(returnUrl)
+            : RedirectToPage();
 
     public sealed class CreateDestinationInput
     {
