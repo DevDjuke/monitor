@@ -16,6 +16,7 @@ public sealed class RunModel(MonitorDbContext db) : PageModel
         var run = await db.Runs
             .AsNoTracking()
             .Include(x => x.Component)
+            .Include(x => x.FailureGroup)
             .Include(x => x.Spans)
             .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
 
