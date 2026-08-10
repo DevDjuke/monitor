@@ -57,10 +57,14 @@ public static class OtlpEndpoints
 
         try
         {
+            await using var payload = new MemoryStream();
+            await input.CopyToAsync(payload, cancellationToken);
+            payload.Position = 0;
+
             ExportTraceServiceRequest request;
             try
             {
-                request = ExportTraceServiceRequest.Parser.ParseFrom(input);
+                request = ExportTraceServiceRequest.Parser.ParseFrom(payload);
             }
             catch (InvalidProtocolBufferException)
             {
