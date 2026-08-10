@@ -146,7 +146,7 @@ public sealed class FailureModel(MonitorDbContext db) : PageModel
 
         Last15Minutes = occurrenceTimes.LongCount(x => x >= now.AddMinutes(-15));
         LastHour = occurrenceTimes.LongCount(x => x >= now.AddHours(-1));
-        Last24Hours = occurrenceTimes.LongCount;
+        Last24Hours = occurrenceTimes.LongCount();
 
         Trend = BuildTrend(occurrenceTimes, now);
         PeakHourly = Trend.Count == 0 ? 0 : Trend.Max(x => x.Occurrences);
