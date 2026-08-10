@@ -137,9 +137,11 @@ jobs:
           native_query=$(curl -fsS \
             -H 'X-Monitor-Key: ci-logs-ingestion-key' \
             "http://127.0.0.1:5086/api/logs/query?runId=$native_run_id&level=Warning&search=queue")
-          python3 - "$native_run_id" <<< "$native_query" <<'PY'
+          printf '%s' "$native_query" > /tmp/native-query.json
+          python3 - "$native_run_id" /tmp/native-query.json <<'PY'
           import json, sys
-          data = json.loads(sys.stdin.read())
+          with open(sys.argv[2], encoding="utf-8") as handle:
+              data = json.load(handle)
           assert data["count"] == 1, data
           item = data["items"][0]
           assert item["runId"].lower() == sys.argv[1].lower(), item
