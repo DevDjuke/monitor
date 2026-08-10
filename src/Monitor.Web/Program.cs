@@ -3,9 +3,11 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Infrastructure;
 using Monitor.Infrastructure.Auth;
+using Monitor.Infrastructure.Failures;
 using Monitor.Infrastructure.Retention;
 using Monitor.Web.Api;
 using Monitor.Web.Auth;
+using Monitor.Web.Otlp;
 using Monitor.Web.Realtime;
 using Monitor.Web.Services;
 
@@ -32,6 +34,10 @@ builder.Services.AddDbContext<MonitorDbContext>(options =>
 builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection(RetentionOptions.SectionName));
 builder.Services.AddScoped<RetentionAggregationService>();
 builder.Services.AddHostedService<RetentionWorker>();
+builder.Services.AddSingleton<FailureClassifier>();
+builder.Services.AddScoped<FailureGroupingService>();
+builder.Services.AddHostedService<FailureGroupingWorker>();
+builder.Services.AddScoped<OtlpTraceImporter>();
 
 builder.Services
     .AddIdentity<MonitorUser, IdentityRole>(options =>
@@ -102,6 +108,7 @@ app.UseAuthorization();
 app.MapRazorPages();
 app.MapHub<MonitorHub>("/hubs/monitor").RequireAuthorization();
 app.MapMonitoringApi();
+app.MapOtlp();
 
 await using (var scope = app.Services.CreateAsyncScope())
 {
@@ -113,4 +120,4 @@ await using (var scope = app.Services.CreateAsyncScope())
 app.Run();
 
 static bool IsMachineEndpoint(PathString path) =>
-    path.StartsWithSegments("/api") || path.StartsWithSegments("/hubs");
+    path.StartsWithSegments("/api") || path.StartsWithSegments("/hubs") || path.StartsWithSegments("/v1");
