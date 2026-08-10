@@ -2,18 +2,20 @@
 
 A self-hostable operations and observability control plane for autonomous software: AI agents, MCP servers, bots, workflows, scheduled jobs, scrapers, and background services.
 
-Monitor starts with one deliberately small model:
+Monitor starts with one deliberately small operational model:
 
 ```text
 MonitoredComponent
   └─ AgentRun
        └─ TraceSpan
        └─ FailureGroup
+            ├─ FailureAlertRule
+            └─ FailureAlertEvent
 
 RunAggregate
 ```
 
-The goal is to make every autonomous component answer the same questions: Is it alive? What is it doing? What did it do? How long did it take? What tools/models did it call? How many tokens did it use? What did it cost? What failed, and is that failure recurring?
+The goal is to make every autonomous component answer the same questions: Is it alive? What is it doing? What did it do? How long did it take? What tools/models did it call? How many tokens did it use? What did it cost? What failed, is that failure recurring, and has it crossed an operational threshold?
 
 ## Current vertical slice
 
@@ -24,6 +26,10 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - OpenTelemetry resource/trace/span mapping into the same Component -> Run -> Span model.
 - GenAI semantic attributes mapped into model and token usage fields.
 - Deterministic failure categories/fingerprints with occurrence and first/last-seen tracking.
+- Failure-group drill-down with raw occurrence history, rolling rates, and a 24-hour hourly recurrence trend.
+- Persistent recurrence alert rules with threshold/window/cooldown semantics.
+- Durable alert events with acknowledgement audit state and duplicate-evidence suppression.
+- `/alerts` operational queue for open/recent triggers and rule state.
 - Runs history with server-side search/filtering and stable keyset pagination.
 - SignalR-backed live run updates: the latest page refreshes automatically while older history remains stable.
 - Hourly durable run aggregates by component and model for long-range usage metrics.
@@ -37,7 +43,7 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - `Monitor.OtlpSampleWorker` dogfoods the standard OpenTelemetry .NET OTLP exporter without referencing `Monitor.Client`.
 - Versioned EF Core migrations.
 - SQL Server persistence with LocalDB as the default development instance.
-- GitHub Actions SQL Server-backed integration tests for telemetry, OTLP, migration upgrades, keyset pagination, failure grouping, and retention safety.
+- GitHub Actions SQL Server-backed integration tests for telemetry, OTLP, migration upgrades, keyset pagination, failure grouping, alert evaluation, duplicate-trigger protection, and retention safety.
 
 The Monitor-native HTTP API and OTLP are complementary. The custom API carries Monitor-specific lifecycle semantics; OTLP provides vendor-neutral observability ingestion.
 
@@ -129,9 +135,9 @@ $env:Monitor__BaseUrl = "http://localhost:5000"
 dotnet run --project samples/Monitor.OtlpSampleWorker
 ```
 
-That sample emits one successful trace and two rate-limit failures through OpenTelemetry itself. The two failures contain different request ids but should collapse into the same failure fingerprint while their raw error messages remain distinct.
+That sample emits one successful trace and two rate-limit failures through OpenTelemetry itself. The two failures contain different request ids but collapse into the same failure fingerprint while their raw error messages remain distinct.
 
-## Failure fingerprints
+## Failure fingerprints and drill-down
 
 Failed and cancelled runs are classified into a durable `FailureGroup`. The classifier prefers structured telemetry over message text and currently recognizes:
 
@@ -157,6 +163,63 @@ The original `Run.Error`, payloads, span errors, attributes, and exception data 
 
 Both Monitor-native failed completions and OTLP failures are grouped immediately. A background worker also backfills any failed/cancelled run that somehow remains ungrouped.
 
+The recurring-failure table on `/usage` links to `/failures/{id}`. A failure drill-down shows:
+
+- the stable SHA-256 fingerprint and normalized message template;
+- category, failure/error type, dependency/provider and HTTP status;
+- total occurrence count and first/last seen timestamps;
+- rolling 15-minute, 1-hour and 24-hour occurrence counts;
+- a fixed 24-hour hourly recurrence trend;
+- up to 50 recent raw failed/cancelled runs with their original error messages;
+- alert rules and alert-event history for that exact fingerprint.
+
+## Failure alerting
+
+Alert rules are persistent and scoped to one failure fingerprint. Their condition is:
+
+```text
+N matching failed/cancelled runs within the last M minutes
+```
+
+Each rule has:
+
+- `Threshold`
+- `WindowMinutes`
+- `CooldownMinutes`
+- enabled/disabled state
+- last evaluation and trigger timestamps
+- `LastTriggeredRunSequence`
+
+The last triggering sequence is important: if a condition remains true, repeatedly evaluating it—or restarting the web process—does not fire the same evidence again. A newer matching run must exist. The cooldown separately controls how quickly genuinely new failures may produce another alert while the threshold condition remains true.
+
+When a rule fires, Monitor persists a `FailureAlertEvent` containing the evaluated window, observed occurrence count, threshold, latest run sequence and trigger time. Operators can acknowledge the event; acknowledgement records the user and timestamp but does not mutate or remove the underlying failure evidence.
+
+The `/alerts` page is the central queue for open/recent alert events and configured rule state. Rules can also be created, enabled or disabled from the associated failure-group page.
+
+Configure evaluation through `appsettings.json` or environment variables:
+
+```json
+{
+  "FailureAlerting": {
+    "Enabled": true,
+    "InitialDelaySeconds": 10,
+    "SweepIntervalSeconds": 30
+  }
+}
+```
+
+Equivalent environment variables:
+
+```text
+FailureAlerting__Enabled
+FailureAlerting__InitialDelaySeconds
+FailureAlerting__SweepIntervalSeconds
+```
+
+The evaluator uses the SQL Server application lock `Monitor.FailureAlerting`, so only one Monitor web node evaluates rules at a time.
+
+This slice records and surfaces alert events **inside Monitor**. Email, Slack, Teams, webhook, PagerDuty-style, or other delivery channels are intentionally not implemented yet; those can be consumers of the durable alert-event model instead of being coupled to detection.
+
 ## Retention and aggregation
 
 Terminal runs are aggregated into durable hourly buckets keyed by UTC hour, component, and model. Buckets preserve run counts by terminal status, token totals, reported cost, and duration statistics.
@@ -170,7 +233,7 @@ The default policy is:
 - run the retention sweep every 15 minutes;
 - retain failed and cancelled run/span/error detail indefinitely.
 
-Only successful runs are deleted. Failed and cancelled runs still contribute to aggregates but remain available in `/runs` for forensic inspection, including their payloads, error reason, spans, and failure-group relationship.
+Only successful runs are deleted. Failed and cancelled runs still contribute to aggregates but remain available in `/runs` for forensic inspection, including their payloads, error reason, spans, failure-group relationship, and alert evidence.
 
 Configure the policy through `appsettings.json` or environment variables:
 
@@ -376,9 +439,9 @@ curl -X POST http://localhost:5000/api/runs/{runId}/complete \
 
 ```text
 src/
-  Monitor.Domain/          protocol-independent monitoring model
+  Monitor.Domain/          protocol-independent monitoring + failure/alert model
   Monitor.Client/          .NET Monitor-native ingestion client SDK
-  Monitor.Infrastructure/  EF Core persistence, retention, failure grouping + Identity store
+  Monitor.Infrastructure/  EF Core persistence, retention, failure grouping/alerting + Identity store
   Monitor.Web/             HTTP/OTLP ingestion + Razor control plane
 samples/
   Monitor.SampleWorker/        synthetic Monitor.Client BackgroundService
@@ -389,8 +452,8 @@ docs/
 
 ## Next
 
-1. OTLP metrics and logs, followed by OTLP/JSON and gRPC transports where useful.
-2. Per-component credentials and key rotation.
-3. Failure-group drill-down/history and alerts based on recurrence/rate.
+1. Alert delivery adapters: webhook first, then email/Slack/Teams as useful.
+2. OTLP metrics and logs, followed by OTLP/JSON and gRPC transports where useful.
+3. Per-component credentials and key rotation.
 4. Cost/model dashboards and longer-range aggregate rollups.
 5. Control-plane commands (pause, disable, kill run, configuration).
