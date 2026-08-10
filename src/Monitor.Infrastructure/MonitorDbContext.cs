@@ -13,6 +13,8 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     public DbSet<TraceSpan> Spans => Set<TraceSpan>();
     public DbSet<RunAggregate> RunAggregates => Set<RunAggregate>();
     public DbSet<FailureGroup> FailureGroups => Set<FailureGroup>();
+    public DbSet<FailureAlertRule> FailureAlertRules => Set<FailureAlertRule>();
+    public DbSet<FailureAlertEvent> FailureAlertEvents => Set<FailureAlertEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -41,6 +43,34 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         failureGroup.HasIndex(x => new { x.Category, x.LastSeenAt });
         failureGroup.HasIndex(x => x.LastSeenAt);
 
+        var alertRule = modelBuilder.Entity<FailureAlertRule>();
+        alertRule.ToTable("FailureAlertRules");
+        alertRule.HasKey(x => x.Id);
+        alertRule.Property(x => x.Name).HasMaxLength(200);
+        alertRule.HasIndex(x => new { x.FailureGroupId, x.Enabled });
+        alertRule.HasIndex(x => new { x.Enabled, x.LastEvaluatedAt });
+        alertRule.HasOne(x => x.FailureGroup)
+            .WithMany(x => x.AlertRules)
+            .HasForeignKey(x => x.FailureGroupId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        var alertEvent = modelBuilder.Entity<FailureAlertEvent>();
+        alertEvent.ToTable("FailureAlertEvents");
+        alertEvent.HasKey(x => x.Id);
+        alertEvent.Property(x => x.AcknowledgedBy).HasMaxLength(256);
+        alertEvent.HasIndex(x => x.TriggeredAt).IsDescending();
+        alertEvent.HasIndex(x => x.AcknowledgedAt);
+        alertEvent.HasIndex(x => new { x.FailureGroupId, x.TriggeredAt }).IsDescending(false, true);
+        alertEvent.HasIndex(x => new { x.AlertRuleId, x.TriggeredAt }).IsDescending(false, true);
+        alertEvent.HasOne(x => x.AlertRule)
+            .WithMany(x => x.Events)
+            .HasForeignKey(x => x.AlertRuleId)
+            .OnDelete(DeleteBehavior.Restrict);
+        alertEvent.HasOne(x => x.FailureGroup)
+            .WithMany(x => x.AlertEvents)
+            .HasForeignKey(x => x.FailureGroupId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         var run = modelBuilder.Entity<AgentRun>();
         run.ToTable("Runs");
         run.HasKey(x => x.Id);
@@ -57,6 +87,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         run.HasIndex(x => new { x.ComponentId, x.ExternalId });
         run.HasIndex(x => new { x.ComponentId, x.TraceId });
         run.HasIndex(x => x.FailureGroupId);
+        run.HasIndex(x => new { x.FailureGroupId, x.CompletedAt, x.Sequence });
         run.HasIndex(x => new { x.Status, x.CompletedAt, x.AggregatedAt });
         run.HasOne(x => x.Component)
             .WithMany(x => x.Runs)
