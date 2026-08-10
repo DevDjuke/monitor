@@ -15,6 +15,9 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     public DbSet<FailureGroup> FailureGroups => Set<FailureGroup>();
     public DbSet<FailureAlertRule> FailureAlertRules => Set<FailureAlertRule>();
     public DbSet<FailureAlertEvent> FailureAlertEvents => Set<FailureAlertEvent>();
+    public DbSet<AlertDestination> AlertDestinations => Set<AlertDestination>();
+    public DbSet<FailureAlertRoute> FailureAlertRoutes => Set<FailureAlertRoute>();
+    public DbSet<AlertDelivery> AlertDeliveries => Set<AlertDelivery>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -69,6 +72,45 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         alertEvent.HasOne(x => x.FailureGroup)
             .WithMany(x => x.AlertEvents)
             .HasForeignKey(x => x.FailureGroupId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        var destination = modelBuilder.Entity<AlertDestination>();
+        destination.ToTable("AlertDestinations");
+        destination.HasKey(x => x.Id);
+        destination.Property(x => x.Name).HasMaxLength(200);
+        destination.Property(x => x.Endpoint).HasMaxLength(2048);
+        destination.Property(x => x.ProtectedSigningSecret).HasMaxLength(2048);
+        destination.HasIndex(x => new { x.Enabled, x.Kind });
+
+        var alertRoute = modelBuilder.Entity<FailureAlertRoute>();
+        alertRoute.ToTable("FailureAlertRoutes");
+        alertRoute.HasKey(x => x.Id);
+        alertRoute.HasIndex(x => new { x.AlertRuleId, x.DestinationId }).IsUnique();
+        alertRoute.HasIndex(x => x.DestinationId);
+        alertRoute.HasOne(x => x.AlertRule)
+            .WithMany(x => x.Routes)
+            .HasForeignKey(x => x.AlertRuleId)
+            .OnDelete(DeleteBehavior.Cascade);
+        alertRoute.HasOne(x => x.Destination)
+            .WithMany(x => x.AlertRoutes)
+            .HasForeignKey(x => x.DestinationId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        var alertDelivery = modelBuilder.Entity<AlertDelivery>();
+        alertDelivery.ToTable("AlertDeliveries");
+        alertDelivery.HasKey(x => x.Id);
+        alertDelivery.Property(x => x.LastError).HasMaxLength(2000);
+        alertDelivery.HasIndex(x => new { x.AlertEventId, x.DestinationId }).IsUnique();
+        alertDelivery.HasIndex(x => new { x.Status, x.NextAttemptAt, x.LeaseExpiresAt });
+        alertDelivery.HasIndex(x => new { x.DestinationId, x.CreatedAt }).IsDescending(false, true);
+        alertDelivery.HasIndex(x => x.LeaseId);
+        alertDelivery.HasOne(x => x.AlertEvent)
+            .WithMany(x => x.Deliveries)
+            .HasForeignKey(x => x.AlertEventId)
+            .OnDelete(DeleteBehavior.Restrict);
+        alertDelivery.HasOne(x => x.Destination)
+            .WithMany(x => x.Deliveries)
+            .HasForeignKey(x => x.DestinationId)
             .OnDelete(DeleteBehavior.Restrict);
 
         var run = modelBuilder.Entity<AgentRun>();

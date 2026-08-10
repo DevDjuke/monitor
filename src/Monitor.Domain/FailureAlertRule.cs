@@ -19,6 +19,7 @@ public sealed class FailureAlertRule
 
     public FailureGroup FailureGroup { get; private set; } = null!;
     public ICollection<FailureAlertEvent> Events { get; private set; } = new List<FailureAlertEvent>();
+    public ICollection<FailureAlertRoute> Routes { get; private set; } = new List<FailureAlertRoute>();
 
     public static FailureAlertRule Create(
         Guid failureGroupId,

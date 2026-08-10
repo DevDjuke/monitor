@@ -1,0 +1,275 @@
+@page "/alerts/delivery"
+@model AlertDeliveryModel
+@{
+    ViewData["Title"] = "Alert delivery";
+}
+
+<header class="page-head compact delivery-page-head">
+    <div>
+        <p class="eyebrow">ALERT DELIVERY</p>
+        <h1>Delivery</h1>
+        <p class="lede">Route durable alert events to signed webhooks. Delivery is at-least-once, retryable and fully auditable.</p>
+    </div>
+    <a class="secondary-action" href="/alerts">Back to alerts</a>
+</header>
+
+@if (TempData["StatusMessage"] is string statusMessage)
+{
+    <div class="notice success-notice">@statusMessage</div>
+}
+
+@if (TempData["GeneratedWebhookSecret"] is string generatedSecret)
+{
+    var destinationName = TempData["GeneratedWebhookSecretDestination"] as string ?? "webhook";
+    <div class="notice webhook-secret-notice">
+        <strong>Copy the signing secret for @destinationName now.</strong>
+        <code>@generatedSecret</code>
+        <small>Monitor stores only a Data Protection-encrypted form. Configure the receiver with this secret to verify <code>X-Monitor-Signature</code>.</small>
+    </div>
+}
+
+<div asp-validation-summary="ModelOnly" class="validation-summary"></div>
+
+<section class="metrics" aria-label="Delivery summary">
+    <article class="metric">
+        <span>Destinations</span>
+        <strong>@Model.EnabledDestinations.ToString("N0")</strong>
+        <small>enabled webhooks</small>
+    </article>
+    <article class="metric">
+        <span>Active routes</span>
+        <strong>@Model.ActiveRoutes.ToString("N0")</strong>
+        <small>enabled rule → destination</small>
+    </article>
+    <article class="metric">
+        <span>Queued</span>
+        <strong>@Model.QueuedDeliveries.ToString("N0")</strong>
+        <small>pending or retrying</small>
+    </article>
+    <article class="metric">
+        <span>Dead letters</span>
+        <strong>@Model.DeadLetters.ToString("N0")</strong>
+        <small>need operator attention</small>
+    </article>
+</section>
+
+<section class="delivery-config-grid">
+    <article class="panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">DESTINATION</p>
+                <h2>Add webhook</h2>
+            </div>
+        </div>
+        <form method="post" asp-page-handler="CreateDestination" class="alert-form">
+            <label>
+                <span>Name</span>
+                <input name="name" maxlength="200" required placeholder="Production incident webhook" />
+            </label>
+            <label>
+                <span>Endpoint</span>
+                <input name="endpoint" type="url" maxlength="2048" required placeholder="https://example.com/monitor-alerts" />
+                <small>HTTPS is recommended. Redirects are deliberately not followed.</small>
+            </label>
+            <label>
+                <span>Signing secret</span>
+                <input name="signingSecret" type="password" minlength="16" maxlength="512" autocomplete="new-password" placeholder="Leave blank to generate one" />
+                <small>Used for HMAC-SHA256 request signing. Generated secrets are shown once.</small>
+            </label>
+            <button class="primary-action" type="submit">Create destination</button>
+        </form>
+    </article>
+
+    <article class="panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">ROUTING</p>
+                <h2>Route a rule</h2>
+            </div>
+        </div>
+        <form method="post" asp-page-handler="AddRoute" class="alert-form">
+            <label>
+                <span>Alert rule</span>
+                <select name="ruleId" required>
+                    <option value="">Choose a rule</option>
+                    @foreach (var rule in Model.RuleOptions)
+                    {
+                        <option value="@rule.Id">@rule.Name · @rule.Category/@rule.Operation @(rule.Enabled ? "" : "(disabled)")</option>
+                    }
+                </select>
+            </label>
+            <label>
+                <span>Destination</span>
+                <select name="destinationId" required>
+                    <option value="">Choose a destination</option>
+                    @foreach (var destination in Model.DestinationOptions)
+                    {
+                        <option value="@destination.Id">@destination.Name</option>
+                    }
+                </select>
+            </label>
+            <p class="form-hint">Only alert events fired after the route exists are enqueued. Historical alerts are not backfilled automatically.</p>
+            <button class="primary-action" type="submit" disabled="@(Model.RuleOptions.Count == 0 || Model.DestinationOptions.Count == 0)">Add route</button>
+        </form>
+    </article>
+</section>
+
+<section class="panel table-panel delivery-table-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">DELIVERIES</p>
+            <h2>Recent attempts</h2>
+        </div>
+        <span>@Model.RecentDeliveries.Count shown</span>
+    </div>
+
+    @if (Model.RecentDeliveries.Count == 0)
+    {
+        <div class="empty"><strong>No delivery records yet.</strong><span>Create a destination, route a rule and wait for that rule to fire.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr><th>Alert</th><th>Destination</th><th>State</th><th>Attempts</th><th>HTTP</th><th>Timing</th><th>Error</th><th></th></tr>
+                </thead>
+                <tbody>
+                @foreach (var delivery in Model.RecentDeliveries)
+                {
+                    var stateClass = delivery.Status switch
+                    {
+                        Monitor.Domain.AlertDeliveryStatus.Delivered => "delivered",
+                        Monitor.Domain.AlertDeliveryStatus.DeadLetter => "dead-letter",
+                        Monitor.Domain.AlertDeliveryStatus.RetryScheduled => "retry",
+                        _ => "pending"
+                    };
+                    <tr>
+                        <td>
+                            <a class="table-link" href="/failures/@delivery.FailureGroupId">@delivery.Category · @delivery.Operation</a>
+                            <small>@delivery.RuleName</small>
+                        </td>
+                        <td><strong>@delivery.DestinationName</strong><small>@delivery.Id</small></td>
+                        <td><span class="delivery-state @stateClass">@delivery.Status</span></td>
+                        <td>@delivery.AttemptCount.ToString("N0")</td>
+                        <td>@(delivery.LastStatusCode?.ToString() ?? "—")</td>
+                        <td>
+                            <strong>@delivery.CreatedAt.ToString("MM-dd HH:mm:ss") UTC</strong>
+                            @if (delivery.Status == Monitor.Domain.AlertDeliveryStatus.RetryScheduled)
+                            {
+                                <small>retry @delivery.NextAttemptAt.ToString("HH:mm:ss") UTC</small>
+                            }
+                            else if (delivery.DeliveredAt is not null)
+                            {
+                                <small>delivered @delivery.DeliveredAt.Value.ToString("HH:mm:ss") UTC</small>
+                            }
+                            else if (delivery.LastAttemptAt is not null)
+                            {
+                                <small>attempted @delivery.LastAttemptAt.Value.ToString("HH:mm:ss") UTC</small>
+                            }
+                        </td>
+                        <td class="error-cell">@(delivery.LastError ?? "—")</td>
+                        <td>
+                            @if (delivery.Status is Monitor.Domain.AlertDeliveryStatus.DeadLetter or Monitor.Domain.AlertDeliveryStatus.RetryScheduled)
+                            {
+                                <form method="post" asp-page-handler="RetryDelivery" asp-route-deliveryId="@delivery.Id">
+                                    <button class="inline-button" type="submit">Retry now</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<section class="panel table-panel delivery-destinations-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">DESTINATIONS</p>
+            <h2>Webhooks</h2>
+        </div>
+        <span>@Model.Destinations.Count configured</span>
+    </div>
+
+    @if (Model.Destinations.Count == 0)
+    {
+        <div class="empty compact-empty"><strong>No destinations configured.</strong><span>Add the first webhook above.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr><th>Name</th><th>Endpoint</th><th>Routes</th><th>Delivered</th><th>Dead</th><th>Last delivery</th><th></th></tr>
+                </thead>
+                <tbody>
+                @foreach (var destination in Model.Destinations)
+                {
+                    <tr>
+                        <td><strong>@destination.Name</strong><small><span class="status-dot @(destination.Enabled ? "healthy" : "unknown")"></span> @(destination.Enabled ? "Enabled" : "Disabled")</small></td>
+                        <td class="endpoint-cell"><code>@destination.Endpoint</code></td>
+                        <td>@destination.RouteCount.ToString("N0")</td>
+                        <td>@destination.DeliveredCount.ToString("N0")</td>
+                        <td>@destination.DeadLetterCount.ToString("N0")</td>
+                        <td>@(destination.LastDeliveredAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "Never") UTC</td>
+                        <td>
+                            <div class="table-actions">
+                                <form method="post" asp-page-handler="ToggleDestination" asp-route-destinationId="@destination.Id">
+                                    <button class="inline-button" type="submit">@(destination.Enabled ? "Disable" : "Enable")</button>
+                                </form>
+                                <form method="post" asp-page-handler="RotateSecret" asp-route-destinationId="@destination.Id">
+                                    <button class="inline-button" type="submit">Rotate secret</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<section class="panel table-panel delivery-routes-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">ROUTES</p>
+            <h2>Rule destinations</h2>
+        </div>
+        <span>@Model.Routes.Count configured</span>
+    </div>
+
+    @if (Model.Routes.Count == 0)
+    {
+        <div class="empty compact-empty"><strong>No delivery routes configured.</strong><span>Connect an alert rule to a destination above.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr><th>Rule</th><th>Failure group</th><th>Destination</th><th>Created</th><th></th></tr>
+                </thead>
+                <tbody>
+                @foreach (var route in Model.Routes)
+                {
+                    <tr>
+                        <td><strong>@route.RuleName</strong><small><span class="status-dot @(route.RuleEnabled ? "healthy" : "unknown")"></span> @(route.RuleEnabled ? "Rule enabled" : "Rule disabled")</small></td>
+                        <td><a class="table-link" href="/failures/@route.FailureGroupId">@route.Category · @route.Operation</a></td>
+                        <td><strong>@route.DestinationName</strong><small><span class="status-dot @(route.DestinationEnabled ? "healthy" : "unknown")"></span> @(route.DestinationEnabled ? "Destination enabled" : "Destination disabled")</small></td>
+                        <td>@route.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</td>
+                        <td>
+                            <form method="post" asp-page-handler="RemoveRoute" asp-route-routeId="@route.Id">
+                                <button class="inline-button" type="submit">Remove</button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>

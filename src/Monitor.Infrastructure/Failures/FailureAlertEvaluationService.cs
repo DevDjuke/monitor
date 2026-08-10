@@ -36,6 +36,10 @@ public sealed class FailureAlertEvaluationService(
                 var now = DateTimeOffset.UtcNow;
                 var rules = await db.Set<FailureAlertRule>()
                     .Where(x => x.Enabled)
+                    .Include(x => x.FailureGroup)
+                    .Include(x => x.Routes)
+                        .ThenInclude(x => x.Destination)
+                    .AsSplitQuery()
                     .OrderBy(x => x.CreatedAt)
                     .ToListAsync(cancellationToken);
 
@@ -45,6 +49,7 @@ public sealed class FailureAlertEvaluationService(
                 }
 
                 var createdEvents = new List<Guid>();
+                var enqueuedDeliveries = 0;
 
                 foreach (var rule in rules)
                 {
@@ -89,6 +94,32 @@ public sealed class FailureAlertEvaluationService(
                     db.Set<FailureAlertEvent>().Add(alertEvent);
                     rule.MarkTriggered(now, summary.LatestRunSequence);
                     createdEvents.Add(alertEvent.Id);
+
+                    var enabledDestinations = rule.Routes
+                        .Select(x => x.Destination)
+                        .Where(x => x.Enabled)
+                        .DistinctBy(x => x.Id)
+                        .ToList();
+
+                    if (enabledDestinations.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var payloadJson = FailureAlertPayloadSerializer.Serialize(
+                        alertEvent,
+                        rule,
+                        rule.FailureGroup);
+
+                    foreach (var destination in enabledDestinations)
+                    {
+                        db.Set<AlertDelivery>().Add(AlertDelivery.Create(
+                            alertEvent.Id,
+                            destination.Id,
+                            payloadJson,
+                            now));
+                        enqueuedDeliveries++;
+                    }
                 }
 
                 await db.SaveChangesAsync(cancellationToken);
@@ -96,9 +127,10 @@ public sealed class FailureAlertEvaluationService(
                 if (createdEvents.Count > 0)
                 {
                     logger.LogWarning(
-                        "Failure alert sweep triggered {AlertCount} alert event(s) from {RuleCount} enabled rule(s).",
+                        "Failure alert sweep triggered {AlertCount} alert event(s) from {RuleCount} enabled rule(s) and enqueued {DeliveryCount} delivery record(s).",
                         createdEvents.Count,
-                        rules.Count);
+                        rules.Count,
+                        enqueuedDeliveries);
                 }
 
                 return new FailureAlertSweepResult(true, false, rules.Count, createdEvents.Count, createdEvents);

@@ -18,6 +18,7 @@ public sealed class FailureAlertEvent
 
     public FailureAlertRule AlertRule { get; private set; } = null!;
     public FailureGroup FailureGroup { get; private set; } = null!;
+    public ICollection<AlertDelivery> Deliveries { get; private set; } = new List<AlertDelivery>();
 
     public static FailureAlertEvent Create(
         FailureAlertRule rule,
