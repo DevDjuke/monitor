@@ -12,6 +12,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     public DbSet<ComponentIngestionCredential> ComponentIngestionCredentials => Set<ComponentIngestionCredential>();
     public DbSet<AgentRun> Runs => Set<AgentRun>();
     public DbSet<TraceSpan> Spans => Set<TraceSpan>();
+    public DbSet<LogEvent> LogEvents => Set<LogEvent>();
     public DbSet<RunAggregate> RunAggregates => Set<RunAggregate>();
     public DbSet<FailureGroup> FailureGroups => Set<FailureGroup>();
     public DbSet<FailureAlertRule> FailureAlertRules => Set<FailureAlertRule>();
@@ -173,6 +174,39 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
             .WithMany(x => x.Spans)
             .HasForeignKey(x => x.RunId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        var logEvent = modelBuilder.Entity<LogEvent>();
+        logEvent.ToTable("LogEvents");
+        logEvent.HasKey(x => x.Id);
+        logEvent.Property(x => x.ExternalTraceId).HasMaxLength(32);
+        logEvent.Property(x => x.ExternalSpanId).HasMaxLength(16);
+        logEvent.Property(x => x.ExternalRecordId).HasMaxLength(200);
+        logEvent.Property(x => x.DedupeKey).HasMaxLength(64);
+        logEvent.Property(x => x.SeverityText).HasMaxLength(80);
+        logEvent.Property(x => x.EventName).HasMaxLength(256);
+        logEvent.Property(x => x.Message).HasMaxLength(4000);
+        logEvent.Property(x => x.MessageTemplate).HasMaxLength(4000);
+        logEvent.Property(x => x.ExceptionType).HasMaxLength(240);
+        logEvent.Property(x => x.ExceptionMessage).HasMaxLength(4000);
+        logEvent.Property(x => x.Source).HasMaxLength(240);
+        logEvent.HasIndex(x => x.Timestamp).IsDescending();
+        logEvent.HasIndex(x => new { x.ComponentId, x.Timestamp }).IsDescending(false, true);
+        logEvent.HasIndex(x => new { x.RunId, x.Timestamp }).IsDescending(false, true);
+        logEvent.HasIndex(x => new { x.SpanId, x.Timestamp }).IsDescending(false, true);
+        logEvent.HasIndex(x => x.DedupeKey);
+        logEvent.HasIndex(x => x.ExternalRecordId);
+        logEvent.HasOne(x => x.Component)
+            .WithMany(x => x.LogEvents)
+            .HasForeignKey(x => x.ComponentId)
+            .OnDelete(DeleteBehavior.Cascade);
+        logEvent.HasOne(x => x.Run)
+            .WithMany(x => x.LogEvents)
+            .HasForeignKey(x => x.RunId)
+            .OnDelete(DeleteBehavior.NoAction);
+        logEvent.HasOne(x => x.Span)
+            .WithMany(x => x.LogEvents)
+            .HasForeignKey(x => x.SpanId)
+            .OnDelete(DeleteBehavior.NoAction);
 
         var aggregate = modelBuilder.Entity<RunAggregate>();
         aggregate.ToTable("RunAggregates");
