@@ -18,12 +18,12 @@ This roadmap is the current product sequence for turning Monitor from an observa
 
 ### 1. Alert rule management
 
-Status: **in progress**
+Status: **complete**
 
-- Create alert rules from `/alerts` or a failure fingerprint.
+- Create alert rules from `/alerts/rules` or directly from a failure fingerprint.
 - Edit rule name, threshold, rolling window, cooldown, and enabled state.
 - Assign delivery destinations per rule, while retaining an explicit "all enabled destinations" mode.
-- Safely remove rules without destroying historical alert evidence.
+- Soft-delete rules without destroying historical alert events or delivery evidence.
 - Keep rule configuration visible and manageable from the Alerts control surface.
 
 ### 2. Per-component ingestion credentials
