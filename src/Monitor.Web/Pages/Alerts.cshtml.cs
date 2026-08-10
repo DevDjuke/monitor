@@ -87,7 +87,10 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
 
     public async Task<IActionResult> OnPostCreateDestinationAsync(string? returnUrl, CancellationToken cancellationToken)
     {
-        if (!ModelState.IsValid)
+        // GET filter properties are also bound on POST by Razor Pages. Validate only the
+        // destination payload so an omitted query filter can never veto this operator action.
+        ModelState.Clear();
+        if (!TryValidateModel(DestinationInput, nameof(DestinationInput)))
         {
             await LoadAsync(cancellationToken);
             return Page();
