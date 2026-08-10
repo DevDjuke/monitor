@@ -45,6 +45,8 @@ builder.Services.AddHostedService<FailureAlertingWorker>();
 builder.Services.Configure<AlertDeliveryOptions>(builder.Configuration.GetSection(AlertDeliveryOptions.SectionName));
 builder.Services.AddScoped<WebhookAlertSender>();
 builder.Services.AddHostedService<AlertDeliveryWorker>();
+builder.Services.AddScoped<ComponentCredentialIssuer>();
+builder.Services.AddScoped<IngestionCredentialAuthenticator>();
 builder.Services.AddScoped<OtlpTraceImporter>();
 
 builder.Services
