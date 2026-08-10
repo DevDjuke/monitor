@@ -44,6 +44,17 @@ public enum SpanStatus
     Failed
 }
 
+public enum LogEventLevel
+{
+    Unspecified,
+    Trace,
+    Debug,
+    Information,
+    Warning,
+    Error,
+    Critical
+}
+
 public enum FailureCategory
 {
     Unknown,
