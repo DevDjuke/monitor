@@ -1,0 +1,335 @@
+name: alert-rule-crud-integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  alert-rule-crud:
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: MonitorRuleCi!2026Password
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorRuleCi!2026Password' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - run: dotnet restore Monitor.sln
+      - run: dotnet build Monitor.sln --configuration Release --no-restore
+
+      - name: Exercise alert rule CRUD and selected destination routing
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          ASPNETCORE_URLS: http://127.0.0.1:5084
+          ConnectionStrings__Monitor: Server=127.0.0.1,1433;Database=MonitorRuleCi;User Id=sa;Password=MonitorRuleCi!2026Password;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
+          Monitor__IngestionApiKey: ci-rule-ingestion-key
+          Monitor__BootstrapAdmin__Email: rule-ci@monitor.local
+          Monitor__BootstrapAdmin__Password: MonitorRuleAdmin2026
+          Retention__Enabled: false
+          FailureAlerting__Enabled: true
+          FailureAlerting__InitialDelaySeconds: 0
+          FailureAlerting__SweepIntervalSeconds: 1
+          AlertDelivery__Enabled: false
+        run: |
+          set -euo pipefail
+
+          dotnet tool install --global dotnet-ef --version 10.0.10
+          dotnet ef database update \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --connection "$ConnectionStrings__Monitor"
+
+          sql_container=$(docker ps \
+            --filter 'ancestor=mcr.microsoft.com/mssql/server:2022-latest' \
+            --format '{{.ID}}' | head -n 1)
+          test -n "$sql_container"
+
+          (
+            cd src/Monitor.Web
+            exec dotnet bin/Release/net10.0/Monitor.Web.dll
+          ) > /tmp/monitor-rule-ci.log 2>&1 &
+          app_pid=$!
+
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "=== Monitor alert-rule log ==="
+              cat /tmp/monitor-rule-ci.log 2>/dev/null || true
+              echo "=== End diagnostic log ==="
+            fi
+            kill "$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+            return "$status"
+          }
+          trap cleanup EXIT
+
+          app_ready=false
+          for attempt in {1..45}; do
+            if curl -fsS http://127.0.0.1:5084/api/health > /dev/null; then
+              app_ready=true
+              break
+            fi
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "Monitor exited while starting."
+              wait "$app_pid" || true
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$app_ready" = true
+
+          # Produce a real failure fingerprint through the standard OTLP exporter sample.
+          Monitor__BaseUrl=http://127.0.0.1:5084 \
+          Monitor__IngestionApiKey=ci-rule-ingestion-key \
+            dotnet samples/Monitor.OtlpSampleWorker/bin/Release/net10.0/Monitor.OtlpSampleWorker.dll
+
+          failure_group_id=""
+          for attempt in {1..30}; do
+            failure_group_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P 'MonitorRuleCi!2026Password' -C -b -d MonitorRuleCi -h -1 -W \
+              -Q "SET NOCOUNT ON; SELECT TOP(1) CONVERT(nvarchar(36), Id) FROM FailureGroups WHERE FailureType = N'RateLimitError' AND Operation = N'Generate recommendation' AND Occurrences = 2;" \
+              | tr -d '\r' | xargs)
+            if [ -n "$failure_group_id" ]; then break; fi
+            sleep 1
+          done
+          test -n "$failure_group_id"
+
+          # Authenticate through the real Razor login page.
+          curl -fsS -c /tmp/monitor-rule-cookies.txt \
+            http://127.0.0.1:5084/account/login \
+            -o /tmp/monitor-rule-login.html
+
+          login_token=$(python3 -c '
+          import re
+          html = open("/tmp/monitor-rule-login.html", encoding="utf-8").read()
+          match = re.search(r"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", html)
+          assert match, "login antiforgery token not found"
+          print(match.group(1))
+          ')
+
+          login_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-rule-cookies.txt \
+            -c /tmp/monitor-rule-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$login_token" \
+            --data-urlencode 'Input.Email=rule-ci@monitor.local' \
+            --data-urlencode 'Input.Password=MonitorRuleAdmin2026' \
+            --data-urlencode 'Input.RememberMe=false' \
+            http://127.0.0.1:5084/account/login)
+          test "$login_status" = "302"
+
+          get_token() {
+            local url="$1"
+            local output="$2"
+            curl -fsS -b /tmp/monitor-rule-cookies.txt "$url" -o "$output"
+            python3 - "$output" <<'PY'
+          import re
+          import sys
+          html = open(sys.argv[1], encoding="utf-8").read()
+          match = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', html)
+          assert match, f"antiforgery token not found in {sys.argv[1]}"
+          print(match.group(1))
+          PY
+          }
+
+          create_destination() {
+            local name="$1"
+            local endpoint="$2"
+            local token
+            token=$(get_token 'http://127.0.0.1:5084/alerts' /tmp/monitor-rule-alerts.html)
+            local status
+            status=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -b /tmp/monitor-rule-cookies.txt \
+              -c /tmp/monitor-rule-cookies.txt \
+              --data-urlencode "__RequestVerificationToken=$token" \
+              --data-urlencode "DestinationInput.Name=$name" \
+              --data-urlencode "DestinationInput.EndpointUrl=$endpoint" \
+              --data-urlencode 'DestinationInput.Secret=ci-rule-signing-secret-2026' \
+              'http://127.0.0.1:5084/alerts?handler=CreateDestination')
+            test "$status" = "302"
+          }
+
+          create_destination 'CI selected webhook' 'http://127.0.0.1:5999/selected'
+          create_destination 'CI excluded webhook' 'http://127.0.0.1:5999/excluded'
+
+          selected_destination_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorRuleCi!2026Password' -C -b -d MonitorRuleCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT CONVERT(nvarchar(36), Id) FROM AlertDeliveryDestinations WHERE Name = N'CI selected webhook';" \
+            | tr -d '\r' | xargs)
+          excluded_destination_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorRuleCi!2026Password' -C -b -d MonitorRuleCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT CONVERT(nvarchar(36), Id) FROM AlertDeliveryDestinations WHERE Name = N'CI excluded webhook';" \
+            | tr -d '\r' | xargs)
+          test -n "$selected_destination_id"
+          test -n "$excluded_destination_id"
+
+          # Create a rule through the canonical editor and select exactly one destination.
+          editor_token=$(get_token \
+            "http://127.0.0.1:5084/alerts/rules/edit?failureGroupId=$failure_group_id" \
+            /tmp/monitor-rule-editor.html)
+          grep -q 'CI selected webhook' /tmp/monitor-rule-editor.html
+          grep -q 'CI excluded webhook' /tmp/monitor-rule-editor.html
+
+          create_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-rule-cookies.txt \
+            -c /tmp/monitor-rule-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$editor_token" \
+            --data-urlencode "Input.FailureGroupId=$failure_group_id" \
+            --data-urlencode 'Input.Name=CI selected-destination alert' \
+            --data-urlencode 'Input.Threshold=2' \
+            --data-urlencode 'Input.WindowMinutes=60' \
+            --data-urlencode 'Input.CooldownMinutes=0' \
+            --data-urlencode 'Input.Enabled=true' \
+            --data-urlencode 'Input.DeliverToAllEnabledDestinations=false' \
+            --data-urlencode "Input.SelectedDestinationIds=$selected_destination_id" \
+            'http://127.0.0.1:5084/alerts/rules/edit?handler=Save')
+          test "$create_status" = "302"
+
+          rule_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorRuleCi!2026Password' -C -b -d MonitorRuleCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT CONVERT(nvarchar(36), Id) FROM FailureAlertRules WHERE Name = N'CI selected-destination alert';" \
+            | tr -d '\r' | xargs)
+          test -n "$rule_id"
+
+          configured_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorRuleCi!2026Password' -C -b -d MonitorRuleCi -h -1 -W \
+            -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM FailureAlertRules WHERE Id = '$rule_id' AND DeliverToAllEnabledDestinations = 0 AND Enabled = 1 AND IsDeleted = 0), N'|',
+                (SELECT COUNT(*) FROM FailureAlertRuleDestinations WHERE FailureAlertRuleId = '$rule_id' AND DestinationId = '$selected_destination_id'), N'|',
+                (SELECT COUNT(*) FROM FailureAlertRuleDestinations WHERE FailureAlertRuleId = '$rule_id' AND DestinationId = '$excluded_destination_id')
+              );
+            " | tr -d '\r' | xargs)
+          test "$configured_state" = "1|1|0"
+
+          # Let the real evaluator process the already-ingested failures. Delivery dispatch is
+          # disabled so we can inspect the durable outbox routing deterministically.
+          route_ready=false
+          route_state=""
+          for attempt in {1..30}; do
+            route_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P 'MonitorRuleCi!2026Password' -C -b -d MonitorRuleCi -h -1 -W \
+              -Q "
+                SET NOCOUNT ON;
+                SELECT CONCAT(
+                  (SELECT COUNT(*) FROM FailureAlertEvents WHERE AlertRuleId = '$rule_id'), N'|',
+                  (SELECT COUNT(*) FROM AlertDeliveries d INNER JOIN FailureAlertEvents e ON e.Id = d.AlertEventId WHERE e.AlertRuleId = '$rule_id'), N'|',
+                  (SELECT COUNT(*) FROM AlertDeliveries d INNER JOIN FailureAlertEvents e ON e.Id = d.AlertEventId WHERE e.AlertRuleId = '$rule_id' AND d.DestinationId = '$selected_destination_id'), N'|',
+                  (SELECT COUNT(*) FROM AlertDeliveries d INNER JOIN FailureAlertEvents e ON e.Id = d.AlertEventId WHERE e.AlertRuleId = '$rule_id' AND d.DestinationId = '$excluded_destination_id')
+                );
+              " | tr -d '\r' | xargs)
+            if [ "$route_state" = "1|1|1|0" ]; then
+              route_ready=true
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$route_ready" != true ]; then
+            echo "Selected-destination routing state was: $route_state"
+            exit 1
+          fi
+
+          # Repeated sweeps must not duplicate the event or its outbox row.
+          sleep 4
+          duplicate_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorRuleCi!2026Password' -C -b -d MonitorRuleCi -h -1 -W \
+            -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM FailureAlertEvents WHERE AlertRuleId = '$rule_id'), N'|',
+                (SELECT COUNT(*) FROM AlertDeliveries d INNER JOIN FailureAlertEvents e ON e.Id = d.AlertEventId WHERE e.AlertRuleId = '$rule_id')
+              );
+            " | tr -d '\r' | xargs)
+          test "$duplicate_state" = "1|1"
+
+          # Edit the fired rule through Razor. Disable it while changing the condition/name.
+          edit_token=$(get_token \
+            "http://127.0.0.1:5084/alerts/rules/edit/$rule_id" \
+            /tmp/monitor-rule-edit-existing.html)
+          grep -q 'CI selected-destination alert' /tmp/monitor-rule-edit-existing.html
+          grep -q 'CI selected webhook' /tmp/monitor-rule-edit-existing.html
+
+          edit_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-rule-cookies.txt \
+            -c /tmp/monitor-rule-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$edit_token" \
+            --data-urlencode "Input.FailureGroupId=$failure_group_id" \
+            --data-urlencode 'Input.Name=CI selected-destination alert edited' \
+            --data-urlencode 'Input.Threshold=3' \
+            --data-urlencode 'Input.WindowMinutes=90' \
+            --data-urlencode 'Input.CooldownMinutes=5' \
+            --data-urlencode 'Input.Enabled=false' \
+            --data-urlencode 'Input.DeliverToAllEnabledDestinations=false' \
+            --data-urlencode "Input.SelectedDestinationIds=$selected_destination_id" \
+            "http://127.0.0.1:5084/alerts/rules/edit/$rule_id?handler=Save")
+          test "$edit_status" = "302"
+
+          edited_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorRuleCi!2026Password' -C -b -d MonitorRuleCi -h -1 -W \
+            -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM FailureAlertRules WHERE Id = '$rule_id' AND Name = N'CI selected-destination alert edited' AND Threshold = 3 AND WindowMinutes = 90 AND CooldownMinutes = 5 AND Enabled = 0 AND IsDeleted = 0), N'|',
+                (SELECT COUNT(*) FROM FailureAlertEvents WHERE AlertRuleId = '$rule_id'), N'|',
+                (SELECT COUNT(*) FROM AlertDeliveries d INNER JOIN FailureAlertEvents e ON e.Id = d.AlertEventId WHERE e.AlertRuleId = '$rule_id')
+              );
+            " | tr -d '\r' | xargs)
+          test "$edited_state" = "1|1|1"
+
+          # The management list renders the edited rule and preserves operator controls.
+          rules_token=$(get_token 'http://127.0.0.1:5084/alerts/rules' /tmp/monitor-rules.html)
+          grep -q 'CI selected-destination alert edited' /tmp/monitor-rules.html
+          grep -q 'CI selected webhook' /tmp/monitor-rules.html
+          grep -q 'Edit' /tmp/monitor-rules.html
+
+          delete_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-rule-cookies.txt \
+            -c /tmp/monitor-rule-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$rules_token" \
+            --data-urlencode 'returnUrl=/alerts/rules' \
+            "http://127.0.0.1:5084/alerts/rules?handler=Delete&id=$rule_id")
+          test "$delete_status" = "302"
+
+          deleted_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorRuleCi!2026Password' -C -b -d MonitorRuleCi -h -1 -W \
+            -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM FailureAlertRules WHERE Id = '$rule_id' AND IsDeleted = 1 AND Enabled = 0 AND DeletedAt IS NOT NULL), N'|',
+                (SELECT COUNT(*) FROM FailureAlertEvents WHERE AlertRuleId = '$rule_id'), N'|',
+                (SELECT COUNT(*) FROM AlertDeliveries d INNER JOIN FailureAlertEvents e ON e.Id = d.AlertEventId WHERE e.AlertRuleId = '$rule_id')
+              );
+            " | tr -d '\r' | xargs)
+          test "$deleted_state" = "1|1|1"
+
+          curl -fsS -b /tmp/monitor-rule-cookies.txt \
+            'http://127.0.0.1:5084/alerts/rules?State=deleted' \
+            -o /tmp/monitor-rules-deleted.html
+          grep -q 'CI selected-destination alert edited' /tmp/monitor-rules-deleted.html
+          grep -q 'Historical only' /tmp/monitor-rules-deleted.html
+
+          curl -fsS -b /tmp/monitor-rule-cookies.txt \
+            "http://127.0.0.1:5084/failures/$failure_group_id" \
+            -o /tmp/monitor-rule-failure.html
+          grep -q 'ALERT HISTORY' /tmp/monitor-rule-failure.html
+          grep -q 'CI selected-destination alert edited' /tmp/monitor-rule-failure.html
