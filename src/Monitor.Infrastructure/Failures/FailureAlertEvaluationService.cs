@@ -35,7 +35,7 @@ public sealed class FailureAlertEvaluationService(
             {
                 var now = DateTimeOffset.UtcNow;
                 var rules = await db.Set<FailureAlertRule>()
-                    .Where(x => x.Enabled)
+                    .Where(x => x.Enabled && !x.IsDeleted)
                     .Include(x => x.DestinationAssignments)
                     .OrderBy(x => x.CreatedAt)
                     .ToListAsync(cancellationToken);
