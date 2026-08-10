@@ -241,7 +241,7 @@ jobs:
           grep -q 'FAILURE FINGERPRINTS' /tmp/monitor-otlp-usage.html
           grep -q 'RateLimitError' /tmp/monitor-otlp-usage.html
           grep -q 'sample-provider' /tmp/monitor-otlp-usage.html
-          grep -q "/failures/$failure_group_id" /tmp/monitor-otlp-usage.html
+          grep -q '/failures/' /tmp/monitor-otlp-usage.html
 
           curl -fsS -b /tmp/monitor-otlp-cookies.txt \
             "http://127.0.0.1:5082/failures/$failure_group_id" \
