@@ -27,6 +27,7 @@ public sealed class AgentRun
     public MonitoredComponent Component { get; private set; } = null!;
     public FailureGroup? FailureGroup { get; private set; }
     public ICollection<TraceSpan> Spans { get; private set; } = new List<TraceSpan>();
+    public ICollection<LogEvent> LogEvents { get; private set; } = new List<LogEvent>();
 
     public static AgentRun Start(
         Guid componentId,
