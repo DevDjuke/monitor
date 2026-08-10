@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "Monitor.Web": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Monitor__IngestionApiKey": "monitor-local-development-key"
+      },
+      "applicationUrl": "https://localhost:51010;http://localhost:51011"
+    }
+  }
+}
