@@ -105,7 +105,7 @@
                 <p class="eyebrow">ALERT RULES</p>
                 <h2>Detection policy</h2>
             </div>
-            <a href="/alerts">All alerts</a>
+            <a href="/alerts/rules">Manage rules</a>
         </div>
 
         @if (Model.AlertRules.Count == 0)
@@ -122,9 +122,11 @@
                         <div class="row-main">
                             <strong>@rule.Name</strong>
                             <span>@rule.Threshold occurrences / @rule.WindowMinutes min · @rule.CooldownMinutes min cooldown · @rule.OpenAlerts open</span>
+                            <small>@(rule.DeliverToAllEnabledDestinations ? "All enabled destinations" : $"{rule.DestinationCount} selected destination(s)")</small>
                         </div>
                         <div class="rule-meta">
                             <span>@(rule.LastTriggeredAt is null ? "Never fired" : $"Fired {rule.LastTriggeredAt:MM-dd HH:mm} UTC")</span>
+                            <a class="inline-button button-link" href="/alerts/rules/edit/@rule.Id">Edit</a>
                             <form method="post" asp-page-handler="ToggleAlert" asp-route-id="@failure.Id" asp-route-ruleId="@rule.Id">
                                 <button class="inline-button" type="submit">@(rule.Enabled ? "Disable" : "Enable")</button>
                             </form>
@@ -142,31 +144,10 @@
                 <h2>Alert on recurrence</h2>
             </div>
         </div>
-        <form method="post" asp-page-handler="CreateAlert" asp-route-id="@failure.Id" class="alert-form">
-            <label>
-                <span>Name</span>
-                <input asp-for="AlertInput.Name" placeholder="@failure.Category: @failure.Operation" />
-            </label>
-            <div class="form-grid-3">
-                <label>
-                    <span>Threshold</span>
-                    <input asp-for="AlertInput.Threshold" type="number" min="1" max="100000" />
-                    <small>occurrences</small>
-                </label>
-                <label>
-                    <span>Window</span>
-                    <input asp-for="AlertInput.WindowMinutes" type="number" min="1" max="10080" />
-                    <small>minutes</small>
-                </label>
-                <label>
-                    <span>Cooldown</span>
-                    <input asp-for="AlertInput.CooldownMinutes" type="number" min="0" max="10080" />
-                    <small>minutes</small>
-                </label>
-            </div>
-            <p class="form-hint">Fires when the threshold is met inside the rolling window. The same evidence cannot trigger twice; new occurrences wait through the cooldown.</p>
-            <button class="primary-action" type="submit">Create alert rule</button>
-        </form>
+        <div class="alert-form">
+            <p class="form-hint">Create a recurrence rule for this exact fingerprint, then choose whether it should notify every enabled destination or only selected webhooks.</p>
+            <a class="primary-action button-link" href="/alerts/rules/edit?failureGroupId=@failure.Id">Configure alert rule</a>
+        </div>
     </section>
 </div>
 
