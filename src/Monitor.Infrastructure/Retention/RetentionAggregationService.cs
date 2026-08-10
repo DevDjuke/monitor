@@ -37,16 +37,23 @@ public sealed class RetentionAggregationService(
             {
                 var aggregatedRuns = await AggregatePendingRunsAsync(now, cancellationToken);
                 var purgedSuccessfulRuns = await PurgeSuccessfulRunsAsync(now, cancellationToken);
+                var purgedUnlinkedLogs = await PurgeUnlinkedLogsAsync(now, cancellationToken);
 
-                if (aggregatedRuns > 0 || purgedSuccessfulRuns > 0)
+                if (aggregatedRuns > 0 || purgedSuccessfulRuns > 0 || purgedUnlinkedLogs > 0)
                 {
                     logger.LogInformation(
-                        "Retention sweep aggregated {AggregatedRuns} terminal runs and purged {PurgedSuccessfulRuns} successful runs.",
+                        "Retention sweep aggregated {AggregatedRuns} terminal runs, purged {PurgedSuccessfulRuns} successful runs, and purged {PurgedUnlinkedLogs} unlinked log records.",
                         aggregatedRuns,
-                        purgedSuccessfulRuns);
+                        purgedSuccessfulRuns,
+                        purgedUnlinkedLogs);
                 }
 
-                return new RetentionSweepResult(true, false, aggregatedRuns, purgedSuccessfulRuns);
+                return new RetentionSweepResult(
+                    true,
+                    false,
+                    aggregatedRuns,
+                    purgedSuccessfulRuns,
+                    purgedUnlinkedLogs);
             }
             finally
             {
@@ -192,6 +199,41 @@ public sealed class RetentionAggregationService(
         return totalPurged;
     }
 
+    private async Task<int> PurgeUnlinkedLogsAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var cutoff = now - _options.UnlinkedLogDetailRetention;
+        var totalPurged = 0;
+
+        for (var batchNumber = 0; batchNumber < _options.SafeMaxBatchesPerSweep; batchNumber++)
+        {
+            var ids = await db.LogEvents
+                .AsNoTracking()
+                .Where(x => x.RunId == null && x.Timestamp <= cutoff)
+                .OrderBy(x => x.Timestamp)
+                .Select(x => x.Id)
+                .Take(_options.SafeBatchSize)
+                .ToListAsync(cancellationToken);
+
+            if (ids.Count == 0)
+            {
+                break;
+            }
+
+            var deleted = await db.LogEvents
+                .Where(x => ids.Contains(x.Id))
+                .ExecuteDeleteAsync(cancellationToken);
+
+            totalPurged += deleted;
+
+            if (ids.Count < _options.SafeBatchSize)
+            {
+                break;
+            }
+        }
+
+        return totalPurged;
+    }
+
     private static RunAggregateDelta CreateDelta(IEnumerable<AgentRun> runs)
     {
         var materialized = runs.ToList();
@@ -281,8 +323,9 @@ public sealed record RetentionSweepResult(
     bool Executed,
     bool LockUnavailable,
     int AggregatedRuns,
-    int PurgedSuccessfulRuns)
+    int PurgedSuccessfulRuns,
+    int PurgedUnlinkedLogs)
 {
-    public static RetentionSweepResult Disabled { get; } = new(false, false, 0, 0);
-    public static RetentionSweepResult Locked { get; } = new(false, true, 0, 0);
+    public static RetentionSweepResult Disabled { get; } = new(false, false, 0, 0, 0);
+    public static RetentionSweepResult Locked { get; } = new(false, true, 0, 0, 0);
 }
