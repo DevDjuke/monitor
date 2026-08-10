@@ -198,11 +198,11 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         logEvent.HasOne(x => x.Component)
             .WithMany(x => x.LogEvents)
             .HasForeignKey(x => x.ComponentId)
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.NoAction);
         logEvent.HasOne(x => x.Run)
             .WithMany(x => x.LogEvents)
             .HasForeignKey(x => x.RunId)
-            .OnDelete(DeleteBehavior.NoAction);
+            .OnDelete(DeleteBehavior.Cascade);
         logEvent.HasOne(x => x.Span)
             .WithMany(x => x.LogEvents)
             .HasForeignKey(x => x.SpanId)
