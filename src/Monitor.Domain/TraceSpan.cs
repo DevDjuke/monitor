@@ -24,6 +24,7 @@ public sealed class TraceSpan
     public double CostUsd { get; private set; }
 
     public AgentRun Run { get; private set; } = null!;
+    public ICollection<LogEvent> LogEvents { get; private set; } = new List<LogEvent>();
 
     public static TraceSpan Create(
         Guid runId,
