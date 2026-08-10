@@ -50,8 +50,10 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         alertRule.ToTable("FailureAlertRules");
         alertRule.HasKey(x => x.Id);
         alertRule.Property(x => x.Name).HasMaxLength(200);
+        alertRule.Property(x => x.DeliverToAllEnabledDestinations).HasDefaultValue(true);
         alertRule.HasIndex(x => new { x.FailureGroupId, x.Enabled });
         alertRule.HasIndex(x => new { x.Enabled, x.LastEvaluatedAt });
+        alertRule.HasIndex(x => new { x.IsDeleted, x.Enabled, x.LastEvaluatedAt });
         alertRule.HasOne(x => x.FailureGroup)
             .WithMany(x => x.AlertRules)
             .HasForeignKey(x => x.FailureGroupId)
