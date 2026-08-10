@@ -1,0 +1,79 @@
+.delivery-metrics {
+    max-width: 1480px;
+    margin: 0 auto 22px;
+}
+
+.delivery-config-grid {
+    align-items: start;
+}
+
+.delivery-destinations-panel,
+.alert-deliveries-table-panel {
+    min-width: 0;
+}
+
+.endpoint-url {
+    max-width: 520px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.delivery-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+}
+
+.delivery-actions form {
+    margin: 0;
+}
+
+.alert-state.neutral {
+    color: var(--muted);
+    background: rgba(136,145,164,.10);
+}
+
+.delivery-state {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 5px 8px;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+}
+
+.delivery-state.pending,
+.delivery-state.retryscheduled {
+    color: var(--warn);
+    background: rgba(245,184,80,.10);
+}
+
+.delivery-state.delivered {
+    color: var(--healthy);
+    background: rgba(89,217,142,.10);
+}
+
+.delivery-state.deadletter {
+    color: var(--bad);
+    background: rgba(255,102,125,.10);
+}
+
+.alert-form code {
+    color: var(--muted);
+    font-size: .95em;
+}
+
+@media (max-width: 760px) {
+    .delivery-actions {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .endpoint-url {
+        max-width: 260px;
+    }
+}
