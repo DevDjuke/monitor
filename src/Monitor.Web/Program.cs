@@ -37,6 +37,9 @@ builder.Services.AddHostedService<RetentionWorker>();
 builder.Services.AddSingleton<FailureClassifier>();
 builder.Services.AddScoped<FailureGroupingService>();
 builder.Services.AddHostedService<FailureGroupingWorker>();
+builder.Services.Configure<FailureAlertingOptions>(builder.Configuration.GetSection(FailureAlertingOptions.SectionName));
+builder.Services.AddScoped<FailureAlertEvaluationService>();
+builder.Services.AddHostedService<FailureAlertingWorker>();
 builder.Services.AddScoped<OtlpTraceImporter>();
 
 builder.Services
