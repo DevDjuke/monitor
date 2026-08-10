@@ -4,6 +4,10 @@
     ViewData["Title"] = "Alerts";
 }
 
+@section Head {
+    <link rel="stylesheet" href="~/css/filters.css" asp-append-version="true" />
+}
+
 <header class="page-head compact">
     <div>
         <p class="eyebrow">FAILURE ALERTING</p>
@@ -19,26 +23,103 @@
 
 <div asp-validation-summary="All" class="validation-summary"></div>
 
+<section class="panel filter-panel" aria-label="Alert filters">
+    <form method="get" class="filter-grid">
+        <label class="filter-field">
+            <span>Window</span>
+            <select asp-for="Window">
+                <option value="24h">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="all">All retained history</option>
+            </select>
+        </label>
+
+        <label class="filter-field wide">
+            <span>Search</span>
+            <input asp-for="Search" type="search" autocomplete="off" placeholder="Rule, operation, type, dependency, fingerprint, destination, error…" />
+        </label>
+
+        <label class="filter-field">
+            <span>Failure category</span>
+            <select asp-for="Category">
+                <option value="">All categories</option>
+                @foreach (var category in Model.FailureCategories)
+                {
+                    <option value="@category">@category</option>
+                }
+            </select>
+        </label>
+
+        <label class="filter-field">
+            <span>Alert state</span>
+            <select asp-for="AlertState">
+                <option value="all">All alerts</option>
+                <option value="open">Open</option>
+                <option value="acknowledged">Acknowledged</option>
+            </select>
+        </label>
+
+        <label class="filter-field">
+            <span>Rule state</span>
+            <select asp-for="RuleState">
+                <option value="all">All rules</option>
+                <option value="enabled">Enabled</option>
+                <option value="disabled">Disabled</option>
+            </select>
+        </label>
+
+        <label class="filter-field">
+            <span>Delivery state</span>
+            <select asp-for="DeliveryStatus">
+                <option value="">All deliveries</option>
+                @foreach (var status in Model.DeliveryStatuses)
+                {
+                    <option value="@status">@status</option>
+                }
+            </select>
+        </label>
+
+        <label class="filter-field">
+            <span>Destination</span>
+            <select asp-for="DestinationId">
+                <option value="">All destinations</option>
+                @foreach (var destination in Model.Destinations)
+                {
+                    <option value="@destination.Id">@destination.Name</option>
+                }
+            </select>
+        </label>
+
+        <div class="filter-actions">
+            <button class="filter-apply" type="submit">Apply filters</button>
+            <a class="filter-clear" href="/alerts">Clear</a>
+        </div>
+    </form>
+</section>
+
+<p class="filter-context"><strong>Operational scope:</strong> @Model.ScopeLabel. Time/state filters affect their matching sections; destination configuration itself remains global.</p>
+
 <section class="metrics" aria-label="Alert summary">
     <article class="metric">
-        <span>Open alerts</span>
+        <span>Alerts in scope</span>
+        <strong>@Model.MatchingAlerts.ToString("N0")</strong>
+        <small>matching alert events</small>
+    </article>
+    <article class="metric">
+        <span>Open in scope</span>
         <strong>@Model.OpenAlerts.ToString("N0")</strong>
         <small>awaiting acknowledgement</small>
     </article>
     <article class="metric">
-        <span>Active rules</span>
-        <strong>@Model.ActiveRules.ToString("N0")</strong>
-        <small>currently evaluating</small>
+        <span>Rules in scope</span>
+        <strong>@Model.MatchingRules.ToString("N0")</strong>
+        <small>matching detection policies</small>
     </article>
     <article class="metric">
-        <span>Triggered · 24h</span>
-        <strong>@Model.TriggeredLast24Hours.ToString("N0")</strong>
-        <small>alert events</small>
-    </article>
-    <article class="metric">
-        <span>Affected groups · 24h</span>
+        <span>Affected groups</span>
         <strong>@Model.AffectedGroups.ToString("N0")</strong>
-        <small>distinct fingerprints</small>
+        <small>matching fingerprints</small>
     </article>
 </section>
 
@@ -46,17 +127,22 @@
     <article class="metric">
         <span>Enabled destinations</span>
         <strong>@Model.EnabledDestinations.ToString("N0")</strong>
-        <small>receiving future alerts</small>
+        <small>global configuration</small>
+    </article>
+    <article class="metric">
+        <span>Deliveries in scope</span>
+        <strong>@Model.MatchingDeliveries.ToString("N0")</strong>
+        <small>matching outbox items</small>
     </article>
     <article class="metric">
         <span>Queued / retrying</span>
         <strong>@Model.PendingDeliveries.ToString("N0")</strong>
-        <small>durable outbox items</small>
+        <small>matching durable work</small>
     </article>
     <article class="metric">
         <span>Dead letters</span>
         <strong>@Model.DeadLetterDeliveries.ToString("N0")</strong>
-        <small>require operator attention</small>
+        <small>matching operator attention</small>
     </article>
 </section>
 
@@ -67,7 +153,7 @@
                 <p class="eyebrow">DELIVERY DESTINATIONS</p>
                 <h2>Signed webhooks</h2>
             </div>
-            <span>@Model.Destinations.Count configured</span>
+            <span>@Model.Destinations.Count configured · global</span>
         </div>
 
         @if (Model.Destinations.Count == 0)
@@ -110,9 +196,11 @@
                             <td>@destination.DeadLetters.ToString("N0")</td>
                             <td class="delivery-actions">
                                 <form method="post" asp-page-handler="TestDestination" asp-route-destinationId="@destination.Id">
+                                    <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
                                     <button class="inline-button" type="submit">Test</button>
                                 </form>
                                 <form method="post" asp-page-handler="ToggleDestination" asp-route-destinationId="@destination.Id">
+                                    <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
                                     <button class="inline-button" type="submit">@(destination.Enabled ? "Disable" : "Enable")</button>
                                 </form>
                             </td>
@@ -132,6 +220,7 @@
             </div>
         </div>
         <form method="post" asp-page-handler="CreateDestination" class="alert-form">
+            <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
             <label>
                 <span>Name</span>
                 <input asp-for="DestinationInput.Name" placeholder="Ops webhook" autocomplete="off" />
@@ -157,12 +246,12 @@
             <p class="eyebrow">DELIVERY OUTBOX</p>
             <h2>Recent notifications</h2>
         </div>
-        <span>@Model.RecentDeliveries.Count shown</span>
+        <span>@Model.RecentDeliveries.Count shown · @Model.MatchingDeliveries.ToString("N0") matching</span>
     </div>
 
     @if (Model.RecentDeliveries.Count == 0)
     {
-        <div class="empty"><strong>No notification deliveries yet.</strong><span>Delivery rows are created transactionally when an alert fires.</span></div>
+        <div class="empty"><strong>No notification deliveries match these filters.</strong><span>Change the delivery filters or wait for a matching alert event.</span></div>
     }
     else
     {
@@ -203,6 +292,7 @@
                             @if (delivery.Status != Monitor.Domain.AlertDeliveryStatus.Delivered)
                             {
                                 <form method="post" asp-page-handler="RequeueDelivery" asp-route-deliveryId="@delivery.Id">
+                                    <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
                                     <button class="inline-button" type="submit">Retry now</button>
                                 </form>
                             }
@@ -221,12 +311,12 @@
             <p class="eyebrow">ALERT EVENTS</p>
             <h2>Recent triggers</h2>
         </div>
-        <span>@Model.RecentAlerts.Count shown</span>
+        <span>@Model.RecentAlerts.Count shown · @Model.MatchingAlerts.ToString("N0") matching</span>
     </div>
 
     @if (Model.RecentAlerts.Count == 0)
     {
-        <div class="empty"><strong>No alerts have fired.</strong><span>Create a rule from a failure fingerprint and Monitor will evaluate it continuously.</span></div>
+        <div class="empty"><strong>No alerts match these filters.</strong><span>Change the alert filters or wait for a matching failure fingerprint to cross a rule threshold.</span></div>
     }
     else
     {
@@ -265,6 +355,7 @@
                             @if (alert.AcknowledgedAt is null)
                             {
                                 <form method="post" asp-page-handler="Acknowledge" asp-route-eventId="@alert.Id">
+                                    <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
                                     <button class="inline-button" type="submit">Acknowledge</button>
                                 </form>
                             }
@@ -283,12 +374,12 @@
             <p class="eyebrow">RULES</p>
             <h2>Detection policies</h2>
         </div>
-        <span>Create rules from a failure group</span>
+        <span>@Model.Rules.Count shown · @Model.MatchingRules.ToString("N0") matching</span>
     </div>
 
     @if (Model.Rules.Count == 0)
     {
-        <div class="empty"><strong>No alert rules configured.</strong><span>Open a recurring failure on the Usage page and add a threshold rule there.</span></div>
+        <div class="empty"><strong>No alert rules match these filters.</strong><span>Change the rule filters or create a threshold rule from a recurring failure.</span></div>
     }
     else
     {
@@ -312,6 +403,7 @@
                         <td>@rule.OpenAlerts.ToString("N0")</td>
                         <td>
                             <form method="post" asp-page-handler="ToggleRule" asp-route-ruleId="@rule.Id">
+                                <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
                                 <button class="inline-button" type="submit">@(rule.Enabled ? "Disable" : "Enable")</button>
                             </form>
                         </td>

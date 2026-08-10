@@ -4,6 +4,10 @@
     ViewData["Title"] = "Usage";
 }
 
+@section Head {
+    <link rel="stylesheet" href="~/css/filters.css" asp-append-version="true" />
+}
+
 <header class="page-head compact">
     <div>
         <p class="eyebrow">RETENTION / AGGREGATION</p>
@@ -12,16 +16,87 @@
     </div>
 </header>
 
+<section class="panel filter-panel" aria-label="Usage filters">
+    <form method="get" class="filter-grid">
+        <label class="filter-field">
+            <span>Window</span>
+            <select asp-for="Window">
+                <option value="24h">Last 24 hours</option>
+                <option value="48h">Last 48 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="all">All retained history</option>
+            </select>
+        </label>
+
+        <label class="filter-field">
+            <span>Component</span>
+            <select asp-for="ComponentId">
+                <option value="">All components</option>
+                @foreach (var component in Model.ComponentOptions)
+                {
+                    <option value="@component.Id">@component.Name · @component.Environment</option>
+                }
+            </select>
+        </label>
+
+        <label class="filter-field">
+            <span>Environment</span>
+            <select asp-for="Environment">
+                <option value="">All environments</option>
+                @foreach (var environment in Model.EnvironmentOptions)
+                {
+                    <option value="@environment">@environment</option>
+                }
+            </select>
+        </label>
+
+        <label class="filter-field">
+            <span>Model</span>
+            <select asp-for="Model">
+                <option value="">All models</option>
+                @foreach (var modelName in Model.ModelOptions)
+                {
+                    <option value="@modelName">@modelName</option>
+                }
+            </select>
+        </label>
+
+        <label class="filter-field">
+            <span>Failure category</span>
+            <select asp-for="FailureCategory">
+                <option value="">All categories</option>
+                @foreach (var category in Model.FailureCategories)
+                {
+                    <option value="@category">@category</option>
+                }
+            </select>
+        </label>
+
+        <label class="filter-field wide">
+            <span>Failure search</span>
+            <input asp-for="FailureSearch" type="search" autocomplete="off" placeholder="Operation, type, dependency, template, fingerprint…" />
+        </label>
+
+        <div class="filter-actions">
+            <button class="filter-apply" type="submit">Apply filters</button>
+            <a class="filter-clear" href="/usage">Clear</a>
+        </div>
+    </form>
+</section>
+
+<p class="filter-context"><strong>Usage scope:</strong> @Model.ScopeLabel. Failure category/search apply only to the recurring-failure table.</p>
+
 <section class="metrics" aria-label="Aggregated usage summary">
     <article class="metric">
         <span>Terminal runs</span>
         <strong>@Model.TotalRuns.ToString("N0")</strong>
-        <small>aggregated + pending</small>
+        <small>aggregated + pending · current scope</small>
     </article>
     <article class="metric">
         <span>Success rate</span>
         <strong>@Model.SuccessRate.ToString("0.0")%</strong>
-        <small>@Model.SuccessRuns.ToString("N0") successful</small>
+        <small>@Model.SuccessRuns.ToString("N0") successful · @Model.FailedRuns.ToString("N0") failed</small>
     </article>
     <article class="metric">
         <span>Tokens</span>
@@ -31,7 +106,7 @@
     <article class="metric">
         <span>Cost</span>
         <strong>$@Model.CostUsd.ToString("0.00")</strong>
-        <small>reported estimate</small>
+        <small>reported estimate · current scope</small>
     </article>
 </section>
 
@@ -42,11 +117,12 @@
                 <p class="eyebrow">RETENTION STATE</p>
                 <h2>Raw evidence</h2>
             </div>
+            <span>current usage scope</span>
         </div>
         <div class="rows">
             <div class="system-row">
                 <span class="status-dot healthy"></span>
-                <div class="row-main"><strong>@Model.StoredRawRuns.ToString("N0") raw runs stored</strong><span>Includes recent successes, running work, and forensic failures.</span></div>
+                <div class="row-main"><strong>@Model.StoredRawRuns.ToString("N0") raw runs stored</strong><span>Matching recent successes, running work, and forensic failures.</span></div>
             </div>
             <div class="system-row">
                 <span class="status-dot healthy"></span>
@@ -69,6 +145,7 @@
                 <p class="eyebrow">POLICY</p>
                 <h2>Current retention</h2>
             </div>
+            <span>global configuration</span>
         </div>
         <div class="rows">
             <div class="system-row"><div class="row-main"><strong>@(Model.RetentionEnabled ? "Enabled" : "Disabled")</strong><span>Background retention worker</span></div></div>
@@ -86,12 +163,12 @@
             <p class="eyebrow">FAILURE FINGERPRINTS</p>
             <h2>Recurring failure groups</h2>
         </div>
-        <a href="/alerts">Alert operations</a>
+        <span>@Model.TopFailureGroups.Count shown · <a href="/alerts">Alert operations</a></span>
     </div>
 
     @if (Model.TopFailureGroups.Count == 0)
     {
-        <div class="empty"><strong>No grouped failures yet.</strong><span>Failed and cancelled runs are classified without removing their raw forensic data.</span></div>
+        <div class="empty"><strong>No grouped failures match this scope.</strong><span>Change the filters or wait for failed/cancelled runs to be classified.</span></div>
     }
     else
     {
@@ -128,7 +205,7 @@
                         </td>
                         <td>@(failure.HttpStatusCode?.ToString() ?? "—")</td>
                         <td>@failure.Occurrences.ToString("N0")</td>
-                        <td>@failure.LastSeenAt.ToString("yyyy-MM-dd HH:mm") UTC</td>
+                        <td>@(failure.LastSeenAt?.ToString("yyyy-MM-dd HH:mm") ?? "—") UTC</td>
                     </tr>
                 }
                 </tbody>
@@ -141,13 +218,14 @@
     <div class="panel-head">
         <div>
             <p class="eyebrow">HOURLY AGGREGATES</p>
-            <h2>Last 48 hours</h2>
+            <h2>@Model.RecentBucketLabel</h2>
         </div>
+        <span>@Model.RecentBuckets.Count buckets shown</span>
     </div>
 
     @if (Model.RecentBuckets.Count == 0)
     {
-        <div class="empty"><strong>No aggregate buckets yet.</strong><span>Terminal runs become eligible after the configured aggregation delay.</span></div>
+        <div class="empty"><strong>No aggregate buckets match this scope.</strong><span>Terminal runs become eligible after the configured aggregation delay.</span></div>
     }
     else
     {
