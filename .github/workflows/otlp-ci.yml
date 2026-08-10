@@ -32,7 +32,7 @@ jobs:
       - run: dotnet restore Monitor.sln
       - run: dotnet build Monitor.sln --configuration Release --no-restore
 
-      - name: Export standard OpenTelemetry traces into Monitor
+      - name: Export OpenTelemetry traces and deliver signed alerts
         env:
           ASPNETCORE_ENVIRONMENT: Development
           ASPNETCORE_URLS: http://127.0.0.1:5082
@@ -44,6 +44,14 @@ jobs:
           FailureAlerting__Enabled: true
           FailureAlerting__InitialDelaySeconds: 0
           FailureAlerting__SweepIntervalSeconds: 2
+          AlertDelivery__Enabled: true
+          AlertDelivery__SweepIntervalSeconds: 1
+          AlertDelivery__BatchSize: 20
+          AlertDelivery__MaxAttempts: 3
+          AlertDelivery__BaseRetrySeconds: 1
+          AlertDelivery__MaxRetryMinutes: 1
+          AlertDelivery__RequestTimeoutSeconds: 5
+          MONITOR_WEBHOOK_SECRET: ci-webhook-signing-secret-2026
         run: |
           set -euo pipefail
 
@@ -59,6 +67,84 @@ jobs:
             --format '{{.ID}}' | head -n 1)
           test -n "$sql_container"
 
+          cat > /tmp/monitor-webhook-receiver.py <<'PY'
+          import hashlib
+          import hmac
+          import json
+          import os
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+          SECRET = os.environ["MONITOR_WEBHOOK_SECRET"].encode("utf-8")
+          COUNTS = {"/retry": 0, "/dead": 0}
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  length = int(self.headers.get("Content-Length", "0"))
+                  body = self.rfile.read(length)
+                  timestamp = self.headers.get("X-Monitor-Timestamp", "")
+                  signature = self.headers.get("X-Monitor-Signature", "")
+                  event_type = self.headers.get("X-Monitor-Event", "")
+                  delivery_id = self.headers.get("X-Monitor-Delivery-Id", "")
+
+                  expected = hmac.new(
+                      SECRET,
+                      timestamp.encode("utf-8") + b"." + body,
+                      hashlib.sha256
+                  ).hexdigest()
+
+                  if not timestamp or not delivery_id or signature != "sha256=" + expected:
+                      self.send_response(401)
+                      self.end_headers()
+                      return
+
+                  if self.path not in COUNTS:
+                      self.send_response(404)
+                      self.end_headers()
+                      return
+
+                  COUNTS[self.path] += 1
+                  key = self.path.lstrip("/")
+                  with open(f"/tmp/monitor-webhook-{key}-count", "w", encoding="utf-8") as file:
+                      file.write(str(COUNTS[self.path]))
+                  with open(f"/tmp/monitor-webhook-{key}.json", "wb") as file:
+                      file.write(body)
+                  with open("/tmp/monitor-webhook-events.jsonl", "a", encoding="utf-8") as file:
+                      file.write(json.dumps({
+                          "path": self.path,
+                          "event": event_type,
+                          "deliveryId": delivery_id,
+                          "timestamp": timestamp,
+                          "signatureValid": True
+                      }) + "\n")
+
+                  if self.path == "/retry" and COUNTS[self.path] == 1:
+                      self.send_response(500)
+                  elif self.path == "/dead":
+                      self.send_response(400)
+                  else:
+                      self.send_response(204)
+                  self.end_headers()
+
+              def log_message(self, format, *args):
+                  return
+
+          ThreadingHTTPServer(("127.0.0.1", 5099), Handler).serve_forever()
+          PY
+
+          python3 /tmp/monitor-webhook-receiver.py > /tmp/monitor-webhook-receiver.log 2>&1 &
+          receiver_pid=$!
+
+          receiver_ready=false
+          for attempt in {1..20}; do
+            status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:5099/retry || true)
+            if [ "$status" = "401" ]; then
+              receiver_ready=true
+              break
+            fi
+            sleep 1
+          done
+          test "$receiver_ready" = true
+
           (
             cd src/Monitor.Web
             exec dotnet bin/Release/net10.0/Monitor.Web.dll
@@ -70,10 +156,16 @@ jobs:
             if [ "$status" -ne 0 ]; then
               echo "=== Monitor OTLP log ==="
               cat /tmp/monitor-otlp-ci.log 2>/dev/null || true
-              echo "=== End Monitor OTLP log ==="
+              echo "=== Webhook receiver log ==="
+              cat /tmp/monitor-webhook-receiver.log 2>/dev/null || true
+              echo "=== Webhook events ==="
+              cat /tmp/monitor-webhook-events.jsonl 2>/dev/null || true
+              echo "=== End diagnostic logs ==="
             fi
             kill "$app_pid" 2>/dev/null || true
             wait "$app_pid" 2>/dev/null || true
+            kill "$receiver_pid" 2>/dev/null || true
+            wait "$receiver_pid" 2>/dev/null || true
             return "$status"
           }
           trap cleanup EXIT
@@ -109,6 +201,76 @@ jobs:
             -d '{}' \
             http://127.0.0.1:5082/v1/traces)
           test "$unsupported_media_status" = "415"
+
+          curl -fsS -c /tmp/monitor-otlp-cookies.txt \
+            http://127.0.0.1:5082/account/login \
+            -o /tmp/monitor-otlp-login.html
+
+          token=$(python3 -c '
+          import re
+          html = open("/tmp/monitor-otlp-login.html", encoding="utf-8").read()
+          match = re.search(r"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", html)
+          assert match, "antiforgery token not found"
+          print(match.group(1))
+          ')
+
+          login_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-otlp-cookies.txt \
+            -c /tmp/monitor-otlp-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$token" \
+            --data-urlencode 'Input.Email=otlp-ci@monitor.local' \
+            --data-urlencode 'Input.Password=MonitorOtlpAdmin2026' \
+            --data-urlencode 'Input.RememberMe=false' \
+            http://127.0.0.1:5082/account/login)
+          test "$login_status" = "302"
+
+          create_destination() {
+            local name="$1"
+            local endpoint="$2"
+
+            curl -fsS -b /tmp/monitor-otlp-cookies.txt \
+              http://127.0.0.1:5082/alerts \
+              -o /tmp/monitor-alerts-config.html
+            local destination_token
+            destination_token=$(python3 -c '
+          import re
+          html = open("/tmp/monitor-alerts-config.html", encoding="utf-8").read()
+          match = re.search(r"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", html)
+          assert match, "alerts antiforgery token not found"
+          print(match.group(1))
+          ')
+
+            local status
+            status=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -b /tmp/monitor-otlp-cookies.txt \
+              -c /tmp/monitor-otlp-cookies.txt \
+              --data-urlencode "__RequestVerificationToken=$destination_token" \
+              --data-urlencode "DestinationInput.Name=$name" \
+              --data-urlencode "DestinationInput.EndpointUrl=$endpoint" \
+              --data-urlencode "DestinationInput.Secret=$MONITOR_WEBHOOK_SECRET" \
+              'http://127.0.0.1:5082/alerts?handler=CreateDestination')
+            test "$status" = "302"
+          }
+
+          create_destination 'CI retry webhook' 'http://127.0.0.1:5099/retry'
+          create_destination 'CI dead webhook' 'http://127.0.0.1:5099/dead'
+
+          destination_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorOtlpCi!2026Password' -C -b -d MonitorOtlpCi -h -1 -W \
+            -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM AlertDeliveryDestinations WHERE Enabled = 1), N'|',
+                (SELECT COUNT(*) FROM AlertDeliveryDestinations WHERE ProtectedSecret <> N'ci-webhook-signing-secret-2026' AND LEN(ProtectedSecret) > 32)
+              );
+            " | tr -d '\r' | xargs)
+          test "$destination_state" = "2|2"
+
+          retry_destination_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorOtlpCi!2026Password' -C -b -d MonitorOtlpCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT CONVERT(nvarchar(36), Id) FROM AlertDeliveryDestinations WHERE Name = N'CI retry webhook';" \
+            | tr -d '\r' | xargs)
+          test -n "$retry_destination_id"
 
           Monitor__BaseUrl=http://127.0.0.1:5082 \
           Monitor__IngestionApiKey=ci-otlp-ingestion-key \
@@ -179,61 +341,65 @@ jobs:
               );
             "
 
-          alert_ready=false
-          alert_state=""
-          for attempt in {1..20}; do
-            alert_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+          delivery_ready=false
+          delivery_state=""
+          for attempt in {1..30}; do
+            delivery_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
               -S localhost -U sa -P 'MonitorOtlpCi!2026Password' -C -b -d MonitorOtlpCi -h -1 -W \
               -Q "
                 SET NOCOUNT ON;
                 SELECT CONCAT(
                   (SELECT COUNT(*) FROM FailureAlertEvents WHERE AlertRuleId = '$rule_id'), N'|',
-                  (SELECT COUNT(*) FROM FailureAlertEvents WHERE AlertRuleId = '$rule_id' AND OccurrencesInWindow = 2 AND Threshold = 2 AND LatestRunSequence > 0 AND AcknowledgedAt IS NULL), N'|',
-                  (SELECT COUNT(*) FROM FailureAlertRules WHERE Id = '$rule_id' AND LastEvaluatedAt IS NOT NULL AND LastTriggeredAt IS NOT NULL AND LastTriggeredRunSequence IS NOT NULL)
+                  (SELECT COUNT(*) FROM AlertDeliveries d INNER JOIN FailureAlertEvents e ON e.Id = d.AlertEventId WHERE e.AlertRuleId = '$rule_id'), N'|',
+                  (SELECT COUNT(*) FROM AlertDeliveries d INNER JOIN AlertDeliveryDestinations x ON x.Id = d.DestinationId WHERE x.Name = N'CI retry webhook' AND d.Status = 3 AND d.AttemptCount = 2 AND d.ResponseStatusCode = 204 AND d.DeliveredAt IS NOT NULL AND d.LastError IS NULL), N'|',
+                  (SELECT COUNT(*) FROM AlertDeliveries d INNER JOIN AlertDeliveryDestinations x ON x.Id = d.DestinationId WHERE x.Name = N'CI dead webhook' AND d.Status = 4 AND d.AttemptCount = 1 AND d.ResponseStatusCode = 400 AND d.LastError LIKE N'Webhook returned HTTP 400%'), N'|',
+                  (SELECT COUNT(*) FROM AlertDeliveries WHERE Status IN (1, 2)), N'|',
+                  (SELECT COUNT(*) FROM AlertDeliveryDestinations WHERE Name = N'CI retry webhook' AND LastSuccessAt IS NOT NULL AND LastFailureAt IS NOT NULL AND LastSuccessAt > LastFailureAt), N'|',
+                  (SELECT COUNT(*) FROM AlertDeliveryDestinations WHERE Name = N'CI dead webhook' AND LastFailureAt IS NOT NULL)
                 );
               " | tr -d '\r' | xargs)
 
-            if [ "$alert_state" = "1|1|1" ]; then
-              alert_ready=true
+            if [ "$delivery_state" = "1|2|1|1|0|1|1" ]; then
+              delivery_ready=true
               break
             fi
 
             sleep 1
           done
 
-          if [ "$alert_ready" != true ]; then
-            echo "Alert invariant state was: $alert_state"
+          if [ "$delivery_ready" != true ]; then
+            echo "Alert delivery invariant state was: $delivery_state"
             exit 1
           fi
+
+          test "$(cat /tmp/monitor-webhook-retry-count)" = "2"
+          test "$(cat /tmp/monitor-webhook-dead-count)" = "1"
+
+          python3 - <<'PY'
+          import json
+          payload = json.load(open('/tmp/monitor-webhook-retry.json', encoding='utf-8'))
+          assert payload['schemaVersion'] == 1
+          assert payload['type'] == 'failure.alert.triggered'
+          assert payload['occurrenceWindow']['occurrences'] == 2
+          assert payload['occurrenceWindow']['threshold'] == 2
+          assert payload['rule']['name'] == 'CI rate-limit alert'
+          assert payload['failureGroup']['category'] == 'RateLimit'
+          assert payload['failureGroup']['failureType'] == 'RateLimitError'
+          assert payload['failureGroup']['dependency'] == 'sample-provider'
+          assert payload['failureGroup']['httpStatusCode'] == 429
+          PY
 
           sleep 5
           duplicate_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
             -S localhost -U sa -P 'MonitorOtlpCi!2026Password' -C -b -d MonitorOtlpCi -h -1 -W \
-            -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM FailureAlertEvents WHERE AlertRuleId = '$rule_id';" \
-            | tr -d '\r' | xargs)
-          test "$duplicate_state" = "1"
-
-          curl -fsS -c /tmp/monitor-otlp-cookies.txt \
-            http://127.0.0.1:5082/account/login \
-            -o /tmp/monitor-otlp-login.html
-
-          token=$(python3 -c '
-          import re
-          html = open("/tmp/monitor-otlp-login.html", encoding="utf-8").read()
-          match = re.search(r"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", html)
-          assert match, "antiforgery token not found"
-          print(match.group(1))
-          ')
-
-          login_status=$(curl -sS -o /dev/null -w '%{http_code}' \
-            -b /tmp/monitor-otlp-cookies.txt \
-            -c /tmp/monitor-otlp-cookies.txt \
-            --data-urlencode "__RequestVerificationToken=$token" \
-            --data-urlencode 'Input.Email=otlp-ci@monitor.local' \
-            --data-urlencode 'Input.Password=MonitorOtlpAdmin2026' \
-            --data-urlencode 'Input.RememberMe=false' \
-            http://127.0.0.1:5082/account/login)
-          test "$login_status" = "302"
+            -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM FailureAlertEvents WHERE AlertRuleId = '$rule_id'), N'|',
+                (SELECT COUNT(*) FROM AlertDeliveries d INNER JOIN FailureAlertEvents e ON e.Id = d.AlertEventId WHERE e.AlertRuleId = '$rule_id')
+              );
+            " | tr -d '\r' | xargs)
+          test "$duplicate_state" = "1|2"
 
           curl -fsS -b /tmp/monitor-otlp-cookies.txt \
             http://127.0.0.1:5082/usage \
@@ -256,6 +422,27 @@ jobs:
             http://127.0.0.1:5082/alerts \
             -o /tmp/monitor-alerts.html
           grep -q 'FAILURE ALERTING' /tmp/monitor-alerts.html
+          grep -q 'Signed webhooks' /tmp/monitor-alerts.html
+          grep -q 'CI retry webhook' /tmp/monitor-alerts.html
+          grep -q 'CI dead webhook' /tmp/monitor-alerts.html
+          grep -q 'Delivered' /tmp/monitor-alerts.html
+          grep -q 'DeadLetter' /tmp/monitor-alerts.html
           grep -q 'CI rate-limit alert' /tmp/monitor-alerts.html
           grep -q 'RateLimitError' /tmp/monitor-alerts.html
           grep -q '>Open<' /tmp/monitor-alerts.html
+
+          alerts_token=$(python3 -c '
+          import re
+          html = open("/tmp/monitor-alerts.html", encoding="utf-8").read()
+          match = re.search(r"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", html)
+          assert match, "alerts antiforgery token not found"
+          print(match.group(1))
+          ')
+
+          test_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-otlp-cookies.txt \
+            -c /tmp/monitor-otlp-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$alerts_token" \
+            "http://127.0.0.1:5082/alerts?handler=TestDestination&destinationId=$retry_destination_id")
+          test "$test_status" = "302"
+          test "$(cat /tmp/monitor-webhook-retry-count)" = "3"

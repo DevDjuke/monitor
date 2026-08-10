@@ -11,11 +11,13 @@ MonitoredComponent
        └─ FailureGroup
             ├─ FailureAlertRule
             └─ FailureAlertEvent
+                 └─ AlertDelivery
+                      └─ AlertDeliveryDestination
 
 RunAggregate
 ```
 
-The goal is to make every autonomous component answer the same questions: Is it alive? What is it doing? What did it do? How long did it take? What tools/models did it call? How many tokens did it use? What did it cost? What failed, is that failure recurring, and has it crossed an operational threshold?
+The goal is to make every autonomous component answer the same questions: Is it alive? What is it doing? What did it do? How long did it take? What tools/models did it call? How many tokens did it use? What did it cost? What failed, is that failure recurring, has it crossed an operational threshold, and was that alert actually delivered?
 
 ## Current vertical slice
 
@@ -29,7 +31,9 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - Failure-group drill-down with raw occurrence history, rolling rates, and a 24-hour hourly recurrence trend.
 - Persistent recurrence alert rules with threshold/window/cooldown semantics.
 - Durable alert events with acknowledgement audit state and duplicate-evidence suppression.
-- `/alerts` operational queue for open/recent triggers and rule state.
+- Transactional alert-delivery outbox rows created together with each alert event.
+- HMAC-SHA256 signed webhook delivery with encrypted signing secrets, retries, permanent-failure handling, dead letters, and manual requeue.
+- `/alerts` operational queue for alert events, rule state, webhook destinations, delivery health, and delivery history.
 - Runs history with server-side search/filtering and stable keyset pagination.
 - SignalR-backed live run updates: the latest page refreshes automatically while older history remains stable.
 - Hourly durable run aggregates by component and model for long-range usage metrics.
@@ -43,7 +47,7 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - `Monitor.OtlpSampleWorker` dogfoods the standard OpenTelemetry .NET OTLP exporter without referencing `Monitor.Client`.
 - Versioned EF Core migrations.
 - SQL Server persistence with LocalDB as the default development instance.
-- GitHub Actions SQL Server-backed integration tests for telemetry, OTLP, migration upgrades, keyset pagination, failure grouping, alert evaluation, duplicate-trigger protection, and retention safety.
+- GitHub Actions SQL Server-backed integration tests for telemetry, OTLP, migration upgrades, keyset pagination, failure grouping, alert evaluation, duplicate-trigger protection, signed webhook delivery, retry/dead-letter behavior, and retention safety.
 
 The Monitor-native HTTP API and OTLP are complementary. The custom API carries Monitor-specific lifecycle semantics; OTLP provides vendor-neutral observability ingestion.
 
@@ -218,7 +222,71 @@ FailureAlerting__SweepIntervalSeconds
 
 The evaluator uses the SQL Server application lock `Monitor.FailureAlerting`, so only one Monitor web node evaluates rules at a time.
 
-This slice records and surfaces alert events **inside Monitor**. Email, Slack, Teams, webhook, PagerDuty-style, or other delivery channels are intentionally not implemented yet; those can be consumers of the durable alert-event model instead of being coupled to detection.
+## Alert delivery
+
+Webhook destinations are configured from `/alerts`. A destination has a name, HTTP/HTTPS endpoint, signing secret, enabled state, delivery health and historical delivery rows. The signing secret is stored through ASP.NET Core Data Protection rather than as plaintext in the Monitor database.
+
+When an alert rule fires, its `FailureAlertEvent` and one `AlertDelivery` row for every currently enabled destination are saved together. This is the outbox boundary: a crash cannot commit an alert event while silently losing the fact that it still needs notification delivery.
+
+Webhook requests contain a JSON payload with the alert event, rule, recurrence window and failure-group signature. Monitor also sends:
+
+```text
+X-Monitor-Event: failure.alert.triggered
+X-Monitor-Delivery-Id: <stable delivery GUID>
+X-Monitor-Timestamp: <unix timestamp seconds>
+X-Monitor-Signature: sha256=<hex HMAC>
+```
+
+The signature is HMAC-SHA256 over the exact UTF-8 bytes of:
+
+```text
+<timestamp>.<request body>
+```
+
+A receiver should verify the signature, reject timestamps outside an acceptable replay window, and treat `X-Monitor-Delivery-Id` as an idempotency key. Delivery is **at least once**: if a receiver accepts a request but the response is lost before Monitor records success, the same delivery id can be sent again.
+
+Retry behavior is deliberately operational rather than transport-specific:
+
+- `2xx` marks the delivery delivered;
+- timeout/network errors, `408`, `429`, and `5xx` are retried with exponential backoff;
+- other `4xx` responses are treated as permanent and move directly to dead letter;
+- retryable failures move to dead letter once `MaxAttempts` is reached;
+- operators can manually requeue non-delivered rows from `/alerts`;
+- disabling a destination pauses its queued deliveries without deleting them.
+
+The delivery worker uses the SQL Server application lock `Monitor.AlertDelivery`, so only one Monitor web node dispatches the outbox at a time.
+
+Configure delivery through `appsettings.json` or environment variables:
+
+```json
+{
+  "AlertDelivery": {
+    "Enabled": true,
+    "SweepIntervalSeconds": 5,
+    "BatchSize": 50,
+    "MaxAttempts": 6,
+    "BaseRetrySeconds": 10,
+    "MaxRetryMinutes": 30,
+    "RequestTimeoutSeconds": 10
+  }
+}
+```
+
+Equivalent environment variables:
+
+```text
+AlertDelivery__Enabled
+AlertDelivery__SweepIntervalSeconds
+AlertDelivery__BatchSize
+AlertDelivery__MaxAttempts
+AlertDelivery__BaseRetrySeconds
+AlertDelivery__MaxRetryMinutes
+AlertDelivery__RequestTimeoutSeconds
+```
+
+For multi-node Monitor deployments, ASP.NET Core Data Protection keys must be shared/persisted across nodes so every dispatcher node can decrypt the stored webhook signing secrets. The SQL application lock prevents concurrent dispatch, but it does not replace a shared Data Protection key ring.
+
+Webhook is the first delivery adapter. Email, Slack, Teams, Discord, PagerDuty-style integrations and similar channels can be added on top of the same durable `AlertDelivery` contract without coupling them to failure detection.
 
 ## Retention and aggregation
 
@@ -439,10 +507,10 @@ curl -X POST http://localhost:5000/api/runs/{runId}/complete \
 
 ```text
 src/
-  Monitor.Domain/          protocol-independent monitoring + failure/alert model
+  Monitor.Domain/          protocol-independent monitoring + failure/alert/delivery model
   Monitor.Client/          .NET Monitor-native ingestion client SDK
   Monitor.Infrastructure/  EF Core persistence, retention, failure grouping/alerting + Identity store
-  Monitor.Web/             HTTP/OTLP ingestion + Razor control plane
+  Monitor.Web/             HTTP/OTLP ingestion + Razor control plane + webhook delivery worker
 samples/
   Monitor.SampleWorker/        synthetic Monitor.Client BackgroundService
   Monitor.OtlpSampleWorker/    standard OpenTelemetry OTLP exporter sample
@@ -452,7 +520,7 @@ docs/
 
 ## Next
 
-1. Alert delivery adapters: webhook first, then email/Slack/Teams as useful.
+1. Additional alert delivery adapters: email, Slack, Teams, Discord/PagerDuty-style integrations as useful.
 2. OTLP metrics and logs, followed by OTLP/JSON and gRPC transports where useful.
 3. Per-component credentials and key rotation.
 4. Cost/model dashboards and longer-range aggregate rollups.

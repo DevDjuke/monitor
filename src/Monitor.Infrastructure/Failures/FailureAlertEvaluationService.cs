@@ -44,6 +44,11 @@ public sealed class FailureAlertEvaluationService(
                     return new FailureAlertSweepResult(true, false, 0, 0, []);
                 }
 
+                var destinations = await db.AlertDeliveryDestinations
+                    .Where(x => x.Enabled)
+                    .OrderBy(x => x.CreatedAt)
+                    .ToListAsync(cancellationToken);
+
                 var createdEvents = new List<Guid>();
 
                 foreach (var rule in rules)
@@ -86,7 +91,12 @@ public sealed class FailureAlertEvaluationService(
                         summary.Occurrences,
                         summary.LatestRunSequence);
 
-                    db.Set<FailureAlertEvent>().Add(alertEvent);
+                    db.FailureAlertEvents.Add(alertEvent);
+                    foreach (var destination in destinations)
+                    {
+                        db.AlertDeliveries.Add(AlertDelivery.Create(alertEvent, destination, now));
+                    }
+
                     rule.MarkTriggered(now, summary.LatestRunSequence);
                     createdEvents.Add(alertEvent.Id);
                 }
@@ -96,9 +106,10 @@ public sealed class FailureAlertEvaluationService(
                 if (createdEvents.Count > 0)
                 {
                     logger.LogWarning(
-                        "Failure alert sweep triggered {AlertCount} alert event(s) from {RuleCount} enabled rule(s).",
+                        "Failure alert sweep triggered {AlertCount} alert event(s) from {RuleCount} enabled rule(s) and enqueued delivery to {DestinationCount} destination(s).",
                         createdEvents.Count,
-                        rules.Count);
+                        rules.Count,
+                        destinations.Count);
                 }
 
                 return new FailureAlertSweepResult(true, false, rules.Count, createdEvents.Count, createdEvents);

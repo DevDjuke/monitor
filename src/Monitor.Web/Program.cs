@@ -21,6 +21,8 @@ builder.Services.AddRazorPages(options =>
     options.Conventions.AllowAnonymousToPage("/Error");
 });
 builder.Services.AddSignalR();
+builder.Services.AddDataProtection();
+builder.Services.AddHttpClient("alert-webhooks");
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -40,6 +42,9 @@ builder.Services.AddHostedService<FailureGroupingWorker>();
 builder.Services.Configure<FailureAlertingOptions>(builder.Configuration.GetSection(FailureAlertingOptions.SectionName));
 builder.Services.AddScoped<FailureAlertEvaluationService>();
 builder.Services.AddHostedService<FailureAlertingWorker>();
+builder.Services.Configure<AlertDeliveryOptions>(builder.Configuration.GetSection(AlertDeliveryOptions.SectionName));
+builder.Services.AddScoped<WebhookAlertSender>();
+builder.Services.AddHostedService<AlertDeliveryWorker>();
 builder.Services.AddScoped<OtlpTraceImporter>();
 
 builder.Services
