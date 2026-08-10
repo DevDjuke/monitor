@@ -1,4 +1,3 @@
-using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -20,9 +19,6 @@ public sealed class FailureModel(MonitorDbContext db) : PageModel
     public long Last24Hours { get; private set; }
     public long PeakHourly { get; private set; }
 
-    [BindProperty]
-    public CreateAlertInput AlertInput { get; set; } = new();
-
     public async Task<IActionResult> OnGetAsync(Guid id, CancellationToken cancellationToken)
     {
         if (!await LoadAsync(id, cancellationToken))
@@ -33,52 +29,12 @@ public sealed class FailureModel(MonitorDbContext db) : PageModel
         return Page();
     }
 
-    public async Task<IActionResult> OnPostCreateAlertAsync(Guid id, CancellationToken cancellationToken)
-    {
-        var group = await db.FailureGroups.SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
-        if (group is null)
-        {
-            return NotFound();
-        }
-
-        if (!ModelState.IsValid)
-        {
-            await LoadAsync(id, cancellationToken);
-            return Page();
-        }
-
-        var name = string.IsNullOrWhiteSpace(AlertInput.Name)
-            ? $"{group.Category}: {group.Operation}"
-            : AlertInput.Name.Trim();
-
-        try
-        {
-            var rule = FailureAlertRule.Create(
-                group.Id,
-                name,
-                AlertInput.Threshold,
-                AlertInput.WindowMinutes,
-                AlertInput.CooldownMinutes,
-                DateTimeOffset.UtcNow);
-
-            db.FailureAlertRules.Add(rule);
-            await db.SaveChangesAsync(cancellationToken);
-            TempData["StatusMessage"] = "Alert rule created.";
-        }
-        catch (ArgumentException exception)
-        {
-            ModelState.AddModelError(string.Empty, exception.Message);
-            await LoadAsync(id, cancellationToken);
-            return Page();
-        }
-
-        return RedirectToPage(new { id });
-    }
-
     public async Task<IActionResult> OnPostToggleAlertAsync(Guid id, Guid ruleId, CancellationToken cancellationToken)
     {
         var rule = await db.FailureAlertRules
-            .SingleOrDefaultAsync(x => x.Id == ruleId && x.FailureGroupId == id, cancellationToken);
+            .SingleOrDefaultAsync(
+                x => x.Id == ruleId && x.FailureGroupId == id && !x.IsDeleted,
+                cancellationToken);
 
         if (rule is null)
         {
@@ -170,7 +126,7 @@ public sealed class FailureModel(MonitorDbContext db) : PageModel
 
         AlertRules = await db.FailureAlertRules
             .AsNoTracking()
-            .Where(x => x.FailureGroupId == id)
+            .Where(x => x.FailureGroupId == id && !x.IsDeleted)
             .OrderByDescending(x => x.Enabled)
             .ThenBy(x => x.CreatedAt)
             .Select(x => new AlertRuleRow(
@@ -180,6 +136,8 @@ public sealed class FailureModel(MonitorDbContext db) : PageModel
                 x.WindowMinutes,
                 x.CooldownMinutes,
                 x.Enabled,
+                x.DeliverToAllEnabledDestinations,
+                x.DestinationAssignments.LongCount(),
                 x.LastEvaluatedAt,
                 x.LastTriggeredAt,
                 x.Events.LongCount(e => e.AcknowledgedAt == null)))
@@ -233,21 +191,6 @@ public sealed class FailureModel(MonitorDbContext db) : PageModel
         return buckets;
     }
 
-    public sealed class CreateAlertInput
-    {
-        [StringLength(200)]
-        public string? Name { get; set; }
-
-        [Range(1, 100_000)]
-        public int Threshold { get; set; } = 5;
-
-        [Range(1, 10_080)]
-        public int WindowMinutes { get; set; } = 10;
-
-        [Range(0, 10_080)]
-        public int CooldownMinutes { get; set; } = 15;
-    }
-
     public sealed record FailureSummary(
         Guid Id,
         string Fingerprint,
@@ -281,6 +224,8 @@ public sealed class FailureModel(MonitorDbContext db) : PageModel
         int WindowMinutes,
         int CooldownMinutes,
         bool Enabled,
+        bool DeliverToAllEnabledDestinations,
+        long DestinationCount,
         DateTimeOffset? LastEvaluatedAt,
         DateTimeOffset? LastTriggeredAt,
         long OpenAlerts);

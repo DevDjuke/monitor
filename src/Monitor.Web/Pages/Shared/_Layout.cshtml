@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/css/failure-alerts.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/css/alert-delivery.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/alert-rules.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/css/auth.css" asp-append-version="true" />
     @await RenderSectionAsync("Head", required: false)
 </head>
@@ -24,6 +25,7 @@
                 <a href="/runs">Runs</a>
                 <a href="/usage">Usage</a>
                 <a href="/alerts">Alerts</a>
+                <a href="/alerts/rules">Alert rules</a>
             </nav>
             <div class="sidebar-account">
                 <span class="account-email">@User.Identity?.Name</span>

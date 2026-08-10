@@ -1,0 +1,209 @@
+@page "/alerts/rules/edit/{id:guid?}"
+@model AlertRuleEditModel
+@{
+    ViewData["Title"] = Model.IsEdit ? "Edit alert rule" : "New alert rule";
+    var selectedFailure = Model.SelectedFailureGroup;
+}
+
+@section Head {
+    <link rel="stylesheet" href="~/css/alert-rules.css" asp-append-version="true" />
+}
+
+<header class="page-head compact">
+    <div>
+        <p class="eyebrow">ALERT CONFIGURATION</p>
+        <h1>@(Model.IsEdit ? "Edit alert rule" : "New alert rule")</h1>
+        <p class="lede">Configure recurrence detection and the delivery destinations that should receive the resulting alert event.</p>
+    </div>
+    <a class="secondary-action" href="/alerts/rules">Back to alert rules</a>
+</header>
+
+<div asp-validation-summary="All" class="validation-summary"></div>
+
+<form method="post" asp-page-handler="Save" asp-route-id="@Model.RuleId" class="rule-editor">
+    <section class="panel rule-editor-panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">FAILURE FINGERPRINT</p>
+                <h2>What should this rule watch?</h2>
+            </div>
+            @if (Model.IsEdit)
+            {
+                <span>Immutable after creation</span>
+            }
+        </div>
+
+        <div class="rule-editor-body">
+            @if (Model.IsEdit && selectedFailure is not null)
+            {
+                <input asp-for="Input.FailureGroupId" type="hidden" />
+                <div class="selected-failure-card">
+                    <div>
+                        <span class="failure-category">@selectedFailure.Category</span>
+                        <strong>@selectedFailure.Operation</strong>
+                        <small>@(selectedFailure.FailureType ?? selectedFailure.Dependency ?? "Unknown type")</small>
+                    </div>
+                    <div>
+                        <span>Fingerprint</span>
+                        <code>@selectedFailure.Fingerprint</code>
+                    </div>
+                    <div>
+                        <span>Evidence</span>
+                        <strong>@selectedFailure.Occurrences.ToString("N0") occurrences</strong>
+                        <small>last seen @selectedFailure.LastSeenAt.ToString("yyyy-MM-dd HH:mm") UTC</small>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <label class="rule-field">
+                    <span>Failure fingerprint</span>
+                    <select asp-for="Input.FailureGroupId">
+                        <option value="">Select a recurring failure…</option>
+                        @foreach (var failure in Model.FailureGroups)
+                        {
+                            <option value="@failure.Id">@failure.Category · @failure.Operation · @(failure.FailureType ?? failure.Dependency ?? "Unknown type") · @failure.Occurrences occurrence(s)</option>
+                        }
+                    </select>
+                    <small>The fingerprint is fixed after creation so historical alert evidence cannot change meaning later.</small>
+                </label>
+            }
+        </div>
+    </section>
+
+    <section class="panel rule-editor-panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">DETECTION</p>
+                <h2>Recurrence condition</h2>
+            </div>
+        </div>
+
+        <div class="rule-editor-body">
+            <label class="rule-field">
+                <span>Name</span>
+                <input asp-for="Input.Name" placeholder="Leave blank for a generated name" autocomplete="off" />
+            </label>
+
+            <div class="rule-number-grid">
+                <label class="rule-field">
+                    <span>Threshold</span>
+                    <input asp-for="Input.Threshold" type="number" min="1" max="100000" />
+                    <small>matching occurrences</small>
+                </label>
+                <label class="rule-field">
+                    <span>Rolling window</span>
+                    <input asp-for="Input.WindowMinutes" type="number" min="1" max="10080" />
+                    <small>minutes</small>
+                </label>
+                <label class="rule-field">
+                    <span>Cooldown</span>
+                    <input asp-for="Input.CooldownMinutes" type="number" min="0" max="10080" />
+                    <small>minutes after a trigger</small>
+                </label>
+            </div>
+
+            <label class="rule-toggle">
+                <input asp-for="Input.Enabled" type="checkbox" />
+                <span>
+                    <strong>Enabled</strong>
+                    <small>Disabled rules remain configured but are not evaluated.</small>
+                </span>
+            </label>
+
+            <p class="form-hint">A rule fires when the threshold is reached inside the rolling window. The same run sequence cannot trigger twice; genuinely new evidence must also satisfy the cooldown.</p>
+        </div>
+    </section>
+
+    <section class="panel rule-editor-panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">DELIVERY</p>
+                <h2>Where should alerts go?</h2>
+            </div>
+            <a href="/alerts">Manage destinations</a>
+        </div>
+
+        <div class="rule-editor-body">
+            <div class="delivery-mode-grid" role="radiogroup" aria-label="Delivery scope">
+                <label class="delivery-mode-card">
+                    <input asp-for="Input.DeliverToAllEnabledDestinations" type="radio" value="true" />
+                    <span>
+                        <strong>All enabled destinations</strong>
+                        <small>Preserves the original Monitor behavior. New enabled destinations automatically receive future events from this rule.</small>
+                    </span>
+                </label>
+                <label class="delivery-mode-card">
+                    <input asp-for="Input.DeliverToAllEnabledDestinations" type="radio" value="false" />
+                    <span>
+                        <strong>Selected destinations only</strong>
+                        <small>Only the destinations selected below receive future events from this rule.</small>
+                    </span>
+                </label>
+            </div>
+
+            <div class="destination-picker" data-destination-picker>
+                @if (Model.Destinations.Count == 0)
+                {
+                    <div class="empty compact-empty"><strong>No destinations configured.</strong><span>Add a webhook on the Alerts page before using selected-destination mode.</span></div>
+                }
+                else
+                {
+                    <div class="destination-options">
+                        @foreach (var destination in Model.Destinations)
+                        {
+                            var isSelected = Model.Input.SelectedDestinationIds.Contains(destination.Id);
+                            <label class="destination-option">
+                                @if (isSelected)
+                                {
+                                    <input type="checkbox" name="Input.SelectedDestinationIds" value="@destination.Id" checked />
+                                }
+                                else
+                                {
+                                    <input type="checkbox" name="Input.SelectedDestinationIds" value="@destination.Id" />
+                                }
+                                <span>
+                                    <strong>@destination.Name</strong>
+                                    <small>@destination.Kind · @(destination.Enabled ? "Enabled" : "Disabled")</small>
+                                    <code>@destination.EndpointUrl</code>
+                                </span>
+                            </label>
+                        }
+                    </div>
+                    <p class="form-hint">Assignments survive destination disable/enable cycles. A disabled destination is skipped at trigger time but remains assigned for when it is enabled again.</p>
+                }
+            </div>
+        </div>
+    </section>
+
+    <div class="rule-editor-actions">
+        <a class="secondary-action" href="/alerts/rules">Cancel</a>
+        @if (Model.IsEdit && Model.RuleId is Guid ruleId)
+        {
+            <button class="secondary-action danger-button" type="submit" formaction="/alerts/rules/edit/@ruleId?handler=Delete" formmethod="post" onclick="return confirm('Delete this alert rule? Historical alert events will remain available.');">Delete rule</button>
+        }
+        <button class="primary-action" type="submit">@(Model.IsEdit ? "Save changes" : "Create alert rule")</button>
+    </div>
+</form>
+
+@section Scripts {
+    <script>
+        (() => {
+            const picker = document.querySelector('[data-destination-picker]');
+            const radios = document.querySelectorAll('input[name="Input.DeliverToAllEnabledDestinations"]');
+            if (!picker || radios.length === 0) return;
+
+            const sync = () => {
+                const selected = document.querySelector('input[name="Input.DeliverToAllEnabledDestinations"]:checked');
+                const selectedOnly = selected?.value === 'false';
+                picker.hidden = !selectedOnly;
+                picker.querySelectorAll('input[type="checkbox"]').forEach(input => {
+                    input.disabled = !selectedOnly;
+                });
+            };
+
+            radios.forEach(radio => radio.addEventListener('change', sync));
+            sync();
+        })();
+    </script>
+}

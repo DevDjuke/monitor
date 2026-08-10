@@ -35,7 +35,8 @@ public sealed class FailureAlertEvaluationService(
             {
                 var now = DateTimeOffset.UtcNow;
                 var rules = await db.Set<FailureAlertRule>()
-                    .Where(x => x.Enabled)
+                    .Where(x => x.Enabled && !x.IsDeleted)
+                    .Include(x => x.DestinationAssignments)
                     .OrderBy(x => x.CreatedAt)
                     .ToListAsync(cancellationToken);
 
@@ -44,12 +45,13 @@ public sealed class FailureAlertEvaluationService(
                     return new FailureAlertSweepResult(true, false, 0, 0, []);
                 }
 
-                var destinations = await db.AlertDeliveryDestinations
+                var enabledDestinations = await db.AlertDeliveryDestinations
                     .Where(x => x.Enabled)
                     .OrderBy(x => x.CreatedAt)
-                    .ToListAsync(cancellationToken);
+                    .ToDictionaryAsync(x => x.Id, cancellationToken);
 
                 var createdEvents = new List<Guid>();
+                var enqueuedDeliveries = 0;
 
                 foreach (var rule in rules)
                 {
@@ -92,9 +94,25 @@ public sealed class FailureAlertEvaluationService(
                         summary.LatestRunSequence);
 
                     db.FailureAlertEvents.Add(alertEvent);
-                    foreach (var destination in destinations)
+
+                    IEnumerable<AlertDeliveryDestination> destinationsForRule;
+                    if (rule.DeliverToAllEnabledDestinations)
+                    {
+                        destinationsForRule = enabledDestinations.Values;
+                    }
+                    else
+                    {
+                        destinationsForRule = rule.DestinationAssignments
+                            .Select(x => x.DestinationId)
+                            .Distinct()
+                            .Where(enabledDestinations.ContainsKey)
+                            .Select(destinationId => enabledDestinations[destinationId]);
+                    }
+
+                    foreach (var destination in destinationsForRule)
                     {
                         db.AlertDeliveries.Add(AlertDelivery.Create(alertEvent, destination, now));
+                        enqueuedDeliveries++;
                     }
 
                     rule.MarkTriggered(now, summary.LatestRunSequence);
@@ -106,10 +124,10 @@ public sealed class FailureAlertEvaluationService(
                 if (createdEvents.Count > 0)
                 {
                     logger.LogWarning(
-                        "Failure alert sweep triggered {AlertCount} alert event(s) from {RuleCount} enabled rule(s) and enqueued delivery to {DestinationCount} destination(s).",
+                        "Failure alert sweep triggered {AlertCount} alert event(s) from {RuleCount} enabled rule(s) and enqueued {DeliveryCount} delivery item(s).",
                         createdEvents.Count,
                         rules.Count,
-                        destinations.Count);
+                        enqueuedDeliveries);
                 }
 
                 return new FailureAlertSweepResult(true, false, rules.Count, createdEvents.Count, createdEvents);

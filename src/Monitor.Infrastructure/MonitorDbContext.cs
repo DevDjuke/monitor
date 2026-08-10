@@ -14,6 +14,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     public DbSet<RunAggregate> RunAggregates => Set<RunAggregate>();
     public DbSet<FailureGroup> FailureGroups => Set<FailureGroup>();
     public DbSet<FailureAlertRule> FailureAlertRules => Set<FailureAlertRule>();
+    public DbSet<FailureAlertRuleDestination> FailureAlertRuleDestinations => Set<FailureAlertRuleDestination>();
     public DbSet<FailureAlertEvent> FailureAlertEvents => Set<FailureAlertEvent>();
     public DbSet<AlertDeliveryDestination> AlertDeliveryDestinations => Set<AlertDeliveryDestination>();
     public DbSet<AlertDelivery> AlertDeliveries => Set<AlertDelivery>();
@@ -49,11 +50,26 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         alertRule.ToTable("FailureAlertRules");
         alertRule.HasKey(x => x.Id);
         alertRule.Property(x => x.Name).HasMaxLength(200);
+        alertRule.Property(x => x.DeliverToAllEnabledDestinations).HasDefaultValue(true);
         alertRule.HasIndex(x => new { x.FailureGroupId, x.Enabled });
         alertRule.HasIndex(x => new { x.Enabled, x.LastEvaluatedAt });
+        alertRule.HasIndex(x => new { x.IsDeleted, x.Enabled, x.LastEvaluatedAt });
         alertRule.HasOne(x => x.FailureGroup)
             .WithMany(x => x.AlertRules)
             .HasForeignKey(x => x.FailureGroupId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        var alertRuleDestination = modelBuilder.Entity<FailureAlertRuleDestination>();
+        alertRuleDestination.ToTable("FailureAlertRuleDestinations");
+        alertRuleDestination.HasKey(x => new { x.FailureAlertRuleId, x.DestinationId });
+        alertRuleDestination.HasIndex(x => x.DestinationId);
+        alertRuleDestination.HasOne(x => x.FailureAlertRule)
+            .WithMany(x => x.DestinationAssignments)
+            .HasForeignKey(x => x.FailureAlertRuleId)
+            .OnDelete(DeleteBehavior.Cascade);
+        alertRuleDestination.HasOne(x => x.Destination)
+            .WithMany(x => x.AlertRuleAssignments)
+            .HasForeignKey(x => x.DestinationId)
             .OnDelete(DeleteBehavior.Restrict);
 
         var alertEvent = modelBuilder.Entity<FailureAlertEvent>();

@@ -11,14 +11,18 @@ public sealed class FailureAlertRule
     public int WindowMinutes { get; private set; }
     public int CooldownMinutes { get; private set; }
     public bool Enabled { get; private set; }
+    public bool DeliverToAllEnabledDestinations { get; private set; }
+    public bool IsDeleted { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
     public DateTimeOffset UpdatedAt { get; private set; }
+    public DateTimeOffset? DeletedAt { get; private set; }
     public DateTimeOffset? LastEvaluatedAt { get; private set; }
     public DateTimeOffset? LastTriggeredAt { get; private set; }
     public long? LastTriggeredRunSequence { get; private set; }
 
     public FailureGroup FailureGroup { get; private set; } = null!;
     public ICollection<FailureAlertEvent> Events { get; private set; } = new List<FailureAlertEvent>();
+    public ICollection<FailureAlertRuleDestination> DestinationAssignments { get; private set; } = new List<FailureAlertRuleDestination>();
 
     public static FailureAlertRule Create(
         Guid failureGroupId,
@@ -39,6 +43,8 @@ public sealed class FailureAlertRule
             WindowMinutes = windowMinutes,
             CooldownMinutes = cooldownMinutes,
             Enabled = true,
+            DeliverToAllEnabledDestinations = true,
+            IsDeleted = false,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -51,6 +57,7 @@ public sealed class FailureAlertRule
         int cooldownMinutes,
         DateTimeOffset now)
     {
+        EnsureNotDeleted();
         Validate(threshold, windowMinutes, cooldownMinutes);
 
         Name = NormalizeName(name);
@@ -62,7 +69,28 @@ public sealed class FailureAlertRule
 
     public void SetEnabled(bool enabled, DateTimeOffset now)
     {
+        EnsureNotDeleted();
         Enabled = enabled;
+        UpdatedAt = now;
+    }
+
+    public void SetDeliveryScope(bool deliverToAllEnabledDestinations, DateTimeOffset now)
+    {
+        EnsureNotDeleted();
+        DeliverToAllEnabledDestinations = deliverToAllEnabledDestinations;
+        UpdatedAt = now;
+    }
+
+    public void Delete(DateTimeOffset now)
+    {
+        if (IsDeleted)
+        {
+            return;
+        }
+
+        IsDeleted = true;
+        Enabled = false;
+        DeletedAt = now;
         UpdatedAt = now;
     }
 
@@ -76,6 +104,14 @@ public sealed class FailureAlertRule
         LastTriggeredAt = now;
         LastTriggeredRunSequence = latestRunSequence;
         LastEvaluatedAt = now;
+    }
+
+    private void EnsureNotDeleted()
+    {
+        if (IsDeleted)
+        {
+            throw new InvalidOperationException("Deleted alert rules cannot be modified.");
+        }
     }
 
     private static void Validate(int threshold, int windowMinutes, int cooldownMinutes)
