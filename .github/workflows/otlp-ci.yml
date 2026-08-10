@@ -1,0 +1,186 @@
+name: otlp-integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  otlp:
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: MonitorOtlpCi!2026Password
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorOtlpCi!2026Password' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore Monitor.sln
+      - run: dotnet build Monitor.sln --configuration Release --no-restore
+
+      - name: Export standard OpenTelemetry traces into Monitor
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          ASPNETCORE_URLS: http://127.0.0.1:5082
+          ConnectionStrings__Monitor: Server=127.0.0.1,1433;Database=MonitorOtlpCi;User Id=sa;Password=MonitorOtlpCi!2026Password;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
+          Monitor__IngestionApiKey: ci-otlp-ingestion-key
+          Monitor__BootstrapAdmin__Email: otlp-ci@monitor.local
+          Monitor__BootstrapAdmin__Password: MonitorOtlpAdmin2026
+          Retention__Enabled: false
+        run: |
+          set -euo pipefail
+
+          dotnet tool install --global dotnet-ef --version 10.0.10
+          dotnet ef database update \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --connection "$ConnectionStrings__Monitor"
+
+          sql_container=$(docker ps \
+            --filter 'ancestor=mcr.microsoft.com/mssql/server:2022-latest' \
+            --format '{{.ID}}' | head -n 1)
+          test -n "$sql_container"
+
+          (
+            cd src/Monitor.Web
+            exec dotnet bin/Release/net10.0/Monitor.Web.dll
+          ) > /tmp/monitor-otlp-ci.log 2>&1 &
+          app_pid=$!
+
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "=== Monitor OTLP log ==="
+              cat /tmp/monitor-otlp-ci.log 2>/dev/null || true
+              echo "=== End Monitor OTLP log ==="
+            fi
+            kill "$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+            return "$status"
+          }
+          trap cleanup EXIT
+
+          app_ready=false
+          for attempt in {1..45}; do
+            if curl -fsS http://127.0.0.1:5082/api/health > /dev/null; then
+              app_ready=true
+              break
+            fi
+
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "Monitor exited while starting for the OTLP gate."
+              wait "$app_pid" || true
+              exit 1
+            fi
+
+            sleep 1
+          done
+          test "$app_ready" = true
+
+          unauthenticated_otlp_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -X POST \
+            -H 'Content-Type: application/x-protobuf' \
+            --data-binary '' \
+            http://127.0.0.1:5082/v1/traces)
+          test "$unauthenticated_otlp_status" = "401"
+
+          unsupported_media_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -X POST \
+            -H 'X-Monitor-Key: ci-otlp-ingestion-key' \
+            -H 'Content-Type: application/json' \
+            -d '{}' \
+            http://127.0.0.1:5082/v1/traces)
+          test "$unsupported_media_status" = "415"
+
+          Monitor__BaseUrl=http://127.0.0.1:5082 \
+          Monitor__IngestionApiKey=ci-otlp-ingestion-key \
+            dotnet samples/Monitor.OtlpSampleWorker/bin/Release/net10.0/Monitor.OtlpSampleWorker.dll
+
+          otlp_ready=false
+          state=""
+          for attempt in {1..30}; do
+            state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P 'MonitorOtlpCi!2026Password' -C -b -d MonitorOtlpCi -h -1 -W \
+              -Q "
+                SET NOCOUNT ON;
+                DECLARE @ComponentId uniqueidentifier = (
+                    SELECT TOP(1) Id
+                    FROM Components
+                    WHERE Slug = N'monitor-samples-otlp-sample-auditor'
+                      AND Environment = N'development'
+                );
+
+                SELECT CONCAT(
+                  (SELECT COUNT(*) FROM Components WHERE Id = @ComponentId AND Type = 0 AND Version = N'0.1.0'), N'|',
+                  (SELECT COUNT(*) FROM Runs WHERE ComponentId = @ComponentId AND [Trigger] = N'OTLP'), N'|',
+                  (SELECT COUNT(*) FROM Runs WHERE ComponentId = @ComponentId AND Status = 1), N'|',
+                  (SELECT COUNT(*) FROM Runs WHERE ComponentId = @ComponentId AND Status = 2), N'|',
+                  (SELECT COUNT(DISTINCT TraceId) FROM Runs WHERE ComponentId = @ComponentId AND LEN(TraceId) = 32), N'|',
+                  (SELECT COUNT(*) FROM Spans s INNER JOIN Runs r ON r.Id = s.RunId WHERE r.ComponentId = @ComponentId), N'|',
+                  (SELECT COUNT(*) FROM Spans s INNER JOIN Runs r ON r.Id = s.RunId WHERE r.ComponentId = @ComponentId AND s.ParentSpanId IS NOT NULL), N'|',
+                  (SELECT COUNT(*) FROM Spans s INNER JOIN Runs r ON r.Id = s.RunId WHERE r.ComponentId = @ComponentId AND s.ErrorType = N'RateLimitError' AND s.HttpStatusCode = 429 AND s.Status = 2), N'|',
+                  (SELECT COUNT(*) FROM Runs WHERE ComponentId = @ComponentId AND Status = 1 AND InputTokens = 120 AND OutputTokens = 42 AND ABS(CostUsd - 0.0012) < 0.0000001), N'|',
+                  (SELECT COUNT(*) FROM Runs WHERE ComponentId = @ComponentId AND Status = 2 AND InputTokens = 200 AND OutputTokens = 0 AND FailureGroupId IS NOT NULL), N'|',
+                  (SELECT COUNT(DISTINCT FailureGroupId) FROM Runs WHERE ComponentId = @ComponentId AND Status = 2), N'|',
+                  (SELECT COUNT(DISTINCT Error) FROM Runs WHERE ComponentId = @ComponentId AND Status = 2 AND Error LIKE N'Rate limit exceeded for request req-%'), N'|',
+                  (SELECT COUNT(*) FROM FailureGroups WHERE Category = 2 AND Occurrences = 2 AND FailureType = N'RateLimitError' AND Operation = N'Generate recommendation' AND Dependency = N'sample-provider' AND HttpStatusCode = 429), N'|',
+                  (SELECT COUNT(*) FROM FailureGroups WHERE Category = 2 AND MessageTemplate = N'Rate limit exceeded for request req-<n>')
+                );
+              " | tr -d '\r' | xargs)
+
+            if [ "$state" = "1|3|1|2|3|6|3|2|1|2|1|2|1|1" ]; then
+              otlp_ready=true
+              break
+            fi
+
+            sleep 1
+          done
+
+          if [ "$otlp_ready" != true ]; then
+            echo "OTLP invariant state was: $state"
+            exit 1
+          fi
+
+          curl -fsS -c /tmp/monitor-otlp-cookies.txt \
+            http://127.0.0.1:5082/account/login \
+            -o /tmp/monitor-otlp-login.html
+
+          token=$(python3 -c '
+          import re
+          html = open("/tmp/monitor-otlp-login.html", encoding="utf-8").read()
+          match = re.search(r"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", html)
+          assert match, "antiforgery token not found"
+          print(match.group(1))
+          ')
+
+          login_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-otlp-cookies.txt \
+            -c /tmp/monitor-otlp-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$token" \
+            --data-urlencode 'Input.Email=otlp-ci@monitor.local' \
+            --data-urlencode 'Input.Password=MonitorOtlpAdmin2026' \
+            --data-urlencode 'Input.RememberMe=false' \
+            http://127.0.0.1:5082/account/login)
+          test "$login_status" = "302"
+
+          curl -fsS -b /tmp/monitor-otlp-cookies.txt \
+            http://127.0.0.1:5082/usage \
+            -o /tmp/monitor-otlp-usage.html
+          grep -q 'FAILURE FINGERPRINTS' /tmp/monitor-otlp-usage.html
+          grep -q 'RateLimitError' /tmp/monitor-otlp-usage.html
+          grep -q 'sample-provider' /tmp/monitor-otlp-usage.html
