@@ -25,9 +25,13 @@ jobs:
 
       - run: dotnet restore Monitor.sln
 
-      - name: Generate EF Core migration
+      - name: Regenerate EF Core migration
         run: |
           dotnet tool install --global dotnet-ef --version 10.0.10
+          dotnet ef migrations remove --force \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext
           dotnet ef migrations add AlertRuleManagement \
             --project src/Monitor.Infrastructure \
             --startup-project src/Monitor.Web \
@@ -43,5 +47,5 @@ jobs:
             echo "No migration changes generated."
             exit 0
           fi
-          git commit -m "chore: generate alert rule management migration"
+          git commit -m "chore: regenerate alert rule management migration"
           git push origin HEAD:feature/alert-rule-crud
