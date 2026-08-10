@@ -112,6 +112,16 @@ public sealed class AlertRulesModel(MonitorDbContext db) : PageModel
             .Take(200)
             .ToListAsync(cancellationToken);
 
+        var ruleIds = rules.Select(x => x.Id).ToList();
+        var openAlertCounts = ruleIds.Count == 0
+            ? new Dictionary<Guid, long>()
+            : await db.FailureAlertEvents
+                .AsNoTracking()
+                .Where(x => ruleIds.Contains(x.AlertRuleId) && x.AcknowledgedAt == null)
+                .GroupBy(x => x.AlertRuleId)
+                .Select(group => new { RuleId = group.Key, Count = group.LongCount() })
+                .ToDictionaryAsync(x => x.RuleId, x => x.Count, cancellationToken);
+
         Rules = rules.Select(rule => new RuleRow(
             rule.Id,
             rule.FailureGroupId,
@@ -128,7 +138,7 @@ public sealed class AlertRulesModel(MonitorDbContext db) : PageModel
             rule.DeletedAt,
             rule.LastEvaluatedAt,
             rule.LastTriggeredAt,
-            rule.Events.LongCount(x => x.AcknowledgedAt == null),
+            openAlertCounts.GetValueOrDefault(rule.Id),
             BuildDeliveryScope(rule)))
             .ToList();
     }
