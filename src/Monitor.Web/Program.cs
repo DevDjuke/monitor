@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Monitor.Infrastructure;
 using Monitor.Infrastructure.Auth;
 using Monitor.Infrastructure.Failures;
+using Monitor.Infrastructure.Logs;
 using Monitor.Infrastructure.Retention;
 using Monitor.Web.Api;
 using Monitor.Web.Auth;
@@ -47,8 +48,11 @@ builder.Services.AddScoped<WebhookAlertSender>();
 builder.Services.AddHostedService<AlertDeliveryWorker>();
 builder.Services.AddScoped<ComponentCredentialIssuer>();
 builder.Services.AddScoped<IngestionCredentialAuthenticator>();
+builder.Services.AddScoped<LogCorrelationService>();
+builder.Services.AddHostedService<LogCorrelationWorker>();
 builder.Services.AddScoped<OtlpComponentScopeValidator>();
 builder.Services.AddScoped<OtlpTraceImporter>();
+builder.Services.AddScoped<OtlpLogImporter>();
 
 builder.Services
     .AddIdentity<MonitorUser, IdentityRole>(options =>
@@ -119,6 +123,7 @@ app.UseAuthorization();
 app.MapRazorPages();
 app.MapHub<MonitorHub>("/hubs/monitor").RequireAuthorization();
 app.MapMonitoringApi();
+app.MapLogApi();
 app.MapOtlp();
 
 await using (var scope = app.Services.CreateAsyncScope())

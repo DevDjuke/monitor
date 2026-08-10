@@ -62,6 +62,44 @@
     </section>
 }
 
+<section class="panel">
+    <div class="panel-head">
+        <div><p class="eyebrow">TIMELINE</p><h2>Run events</h2></div>
+        <span>@Model.LogEvents.Count logs · @Model.Spans.Count spans</span>
+    </div>
+    @if (Model.Timeline.Count == 0)
+    {
+        <div class="empty"><strong>No detailed telemetry reported.</strong><span>Spans and structured log events will appear here in timestamp order.</span></div>
+    }
+    else
+    {
+        <div class="run-timeline">
+        @foreach (var item in Model.Timeline)
+        {
+            <div class="timeline-row @item.CssClass">
+                <span class="timeline-time">@item.Timestamp.ToString("HH:mm:ss.fff")</span>
+                <span class="timeline-kind">@item.Kind</span>
+                <div class="timeline-content">
+                    <strong>@item.Title</strong>
+                    @if (!string.IsNullOrWhiteSpace(item.Subtitle))
+                    {
+                        <small>@item.Subtitle</small>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(item.PropertiesJson))
+                    {
+                        <details>
+                            <summary>Properties</summary>
+                            <pre>@item.PropertiesJson</pre>
+                        </details>
+                    }
+                </div>
+                <span class="timeline-detail">@(item.Detail ?? string.Empty)</span>
+            </div>
+        }
+        </div>
+    }
+</section>
+
 <section class="panel trace-panel">
     <div class="panel-head"><div><p class="eyebrow">TRACE</p><h2>Execution</h2></div><span>@Model.Spans.Count spans</span></div>
     @if (Model.Spans.Count == 0)

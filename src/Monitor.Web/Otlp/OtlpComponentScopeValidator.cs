@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Infrastructure;
+using OpenTelemetry.Proto.Collector.Logs.V1;
 using OpenTelemetry.Proto.Collector.Trace.V1;
 using OpenTelemetry.Proto.Common.V1;
 
@@ -18,11 +19,7 @@ public sealed partial class OtlpComponentScopeValidator(MonitorDbContext db)
             return true;
         }
 
-        var component = await db.Components
-            .AsNoTracking()
-            .Where(x => x.Id == authorizedComponentId.Value && x.Enabled)
-            .Select(x => new { x.Slug, x.Environment })
-            .SingleOrDefaultAsync(cancellationToken);
+        var component = await GetAuthorizedComponentAsync(authorizedComponentId.Value, cancellationToken);
         if (component is null)
         {
             return false;
@@ -30,23 +27,66 @@ public sealed partial class OtlpComponentScopeValidator(MonitorDbContext db)
 
         foreach (var resourceSpans in request.ResourceSpans)
         {
-            var attributes = resourceSpans.Resource?.Attributes ?? [];
-            var serviceName = GetString(attributes, "service.name") ?? "unknown_service";
-            var serviceNamespace = GetString(attributes, "service.namespace");
-            var environment = GetString(attributes, "deployment.environment.name")
-                ?? GetString(attributes, "deployment.environment")
-                ?? "unknown";
-
-            var slug = BuildSlug(serviceNamespace, serviceName);
-            var normalizedEnvironment = environment.Trim().ToLowerInvariant();
-            if (!string.Equals(component.Slug, slug, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(component.Environment, normalizedEnvironment, StringComparison.OrdinalIgnoreCase))
+            if (!Matches(component, resourceSpans.Resource?.Attributes ?? []))
             {
                 return false;
             }
         }
 
         return true;
+    }
+
+    public async Task<bool> CanIngestAsync(
+        ExportLogsServiceRequest request,
+        Guid? authorizedComponentId,
+        CancellationToken cancellationToken = default)
+    {
+        if (authorizedComponentId is null)
+        {
+            return true;
+        }
+
+        var component = await GetAuthorizedComponentAsync(authorizedComponentId.Value, cancellationToken);
+        if (component is null)
+        {
+            return false;
+        }
+
+        foreach (var resourceLogs in request.ResourceLogs)
+        {
+            if (!Matches(component, resourceLogs.Resource?.Attributes ?? []))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private async Task<ComponentScope?> GetAuthorizedComponentAsync(
+        Guid componentId,
+        CancellationToken cancellationToken)
+    {
+        return await db.Components
+            .AsNoTracking()
+            .Where(x => x.Id == componentId && x.Enabled)
+            .Select(x => new ComponentScope(x.Slug, x.Environment))
+            .SingleOrDefaultAsync(cancellationToken);
+    }
+
+    private static bool Matches(ComponentScope component, IEnumerable<KeyValue> attributes)
+    {
+        var values = attributes.ToList();
+        var serviceName = GetString(values, "service.name") ?? "unknown_service";
+        var serviceNamespace = GetString(values, "service.namespace");
+        var environment = GetString(values, "deployment.environment.name")
+            ?? GetString(values, "deployment.environment")
+            ?? "unknown";
+
+        var slug = BuildSlug(serviceNamespace, serviceName);
+        var normalizedEnvironment = environment.Trim().ToLowerInvariant();
+        return string.Equals(component.Slug, slug, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(component.Environment, normalizedEnvironment, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? GetString(IEnumerable<KeyValue> values, string key)
@@ -69,6 +109,8 @@ public sealed partial class OtlpComponentScopeValidator(MonitorDbContext db)
 
         return slug[..Math.Min(slug.Length, 120)];
     }
+
+    private sealed record ComponentScope(string Slug, string Environment);
 
     [GeneratedRegex("[^a-z0-9-]+")]
     private static partial Regex NonSlugRegex();
