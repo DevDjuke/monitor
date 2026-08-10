@@ -11,6 +11,7 @@ public sealed class FailureAlertRule
     public int WindowMinutes { get; private set; }
     public int CooldownMinutes { get; private set; }
     public bool Enabled { get; private set; }
+    public bool DeliverToAllEnabledDestinations { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
     public DateTimeOffset UpdatedAt { get; private set; }
     public DateTimeOffset? LastEvaluatedAt { get; private set; }
@@ -19,6 +20,7 @@ public sealed class FailureAlertRule
 
     public FailureGroup FailureGroup { get; private set; } = null!;
     public ICollection<FailureAlertEvent> Events { get; private set; } = new List<FailureAlertEvent>();
+    public ICollection<FailureAlertRuleDestination> DestinationAssignments { get; private set; } = new List<FailureAlertRuleDestination>();
 
     public static FailureAlertRule Create(
         Guid failureGroupId,
@@ -39,6 +41,7 @@ public sealed class FailureAlertRule
             WindowMinutes = windowMinutes,
             CooldownMinutes = cooldownMinutes,
             Enabled = true,
+            DeliverToAllEnabledDestinations = true,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -63,6 +66,12 @@ public sealed class FailureAlertRule
     public void SetEnabled(bool enabled, DateTimeOffset now)
     {
         Enabled = enabled;
+        UpdatedAt = now;
+    }
+
+    public void SetDeliveryScope(bool deliverToAllEnabledDestinations, DateTimeOffset now)
+    {
+        DeliverToAllEnabledDestinations = deliverToAllEnabledDestinations;
         UpdatedAt = now;
     }
 
