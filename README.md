@@ -8,32 +8,38 @@ Monitor starts with one deliberately small model:
 MonitoredComponent
   └─ AgentRun
        └─ TraceSpan
+       └─ FailureGroup
 
 RunAggregate
 ```
 
-The goal is to make every autonomous component answer the same questions: Is it alive? What is it doing? What did it do? How long did it take? What tools/models did it call? How many tokens did it use? What did it cost? What failed?
+The goal is to make every autonomous component answer the same questions: Is it alive? What is it doing? What did it do? How long did it take? What tools/models did it call? How many tokens did it use? What did it cost? What failed, and is that failure recurring?
 
 ## Current vertical slice
 
 - Component registry with environment, version, type, enabled state, and heartbeat.
 - Run ingestion with input/output, model, token usage, cost, failure state, and timing.
 - Nested trace spans for agent/model/tool/http/internal work.
+- Standard OTLP/HTTP protobuf trace ingestion at `POST /v1/traces`.
+- OpenTelemetry resource/trace/span mapping into the same Component -> Run -> Span model.
+- GenAI semantic attributes mapped into model and token usage fields.
+- Deterministic failure categories/fingerprints with occurrence and first/last-seen tracking.
 - Runs history with server-side search/filtering and stable keyset pagination.
 - SignalR-backed live run updates: the latest page refreshes automatically while older history remains stable.
 - Hourly durable run aggregates by component and model for long-range usage metrics.
 - Automated retention that purges only old, already-aggregated successful runs while preserving failed/cancelled forensic detail.
-- `/usage` retention and aggregate dashboard without double-counting retained raw runs.
+- `/usage` retention, aggregate, and recurring-failure dashboard without double-counting retained raw runs.
 - Private Razor control plane protected by ASP.NET Core Identity/cookie authentication.
-- Separate API-key authentication for autonomous components.
+- Separate API-key authentication for autonomous components and OTLP exporters.
 - One-time local owner setup and production bootstrap administrator support.
 - `Monitor.Client` .NET SDK for registration, heartbeats, runs, spans, completion, cancellation, and API errors.
-- `Monitor.SampleWorker` dogfoods the SDK with recurring synthetic agent activity and intentional failures.
+- `Monitor.SampleWorker` dogfoods the Monitor-native SDK.
+- `Monitor.OtlpSampleWorker` dogfoods the standard OpenTelemetry .NET OTLP exporter without referencing `Monitor.Client`.
 - Versioned EF Core migrations.
 - SQL Server persistence with LocalDB as the default development instance.
-- GitHub Actions build and SQL Server-backed end-to-end tests for telemetry, migration upgrades, keyset pagination, and retention safety.
+- GitHub Actions SQL Server-backed integration tests for telemetry, OTLP, migration upgrades, keyset pagination, failure grouping, and retention safety.
 
-This first API is intentionally simple HTTP. Native OpenTelemetry/OTLP ingestion is the next transport; the domain model is kept independent from the ingestion protocol.
+The Monitor-native HTTP API and OTLP are complementary. The custom API carries Monitor-specific lifecycle semantics; OTLP provides vendor-neutral observability ingestion.
 
 ## Run locally
 
@@ -60,6 +66,97 @@ EF Core creates the `Monitor` database and applies pending migrations on startup
 
 The old SQLite `monitor.db` file from the prototype is no longer used and can be deleted once you are sure it contains nothing you want to keep.
 
+## OTLP trace ingestion
+
+Monitor accepts OpenTelemetry trace exports at:
+
+```text
+POST /v1/traces
+Content-Type: application/x-protobuf
+X-Monitor-Key: <Monitor__IngestionApiKey>
+```
+
+The current OTLP surface supports **OTLP/HTTP + Protocol Buffers traces**. Optional gzip request compression is accepted. OTLP/JSON, OTLP/gRPC, metrics, and logs are not implemented yet.
+
+A standard .NET OpenTelemetry exporter can point directly at Monitor:
+
+```csharp
+using OpenTelemetry;
+using OpenTelemetry.Exporter;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+
+using var provider = Sdk.CreateTracerProviderBuilder()
+    .SetResourceBuilder(
+        ResourceBuilder.CreateDefault()
+            .AddService("Invoice Agent", serviceVersion: "1.0.0")
+            .AddAttributes([
+                new KeyValuePair<string, object>("deployment.environment.name", "production")
+            ]))
+    .AddSource("Invoice.Agent")
+    .AddOtlpExporter(options =>
+    {
+        options.Endpoint = new Uri("http://localhost:5000/v1/traces");
+        options.Protocol = OtlpExportProtocol.HttpProtobuf;
+        options.Headers = "X-Monitor-Key=replace-with-a-long-random-secret";
+    })
+    .Build();
+```
+
+The mapping is intentionally straightforward:
+
+```text
+OpenTelemetry Resource       -> MonitoredComponent
+trace id                     -> AgentRun
+root span                    -> run name/timing/status
+child span                   -> TraceSpan
+service.name                 -> component name
+deployment.environment.name  -> environment
+service.version              -> component version
+gen_ai.* model attributes    -> model
+gen_ai.usage.*_tokens        -> token totals
+exception.type / error.type  -> failure diagnostics
+http.response.status_code    -> HTTP failure signal
+```
+
+OTLP trace/span identifiers are retained alongside Monitor's internal GUIDs. Separately exported child and root spans for the same trace are merged into the same run. OTLP ingestion is serialized with a SQL Server application lock so retries/concurrent exporters cannot create competing identities inside a Monitor database.
+
+To dogfood the standard exporter locally, run:
+
+```powershell
+$env:Monitor__IngestionApiKey = "replace-with-a-long-random-secret"
+$env:Monitor__BaseUrl = "http://localhost:5000"
+dotnet run --project samples/Monitor.OtlpSampleWorker
+```
+
+That sample emits one successful trace and two rate-limit failures through OpenTelemetry itself. The two failures contain different request ids but should collapse into the same failure fingerprint while their raw error messages remain distinct.
+
+## Failure fingerprints
+
+Failed and cancelled runs are classified into a durable `FailureGroup`. The classifier prefers structured telemetry over message text and currently recognizes:
+
+- Timeout
+- RateLimit
+- Authentication
+- Authorization
+- Network
+- Http
+- Database
+- Validation
+- Serialization
+- ModelProvider
+- Tool
+- Dependency
+- Cancellation
+- Internal
+- Unknown
+
+A fingerprint is a SHA-256 hash over stable dimensions such as category, exception/error type, operation, dependency, HTTP status, and a normalized message template. Volatile values such as URLs, GUIDs, long hexadecimal identifiers, quoted values, and numbers are replaced only in the template used for grouping.
+
+The original `Run.Error`, payloads, span errors, attributes, and exception data are not rewritten. **A fingerprint is an index into failure evidence, not a replacement for it.**
+
+Both Monitor-native failed completions and OTLP failures are grouped immediately. A background worker also backfills any failed/cancelled run that somehow remains ungrouped.
+
 ## Retention and aggregation
 
 Terminal runs are aggregated into durable hourly buckets keyed by UTC hour, component, and model. Buckets preserve run counts by terminal status, token totals, reported cost, and duration statistics.
@@ -73,7 +170,7 @@ The default policy is:
 - run the retention sweep every 15 minutes;
 - retain failed and cancelled run/span/error detail indefinitely.
 
-Only successful runs are deleted. Failed and cancelled runs still contribute to aggregates but remain available in `/runs` for forensic inspection, including their payloads, error reason, and spans.
+Only successful runs are deleted. Failed and cancelled runs still contribute to aggregates but remain available in `/runs` for forensic inspection, including their payloads, error reason, spans, and failure-group relationship.
 
 Configure the policy through `appsettings.json` or environment variables:
 
@@ -105,9 +202,9 @@ Set `Retention__Enabled=false` to stop both aggregation and purging. Existing ra
 
 The retention worker uses a SQL Server application lock so only one Monitor web node performs a sweep at a time.
 
-The authenticated `/usage` page reports durable aggregate totals plus only terminal raw runs that have not yet been aggregated. This means the 30-day overlap between aggregate data and retained successful raw detail does not double-count usage.
+The authenticated `/usage` page reports durable aggregate totals plus only terminal raw runs that have not yet been aggregated. This means the overlap between aggregate data and retained successful raw detail does not double-count usage. The same page surfaces the highest-occurrence failure fingerprints.
 
-## Run the sample worker
+## Run the Monitor.Client sample worker
 
 In a second terminal, use the same ingestion key and point the worker at the Monitor URL:
 
@@ -129,7 +226,7 @@ The sample does not call a real website or model provider; its delays and failur
 
 Pagination is keyset-based. Each run receives a database-generated monotonic sequence and the next page asks for rows older than the last visible sequence. This keeps browsing stable while new telemetry is arriving and avoids increasingly expensive deep SQL `OFFSET` queries.
 
-SignalR notifies the browser when a run starts or completes. On the latest page, the matching filtered slice refreshes automatically without a page navigation. When browsing older pages, Monitor leaves the current rows in place and surfaces a new-activity banner instead of shifting history underneath the operator.
+SignalR notifies the browser when a run starts or completes, including OTLP-created and OTLP-updated runs. On the latest page, the matching filtered slice refreshes automatically without a page navigation. When browsing older pages, Monitor leaves the current rows in place and surfaces a new-activity banner instead of shifting history underneath the operator.
 
 ## Client SDK
 
@@ -203,7 +300,7 @@ After the first account exists, those bootstrap values are ignored and can be re
 
 ## API authentication
 
-Every monitoring endpoint except `GET /api/health` requires either an authenticated Monitor browser session or the ingestion API key:
+Every Monitor-native monitoring endpoint except `GET /api/health` requires either an authenticated Monitor browser session or the ingestion API key. OTLP `/v1/traces` requires the ingestion API key.
 
 ```text
 X-Monitor-Key: <Monitor__IngestionApiKey>
@@ -279,19 +376,21 @@ curl -X POST http://localhost:5000/api/runs/{runId}/complete \
 
 ```text
 src/
-  Monitor.Domain/          protocol-agnostic monitoring model
-  Monitor.Client/          .NET ingestion client SDK
-  Monitor.Infrastructure/  EF Core persistence + Identity store
-  Monitor.Web/             secured HTTP ingestion API + Razor control plane
+  Monitor.Domain/          protocol-independent monitoring model
+  Monitor.Client/          .NET Monitor-native ingestion client SDK
+  Monitor.Infrastructure/  EF Core persistence, retention, failure grouping + Identity store
+  Monitor.Web/             HTTP/OTLP ingestion + Razor control plane
 samples/
-  Monitor.SampleWorker/    synthetic monitored BackgroundService
+  Monitor.SampleWorker/        synthetic Monitor.Client BackgroundService
+  Monitor.OtlpSampleWorker/    standard OpenTelemetry OTLP exporter sample
 docs/
   architecture.md
 ```
 
 ## Next
 
-1. OTLP receiver / OpenTelemetry semantic-convention mapping.
+1. OTLP metrics and logs, followed by OTLP/JSON and gRPC transports where useful.
 2. Per-component credentials and key rotation.
-3. Cost/model dashboards, alerting, and longer-range aggregate rollups.
-4. Control-plane commands (pause, disable, kill run, configuration).
+3. Failure-group drill-down/history and alerts based on recurrence/rate.
+4. Cost/model dashboards and longer-range aggregate rollups.
+5. Control-plane commands (pause, disable, kill run, configuration).
