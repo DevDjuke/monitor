@@ -28,10 +28,13 @@ Status: **complete**
 
 ### 2. Per-component ingestion credentials
 
+Status: **in progress**
+
 - Issue ingestion keys to individual monitored components/exporters.
 - Store only protected/hashed credential material where possible.
 - Last-used timestamps and credential metadata.
 - Rotate/revoke credentials without changing unrelated components.
+- Enforce component scope across Monitor-native ingestion and OTLP.
 - Preserve a controlled bootstrap/admin ingestion path for setup and migration.
 - Move shared/local development secrets from repository configuration to a proper vault/secret store.
 
