@@ -197,7 +197,7 @@
                         ? occurrence.Error[..180] + "…"
                         : occurrence.Error ?? "—";
                     <tr>
-                        <td><a class="table-link" href="/runs/@occurrence.RunId">#@occurrence.Sequence · @occurrence.Name</a></td>
+                        <td><a class="table-link" href="/run/@occurrence.RunId">#@occurrence.Sequence · @occurrence.Name</a></td>
                         <td><strong>@occurrence.ComponentName</strong><small>@occurrence.Environment</small></td>
                         <td><span class="run-status @occurrence.Status.ToString().ToLowerInvariant()">@occurrence.Status</span></td>
                         <td>@(occurrence.Model ?? "—")</td>
