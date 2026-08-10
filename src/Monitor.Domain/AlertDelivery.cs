@@ -74,4 +74,16 @@ public sealed class AlertDelivery
         Status = AlertDeliveryStatus.RetryScheduled;
         NextAttemptAt = nextAttemptAt.Value;
     }
+
+    public void Requeue(DateTimeOffset now)
+    {
+        if (Status == AlertDeliveryStatus.Delivered)
+        {
+            return;
+        }
+
+        Status = AlertDeliveryStatus.Pending;
+        NextAttemptAt = now;
+        LastError = null;
+    }
 }
