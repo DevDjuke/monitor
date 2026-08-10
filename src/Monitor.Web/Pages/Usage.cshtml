@@ -111,7 +111,20 @@
                                 <div class="muted">@failure.MessageTemplate</div>
                             }
                         </td>
-                        <td>@(failure.FailureType ?? failure.Dependency ?? "—")</td>
+                        <td>
+                            @if (!string.IsNullOrWhiteSpace(failure.FailureType))
+                            {
+                                <strong>@failure.FailureType</strong>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(failure.Dependency))
+                            {
+                                <div class="muted">@failure.Dependency</div>
+                            }
+                            @if (string.IsNullOrWhiteSpace(failure.FailureType) && string.IsNullOrWhiteSpace(failure.Dependency))
+                            {
+                                <span>—</span>
+                            }
+                        </td>
                         <td>@(failure.HttpStatusCode?.ToString() ?? "—")</td>
                         <td>@failure.Occurrences.ToString("N0")</td>
                         <td>@failure.LastSeenAt.ToString("yyyy-MM-dd HH:mm") UTC</td>
