@@ -55,9 +55,9 @@
             <span>Model</span>
             <select asp-for="Model">
                 <option value="">All models</option>
-                @foreach (var model in Model.ModelOptions)
+                @foreach (var modelName in Model.ModelOptions)
                 {
-                    <option value="@model">@model</option>
+                    <option value="@modelName">@modelName</option>
                 }
             </select>
         </label>
