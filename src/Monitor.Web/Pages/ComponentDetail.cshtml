@@ -1,0 +1,159 @@
+@page "/components/{id:guid}"
+@model ComponentDetailModel
+@{
+    ViewData["Title"] = "Component";
+    var component = Model.Component!;
+}
+
+@section Head {
+    <link rel="stylesheet" href="~/css/component-credentials.css" asp-append-version="true" />
+}
+
+<header class="page-head compact run-head">
+    <div>
+        <p class="eyebrow">COMPONENT</p>
+        <h1>@component.Name</h1>
+        <p class="lede">@component.Type · @component.Environment · @component.Slug</p>
+    </div>
+    <a class="secondary-action" href="/components">Back to components</a>
+</header>
+
+@if (TempData["StatusMessage"] is string statusMessage)
+{
+    <div class="notice success-notice">@statusMessage</div>
+}
+
+<div asp-validation-summary="All" class="validation-summary"></div>
+
+@if (!string.IsNullOrWhiteSpace(Model.IssuedCredentialKey))
+{
+    <section class="credential-secret-panel" aria-label="New ingestion credential">
+        <div>
+            <p class="eyebrow">COPY NOW</p>
+            <h2>@Model.IssuedCredentialName</h2>
+            <p>This plaintext key is shown once. Monitor stores only its SHA-256 hash.</p>
+        </div>
+        <div class="credential-secret-row">
+            <code id="issued-credential-key">@Model.IssuedCredentialKey</code>
+            <button class="primary-action" type="button" id="copy-issued-credential">Copy key</button>
+        </div>
+    </section>
+}
+
+<section class="run-facts component-facts" aria-label="Component facts">
+    <div><span>Status</span><strong>@component.Status</strong></div>
+    <div><span>Environment</span><strong>@component.Environment</strong></div>
+    <div><span>Version</span><strong>@(component.Version ?? "—")</strong></div>
+    <div><span>Heartbeat</span><strong>@(component.LastHeartbeatAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—") UTC</strong></div>
+    <div><span>Last run</span><strong>@(component.LastRunAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—") UTC</strong></div>
+    <div><span>Registered</span><strong>@component.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</strong></div>
+</section>
+
+<div class="component-credential-grid">
+    <section class="panel table-panel credential-list-panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">INGESTION CREDENTIALS</p>
+                <h2>Component-scoped keys</h2>
+            </div>
+            <span>@Model.Credentials.Count total</span>
+        </div>
+
+        @if (Model.Credentials.Count == 0)
+        {
+            <div class="empty compact-empty"><strong>No component credentials yet.</strong><span>Issue one to stop using the shared bootstrap key for this component.</span></div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr><th>Credential</th><th>Created</th><th>Last used</th><th>State</th><th></th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var credential in Model.Credentials)
+                    {
+                        <tr>
+                            <td>
+                                <strong>@credential.Name</strong>
+                                <small><code>@credential.DisplayKeyId</code></small>
+                            </td>
+                            <td>
+                                @credential.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss") UTC
+                                <small>@(credential.CreatedBy ?? "system")</small>
+                            </td>
+                            <td>
+                                @if (credential.LastUsedAt is null)
+                                {
+                                    <span>Never</span>
+                                }
+                                else
+                                {
+                                    <span>@credential.LastUsedAt.Value.ToString("yyyy-MM-dd HH:mm:ss") UTC</span>
+                                    <small>updated at most once per minute</small>
+                                }
+                            </td>
+                            <td>
+                                @if (credential.IsRevoked)
+                                {
+                                    <span class="credential-state revoked">Revoked</span>
+                                    <small>@credential.RevokedAt!.Value.ToString("yyyy-MM-dd HH:mm:ss") UTC · @(credential.RevokedBy ?? "system")</small>
+                                }
+                                else
+                                {
+                                    <span class="credential-state active">Active</span>
+                                }
+                            </td>
+                            <td class="credential-actions">
+                                @if (!credential.IsRevoked)
+                                {
+                                    <form method="post" asp-page-handler="RotateCredential" asp-route-id="@component.Id" asp-route-credentialId="@credential.Id">
+                                        <button class="inline-button" type="submit">Rotate</button>
+                                    </form>
+                                    <form method="post" asp-page-handler="RevokeCredential" asp-route-id="@component.Id" asp-route-credentialId="@credential.Id">
+                                        <button class="inline-button danger-button" type="submit">Revoke</button>
+                                    </form>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    <section class="panel credential-create-panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">ISSUE KEY</p>
+                <h2>New credential</h2>
+            </div>
+        </div>
+        <form method="post" asp-page-handler="CreateCredential" asp-route-id="@component.Id" class="alert-form">
+            <label>
+                <span>Credential name</span>
+                <input asp-for="CredentialInput.Name" placeholder="Production worker" autocomplete="off" />
+                <small>Use a label that identifies the exporter, deployment, or machine using the key.</small>
+            </label>
+            <button class="primary-action" type="submit">Issue ingestion key</button>
+            <p class="form-hint">Component keys can only submit or read telemetry belonging to <strong>@component.Name</strong> in <strong>@component.Environment</strong>. The shared bootstrap key remains available temporarily for setup and migration.</p>
+        </form>
+    </section>
+</div>
+
+@section Scripts {
+<script>
+(() => {
+    const button = document.getElementById('copy-issued-credential');
+    const value = document.getElementById('issued-credential-key');
+    if (!button || !value || !navigator.clipboard) return;
+
+    button.addEventListener('click', async () => {
+        await navigator.clipboard.writeText(value.textContent.trim());
+        button.textContent = 'Copied';
+        window.setTimeout(() => button.textContent = 'Copy key', 1600);
+    });
+})();
+</script>
+}
