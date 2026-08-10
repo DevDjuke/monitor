@@ -41,6 +41,9 @@ jobs:
           Monitor__BootstrapAdmin__Email: otlp-ci@monitor.local
           Monitor__BootstrapAdmin__Password: MonitorOtlpAdmin2026
           Retention__Enabled: false
+          FailureAlerting__Enabled: true
+          FailureAlerting__InitialDelaySeconds: 0
+          FailureAlerting__SweepIntervalSeconds: 2
         run: |
           set -euo pipefail
 
@@ -156,6 +159,60 @@ jobs:
             exit 1
           fi
 
+          failure_group_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorOtlpCi!2026Password' -C -b -d MonitorOtlpCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT TOP(1) CONVERT(nvarchar(36), Id) FROM FailureGroups WHERE FailureType = N'RateLimitError' AND Operation = N'Generate recommendation';" \
+            | tr -d '\r' | xargs)
+          test -n "$failure_group_id"
+
+          rule_id="11111111-1111-1111-1111-111111111111"
+          docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorOtlpCi!2026Password' -C -b -d MonitorOtlpCi \
+            -Q "
+              SET NOCOUNT ON;
+              INSERT INTO FailureAlertRules (
+                Id, FailureGroupId, Name, Threshold, WindowMinutes, CooldownMinutes,
+                Enabled, CreatedAt, UpdatedAt, LastEvaluatedAt, LastTriggeredAt, LastTriggeredRunSequence
+              ) VALUES (
+                '$rule_id', '$failure_group_id', N'CI rate-limit alert', 2, 60, 0,
+                1, TODATETIMEOFFSET(SYSUTCDATETIME(), '+00:00'), TODATETIMEOFFSET(SYSUTCDATETIME(), '+00:00'), NULL, NULL, NULL
+              );
+            "
+
+          alert_ready=false
+          alert_state=""
+          for attempt in {1..20}; do
+            alert_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P 'MonitorOtlpCi!2026Password' -C -b -d MonitorOtlpCi -h -1 -W \
+              -Q "
+                SET NOCOUNT ON;
+                SELECT CONCAT(
+                  (SELECT COUNT(*) FROM FailureAlertEvents WHERE AlertRuleId = '$rule_id'), N'|',
+                  (SELECT COUNT(*) FROM FailureAlertEvents WHERE AlertRuleId = '$rule_id' AND OccurrencesInWindow = 2 AND Threshold = 2 AND LatestRunSequence > 0 AND AcknowledgedAt IS NULL), N'|',
+                  (SELECT COUNT(*) FROM FailureAlertRules WHERE Id = '$rule_id' AND LastEvaluatedAt IS NOT NULL AND LastTriggeredAt IS NOT NULL AND LastTriggeredRunSequence IS NOT NULL)
+                );
+              " | tr -d '\r' | xargs)
+
+            if [ "$alert_state" = "1|1|1" ]; then
+              alert_ready=true
+              break
+            fi
+
+            sleep 1
+          done
+
+          if [ "$alert_ready" != true ]; then
+            echo "Alert invariant state was: $alert_state"
+            exit 1
+          fi
+
+          sleep 5
+          duplicate_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorOtlpCi!2026Password' -C -b -d MonitorOtlpCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM FailureAlertEvents WHERE AlertRuleId = '$rule_id';" \
+            | tr -d '\r' | xargs)
+          test "$duplicate_state" = "1"
+
           curl -fsS -c /tmp/monitor-otlp-cookies.txt \
             http://127.0.0.1:5082/account/login \
             -o /tmp/monitor-otlp-login.html
@@ -184,3 +241,21 @@ jobs:
           grep -q 'FAILURE FINGERPRINTS' /tmp/monitor-otlp-usage.html
           grep -q 'RateLimitError' /tmp/monitor-otlp-usage.html
           grep -q 'sample-provider' /tmp/monitor-otlp-usage.html
+          grep -q '/failures/' /tmp/monitor-otlp-usage.html
+
+          curl -fsS -b /tmp/monitor-otlp-cookies.txt \
+            "http://127.0.0.1:5082/failures/$failure_group_id" \
+            -o /tmp/monitor-failure.html
+          grep -q 'RECURRENCE TREND' /tmp/monitor-failure.html
+          grep -q 'CI rate-limit alert' /tmp/monitor-failure.html
+          grep -q 'Rate limit exceeded for request req-482991' /tmp/monitor-failure.html
+          grep -q 'Rate limit exceeded for request req-937214' /tmp/monitor-failure.html
+          grep -q '2 occurrences / 60 min' /tmp/monitor-failure.html
+
+          curl -fsS -b /tmp/monitor-otlp-cookies.txt \
+            http://127.0.0.1:5082/alerts \
+            -o /tmp/monitor-alerts.html
+          grep -q 'FAILURE ALERTING' /tmp/monitor-alerts.html
+          grep -q 'CI rate-limit alert' /tmp/monitor-alerts.html
+          grep -q 'RateLimitError' /tmp/monitor-alerts.html
+          grep -q '>Open<' /tmp/monitor-alerts.html

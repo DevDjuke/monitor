@@ -20,7 +20,7 @@ For OTLP resources, Monitor derives the component from OpenTelemetry resource me
 
 One execution or unit of work. This is the main operational object, rather than a log line. It owns timing, terminal status, model information, token usage, cost, input/output payloads, and error information.
 
-Runs also have a database-generated monotonic `Sequence`. It is an operational ordering key used for stable keyset pagination. Unlike timestamps or row versions, it does not change when a run completes and does not depend on two concurrent runs having distinct start times.
+Runs also have a database-generated monotonic `Sequence`. It is an operational ordering key used for stable keyset pagination and alert evidence ordering. Unlike timestamps or row versions, it does not change when a run completes and does not depend on two concurrent runs having distinct start times.
 
 OTLP-backed runs additionally retain the 32-character OpenTelemetry trace id. OTLP retries and separately exported child/root spans are merged into the existing run by component + trace id while ingestion is serialized with a SQL Server application lock.
 
@@ -41,6 +41,22 @@ The classifier prefers structured signals such as `exception.type`, `error.type`
 Current categories are: Unknown, Timeout, RateLimit, Authentication, Authorization, Network, Http, Database, Validation, Serialization, ModelProvider, Tool, Dependency, Cancellation, and Internal.
 
 Failure grouping is idempotent at the run level through `AgentRun.FailureGroupId`. Both OTLP ingestion and the custom HTTP completion path group failures immediately; a background worker periodically backfills any ungrouped failed/cancelled runs. A SQL Server application lock serializes grouping across Monitor nodes.
+
+The authenticated `/failures/{id}` view is an operational projection over a group and its raw runs. It exposes the stable grouping signature, rolling 15-minute/1-hour/24-hour recurrence counts, a 24-hour hourly trend, alert rules/events, and direct links back to the latest raw forensic runs.
+
+### FailureAlertRule
+
+A persistent detection policy scoped to exactly one `FailureGroup`. A rule contains a threshold, rolling window, cooldown, enabled state, evaluation timestamps, and the last run sequence whose evidence caused a trigger.
+
+The condition is deliberately explicit: **N occurrences of this fingerprint inside M minutes**. There is no message reclassification at alert time; the evaluator operates only on already-classified failed/cancelled runs linked to the group.
+
+`LastTriggeredRunSequence` makes a trigger evidence-aware. Re-evaluating a still-true condition cannot produce another event unless at least one newer matching run exists. `CooldownMinutes` separately limits how quickly genuinely new evidence may result in another event.
+
+### FailureAlertEvent
+
+An immutable trigger record for a rule, except for acknowledgement metadata. It snapshots the trigger time, evaluated window, occurrence count, threshold, and latest run sequence that contributed to the trigger. `AcknowledgedAt` and `AcknowledgedBy` provide a minimal operator audit trail without deleting or resolving the underlying failure evidence.
+
+Alert events are operational state, not notification-delivery receipts. Email, Slack, webhook, or other delivery adapters can consume these events later without changing the detection model.
 
 ### RunAggregate
 
@@ -76,6 +92,28 @@ A failed child span makes the enclosing Monitor run failed even when the root sp
 
 OTLP/JSON, OTLP/gRPC, metrics, and logs are deliberately not claimed yet. They can be added as additional transports/signals over the same protocol-independent domain.
 
+## Failure alert evaluation
+
+`FailureAlertingWorker` periodically invokes the scoped evaluator. The evaluator takes the SQL Server application lock `Monitor.FailureAlerting`, so only one Monitor web node evaluates rules at a time.
+
+For every enabled rule it queries failed/cancelled raw runs for the linked fingerprint whose `CompletedAt` lies inside the rolling window. If the count reaches the threshold, cooldown has elapsed, and the newest matching run sequence is newer than `LastTriggeredRunSequence`, the evaluator creates one `FailureAlertEvent` and advances the rule's trigger markers in the same EF Core save boundary.
+
+This gives three separate protections against alert storms:
+
+1. fingerprinting collapses equivalent raw failures before alert evaluation;
+2. run-sequence evidence tracking prevents repeated triggers from identical evidence, including after worker restarts;
+3. cooldown limits how often genuinely new matching failures can generate alert events while a condition remains above threshold.
+
+The evaluator intentionally reads retained raw failed/cancelled runs rather than aggregate buckets. Failure retention is therefore part of the alerting correctness contract. The `(FailureGroupId, CompletedAt, Sequence)` run index supports rolling-window evaluation and latest-evidence lookup.
+
+The default worker policy is:
+
+- enabled: true;
+- startup delay: 10 seconds;
+- evaluation interval: 30 seconds.
+
+The `/alerts` page is the central operational queue for open/recent alert events and configured rule state. Acknowledgement is explicit operator state; it does not suppress future qualifying events and does not mutate the underlying failure group or runs.
+
 ## Realtime UI
 
 The control plane uses SignalR as an in-process realtime notification channel. Persistence remains authoritative: a realtime event tells a browser that a run started or changed, then the browser re-queries the filtered run slice instead of reconstructing server query semantics client-side.
@@ -84,6 +122,8 @@ OTLP-created and OTLP-updated runs publish the same `RunChanged` notification us
 
 The Runs history uses keyset pagination. The latest page can refresh automatically when matching runs change. Older pages remain stable; matching activity is surfaced as an update notification that can return the operator to the latest slice.
 
+Alert events currently become visible on the next page request/refresh. A dedicated SignalR alert event can be added when the UI needs push notifications; persistence remains authoritative either way.
+
 A distributed message bus or SignalR backplane is intentionally deferred until Monitor itself needs multiple web nodes. The domain should not depend on the chosen realtime transport.
 
 ## Persistence
@@ -91,6 +131,8 @@ A distributed message bus or SignalR backplane is intentionally deferred until M
 SQL Server is the current persistence provider, with `(localdb)\MSSQLLocalDB` as the default development instance. `MonitorDbContext` remains isolated in Infrastructure so persistence concerns do not leak into the monitoring domain or UI contract.
 
 OTLP trace/span identity columns use ordinary lookup indexes rather than filtered unique indexes. Idempotent OTLP upserts are enforced by the ingestion application lock and explicit identity lookup. This keeps ordinary SQL writers compatible without requiring filtered-index-specific session `SET` options.
+
+Failure alert rules and events are durable database entities. Foreign keys use restrictive deletion so an alert audit trail cannot disappear as an accidental cascade from a rule or failure group.
 
 ## Retention and aggregation
 
@@ -118,10 +160,10 @@ The default policy is intentionally conservative:
 
 Changing the successful retention window affects future purge eligibility only. Aggregate buckets are not rewritten. Disabling the worker leaves raw data untouched.
 
-The `/usage` page combines durable aggregate totals with only terminal runs whose `AggregatedAt` is still null. This prevents double-counting during the period where aggregated successful runs are intentionally retained in raw form. It also surfaces recurring failure groups by occurrence count while preserving links back to raw failed/cancelled runs.
+The `/usage` page combines durable aggregate totals with only terminal runs whose `AggregatedAt` is still null. This prevents double-counting during the period where aggregated successful runs are intentionally retained in raw form. It also surfaces recurring failure groups by occurrence count and links directly into their drill-down pages while preserving links back to raw failed/cancelled runs.
 
 Longer-term archival tiers or aggregate rollups (hourly -> daily/monthly) can be added when actual volume makes them useful; they must preserve the same forensic invariant for failed and cancelled runs.
 
 ## Control plane
 
-Commands are intentionally absent from the first slice. Observability must be trustworthy before Monitor is allowed to alter remote workloads. Future commands should be auditable entities with requested/accepted/completed states rather than fire-and-forget HTTP actions.
+Commands are intentionally absent from the first slice. Observability and detection must be trustworthy before Monitor is allowed to alter remote workloads. Future commands should be auditable entities with requested/accepted/completed states rather than fire-and-forget HTTP actions.

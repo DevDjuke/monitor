@@ -1,0 +1,145 @@
+@page "/alerts"
+@model AlertsModel
+@{
+    ViewData["Title"] = "Alerts";
+}
+
+<header class="page-head compact">
+    <div>
+        <p class="eyebrow">FAILURE ALERTING</p>
+        <h1>Alerts</h1>
+        <p class="lede">Operational alert events generated from recurring failure fingerprints. Detection is durable and auditable; notification delivery channels can be layered on later.</p>
+    </div>
+</header>
+
+@if (TempData["StatusMessage"] is string statusMessage)
+{
+    <div class="notice success-notice">@statusMessage</div>
+}
+
+<section class="metrics" aria-label="Alert summary">
+    <article class="metric">
+        <span>Open alerts</span>
+        <strong>@Model.OpenAlerts.ToString("N0")</strong>
+        <small>awaiting acknowledgement</small>
+    </article>
+    <article class="metric">
+        <span>Active rules</span>
+        <strong>@Model.ActiveRules.ToString("N0")</strong>
+        <small>currently evaluating</small>
+    </article>
+    <article class="metric">
+        <span>Triggered · 24h</span>
+        <strong>@Model.TriggeredLast24Hours.ToString("N0")</strong>
+        <small>alert events</small>
+    </article>
+    <article class="metric">
+        <span>Affected groups · 24h</span>
+        <strong>@Model.AffectedGroups.ToString("N0")</strong>
+        <small>distinct fingerprints</small>
+    </article>
+</section>
+
+<section class="panel table-panel alerts-table-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">ALERT EVENTS</p>
+            <h2>Recent triggers</h2>
+        </div>
+        <span>@Model.RecentAlerts.Count shown</span>
+    </div>
+
+    @if (Model.RecentAlerts.Count == 0)
+    {
+        <div class="empty"><strong>No alerts have fired.</strong><span>Create a rule from a failure fingerprint and Monitor will evaluate it continuously.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr><th>Failure group</th><th>Rule</th><th>Observed</th><th>Triggered</th><th>State</th><th></th></tr>
+                </thead>
+                <tbody>
+                @foreach (var alert in Model.RecentAlerts)
+                {
+                    <tr>
+                        <td>
+                            <a class="table-link" href="/failures/@alert.FailureGroupId">@alert.Category · @alert.Operation</a>
+                            <small>@(alert.FailureType ?? alert.Dependency ?? "Unknown type")</small>
+                        </td>
+                        <td><strong>@alert.RuleName</strong><small>@alert.WindowStart.ToString("HH:mm")–@alert.WindowEnd.ToString("HH:mm") UTC window</small></td>
+                        <td><strong>@alert.OccurrencesInWindow / @alert.Threshold</strong><small>occurrences / threshold</small></td>
+                        <td>@alert.TriggeredAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</td>
+                        <td>
+                            @if (alert.AcknowledgedAt is null)
+                            {
+                                <span class="alert-state open">Open</span>
+                            }
+                            else
+                            {
+                                <span class="alert-state acknowledged">Acknowledged</span>
+                                <small>@alert.AcknowledgedBy · @alert.AcknowledgedAt.Value.ToString("MM-dd HH:mm") UTC</small>
+                            }
+                        </td>
+                        <td>
+                            @if (alert.AcknowledgedAt is null)
+                            {
+                                <form method="post" asp-page-handler="Acknowledge" asp-route-eventId="@alert.Id">
+                                    <button class="inline-button" type="submit">Acknowledge</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<section class="panel table-panel alert-rules-table-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">RULES</p>
+            <h2>Detection policies</h2>
+        </div>
+        <span>Create rules from a failure group</span>
+    </div>
+
+    @if (Model.Rules.Count == 0)
+    {
+        <div class="empty"><strong>No alert rules configured.</strong><span>Open a recurring failure on the Usage page and add a threshold rule there.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr><th>Rule</th><th>Fingerprint</th><th>Condition</th><th>Last evaluation</th><th>Last fired</th><th>Open</th><th></th></tr>
+                </thead>
+                <tbody>
+                @foreach (var rule in Model.Rules)
+                {
+                    <tr>
+                        <td>
+                            <strong>@rule.Name</strong>
+                            <small><span class="status-dot @(rule.Enabled ? "healthy" : "unknown")"></span> @(rule.Enabled ? "Enabled" : "Disabled")</small>
+                        </td>
+                        <td><a class="table-link" href="/failures/@rule.FailureGroupId">@rule.Category · @rule.Operation</a></td>
+                        <td><strong>@rule.Threshold / @rule.WindowMinutes min</strong><small>@rule.CooldownMinutes min cooldown</small></td>
+                        <td>@(rule.LastEvaluatedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "Never") UTC</td>
+                        <td>@(rule.LastTriggeredAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "Never") UTC</td>
+                        <td>@rule.OpenAlerts.ToString("N0")</td>
+                        <td>
+                            <form method="post" asp-page-handler="ToggleRule" asp-route-ruleId="@rule.Id">
+                                <button class="inline-button" type="submit">@(rule.Enabled ? "Disable" : "Enable")</button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>

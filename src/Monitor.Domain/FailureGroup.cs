@@ -17,6 +17,8 @@ public sealed class FailureGroup
     public DateTimeOffset LastSeenAt { get; private set; }
 
     public ICollection<AgentRun> Runs { get; private set; } = new List<AgentRun>();
+    public ICollection<FailureAlertRule> AlertRules { get; private set; } = new List<FailureAlertRule>();
+    public ICollection<FailureAlertEvent> AlertEvents { get; private set; } = new List<FailureAlertEvent>();
 
     public static FailureGroup Create(
         string fingerprint,
