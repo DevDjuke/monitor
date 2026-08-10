@@ -47,6 +47,7 @@ builder.Services.AddScoped<WebhookAlertSender>();
 builder.Services.AddHostedService<AlertDeliveryWorker>();
 builder.Services.AddScoped<ComponentCredentialIssuer>();
 builder.Services.AddScoped<IngestionCredentialAuthenticator>();
+builder.Services.AddScoped<OtlpComponentScopeValidator>();
 builder.Services.AddScoped<OtlpTraceImporter>();
 
 builder.Services
