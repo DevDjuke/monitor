@@ -25,6 +25,7 @@ public sealed class UsageModel(
     public long RetainedSuccessfulRuns { get; private set; }
     public long ForensicRuns { get; private set; }
     public IReadOnlyList<BucketRow> RecentBuckets { get; private set; } = [];
+    public IReadOnlyList<FailureGroupRow> TopFailureGroups { get; private set; } = [];
 
     public bool RetentionEnabled => _retention.Enabled;
     public int SuccessfulRunDetailDays => _retention.SuccessfulRunDetailDays;
@@ -81,6 +82,24 @@ public sealed class UsageModel(
         ForensicRuns = await db.Runs.LongCountAsync(
             x => x.Status == RunStatus.Failed || x.Status == RunStatus.Cancelled,
             cancellationToken);
+
+        TopFailureGroups = await db.FailureGroups
+            .AsNoTracking()
+            .OrderByDescending(x => x.Occurrences)
+            .ThenByDescending(x => x.LastSeenAt)
+            .Take(10)
+            .Select(x => new FailureGroupRow(
+                x.Id,
+                x.Category,
+                x.Operation,
+                x.FailureType,
+                x.Dependency,
+                x.HttpStatusCode,
+                x.MessageTemplate,
+                x.Occurrences,
+                x.FirstSeenAt,
+                x.LastSeenAt))
+            .ToListAsync(cancellationToken);
 
         var since = DateTimeOffset.UtcNow.AddHours(-48);
         var bucketData = await db.RunAggregates
@@ -140,4 +159,16 @@ public sealed class UsageModel(
     {
         public double AverageDurationMs => TotalRuns == 0 ? 0 : (double)TotalDurationMs / TotalRuns;
     }
+
+    public sealed record FailureGroupRow(
+        Guid Id,
+        FailureCategory Category,
+        string Operation,
+        string? FailureType,
+        string? Dependency,
+        int? HttpStatusCode,
+        string? MessageTemplate,
+        long Occurrences,
+        DateTimeOffset FirstSeenAt,
+        DateTimeOffset LastSeenAt);
 }
