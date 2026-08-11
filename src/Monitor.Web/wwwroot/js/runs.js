@@ -60,6 +60,57 @@
         };
     }
 
+    function readUrlFilters() {
+        const params = new URLSearchParams(window.location.search);
+        return {
+            search: params.get('search') || '',
+            componentId: params.get('componentId') || '',
+            status: params.get('status') || '',
+            environment: params.get('environment') || '',
+            model: params.get('model') || '',
+            from: params.get('from') || '',
+            to: params.get('to') || '',
+            pageSize: Number(params.get('pageSize')) || 50
+        };
+    }
+
+    function applyUrlFilters(filters) {
+        elements.search.value = filters.search;
+        elements.status.value = [...elements.status.options].some(option => option.value === filters.status)
+            ? filters.status
+            : '';
+        elements.from.value = filters.from;
+        elements.to.value = filters.to;
+        elements.pageSize.value = ['25', '50', '100'].includes(String(filters.pageSize))
+            ? String(filters.pageSize)
+            : '50';
+
+        for (const [select, value] of [
+            [elements.component, filters.componentId],
+            [elements.environment, filters.environment],
+            [elements.model, filters.model]
+        ]) {
+            select.value = [...select.options].some(option => option.value === value) ? value : '';
+        }
+    }
+
+    function syncBrowserUrl() {
+        const filters = getFilters();
+        const params = new URLSearchParams();
+        if (filters.search) params.set('search', filters.search);
+        if (filters.componentId) params.set('componentId', filters.componentId);
+        if (filters.status) params.set('status', filters.status);
+        if (filters.environment) params.set('environment', filters.environment);
+        if (filters.model) params.set('model', filters.model);
+        if (filters.from) params.set('from', filters.from);
+        if (filters.to) params.set('to', filters.to);
+        if (filters.pageSize !== 50) params.set('pageSize', String(filters.pageSize));
+
+        const query = params.toString();
+        window.history.replaceState(null, '', query ? `/runs?${query}` : '/runs');
+        document.dispatchEvent(new CustomEvent('monitor:saved-view-url-changed'));
+    }
+
     function localDayIso(value, addDay) {
         if (!value) return null;
         const parts = value.split('-').map(Number);
@@ -268,6 +319,7 @@
 
     function filtersChanged() {
         resetPagination();
+        syncBrowserUrl();
         loadRuns();
     }
 
@@ -419,10 +471,17 @@
         elements.from.value = '';
         elements.to.value = '';
         resetPagination();
+        syncBrowserUrl();
         loadRuns();
     });
 
-    loadOptions();
-    loadRuns();
-    startSignalR();
+    async function initialise() {
+        const urlFilters = readUrlFilters();
+        await loadOptions();
+        applyUrlFilters(urlFilters);
+        await loadRuns();
+        startSignalR();
+    }
+
+    initialise();
 })();
