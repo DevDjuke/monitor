@@ -3,6 +3,7 @@ using Monitor.Domain;
 using Monitor.Infrastructure;
 using Monitor.Infrastructure.Control;
 using Monitor.Web.Auth;
+using Monitor.Web.Realtime;
 
 namespace Monitor.Web.Api;
 
@@ -41,6 +42,7 @@ public static class ControlCommandEndpoints
         HttpContext httpContext,
         MonitorDbContext db,
         ComponentCommandService service,
+        MonitorRealtimePublisher realtime,
         CancellationToken cancellationToken)
     {
         var identity = IngestionCredentialAuthenticator.GetIdentity(httpContext);
@@ -55,6 +57,11 @@ public static class ControlCommandEndpoints
         }
 
         var command = await service.ClaimNextAsync(componentId, cancellationToken);
+        if (command is not null)
+        {
+            await realtime.PublishCommandChangedAsync(command.Id, cancellationToken);
+        }
+
         return command is null
             ? Results.NoContent()
             : Results.Ok(new
@@ -78,6 +85,7 @@ public static class ControlCommandEndpoints
         CompleteComponentCommandRequest request,
         HttpContext httpContext,
         ComponentCommandService service,
+        MonitorRealtimePublisher realtime,
         CancellationToken cancellationToken)
     {
         var identity = IngestionCredentialAuthenticator.GetIdentity(httpContext);
@@ -117,6 +125,11 @@ public static class ControlCommandEndpoints
                 error = "The command lease is stale or no longer active.",
                 status = result.Status
             });
+        }
+
+        if (!result.AlreadyTerminal)
+        {
+            await realtime.PublishCommandChangedAsync(commandId, cancellationToken);
         }
 
         return Results.Ok(new
