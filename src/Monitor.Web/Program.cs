@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Infrastructure;
+using Monitor.Infrastructure.Auditing;
 using Monitor.Infrastructure.Auth;
 using Monitor.Infrastructure.Failures;
 using Monitor.Infrastructure.Logs;
@@ -34,6 +35,7 @@ var connectionString = builder.Configuration.GetConnectionString("Monitor")
 builder.Services.AddDbContext<MonitorDbContext>(options =>
     options.UseSqlServer(connectionString));
 
+builder.Services.AddScoped<AuditTrailWriter>();
 builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection(RetentionOptions.SectionName));
 builder.Services.AddScoped<RetentionAggregationService>();
 builder.Services.AddHostedService<RetentionWorker>();
