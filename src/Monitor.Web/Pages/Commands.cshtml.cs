@@ -3,12 +3,13 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
-using Monitor.Infrastructure.Auditing;
 using Monitor.Infrastructure.Control;
 
 namespace Monitor.Web.Pages;
 
-public sealed class CommandsModel(MonitorDbContext db, AuditTrailWriter audit) : PageModel
+public sealed class CommandsModel(
+    MonitorDbContext db,
+    ComponentCommandService commandService) : PageModel
 {
     [BindProperty(SupportsGet = true)] public string Window { get; set; } = "7d";
     [BindProperty(SupportsGet = true)] public Guid? ComponentId { get; set; }
@@ -29,37 +30,28 @@ public sealed class CommandsModel(MonitorDbContext db, AuditTrailWriter audit) :
     public async Task OnGetAsync(CancellationToken cancellationToken) => await LoadAsync(cancellationToken);
 
     public async Task<IActionResult> OnPostCancelAsync(
+        Guid componentId,
         Guid commandId,
         string? returnUrl,
         CancellationToken cancellationToken)
     {
-        var command = await db.ComponentCommands
-            .Include(x => x.Component)
-            .SingleOrDefaultAsync(x => x.Id == commandId, cancellationToken);
-        if (command is null)
+        var result = await commandService.CancelAsync(
+            componentId,
+            commandId,
+            User,
+            cancellationToken);
+
+        if (!result.Found)
         {
             return NotFound();
         }
 
-        if (!command.IsTerminal)
-        {
-            var before = ComponentCommandService.Snapshot(command);
-            var now = DateTimeOffset.UtcNow;
-            command.Cancel(User.Identity?.Name, now);
-            audit.RecordOperator(
-                User,
-                AuditActions.ComponentCommandCancelled,
-                AuditTargetTypes.ComponentCommand,
-                command.Id.ToString("D"),
-                command.Type.ToString(),
-                before,
-                ComponentCommandService.Snapshot(command),
-                new { command.ComponentId, command.TargetRunId },
-                now);
-            await db.SaveChangesAsync(cancellationToken);
-        }
+        TempData["StatusMessage"] = result.LockUnavailable
+            ? "That component command is busy; retry cancellation in a moment."
+            : result.AlreadyTerminal
+                ? $"Command is already {result.Status}."
+                : "Component command cancelled.";
 
-        TempData["StatusMessage"] = "Component command cancelled.";
         return !string.IsNullOrWhiteSpace(returnUrl) && Url.IsLocalUrl(returnUrl)
             ? LocalRedirect(returnUrl)
             : RedirectToPage();
