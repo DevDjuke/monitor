@@ -14,7 +14,8 @@ This roadmap is the current product sequence for turning Monitor from an observa
 - Threshold/window/cooldown failure alerting with duplicate-evidence suppression.
 - Durable alert-delivery outbox with HMAC-signed webhook delivery, retry, and dead-letter handling.
 - Durable append-only operator audit trail with safe before/after snapshots and searchable history.
-- Server-side filters on Runs, Logs, Usage, Alerts, and Audit.
+- Daily/monthly cost and token budget policy with warning/critical alert delivery.
+- Server-side filters on Runs, Logs, Usage, Alerts, Budgets, and Audit.
 
 ## Next
 
@@ -69,14 +70,22 @@ Status: **complete**
 - Search/filter `/audit` by time window, actor, action, target, target id, and free text, with expandable before/after/metadata snapshots.
 - Retain audit history independently of telemetry retention; the current retention worker does not purge audit records.
 
-## Then
-
 ### 5. Budgets and usage policy
 
-- Daily/monthly cost and token budgets per component/environment/model.
-- Warning and critical thresholds.
-- Budget alert rules integrated with the existing alert/outbox pipeline.
-- Later: optional enforcement hooks once control-plane commands exist.
+Status: **complete**
+
+- Configure daily or monthly budgets with optional component, environment, and model scope; an empty scope acts as a global budget.
+- Limit reported cost, total tokens, or both and define separate warning/critical utilization percentages.
+- Evaluate budgets from the same accounting contract as `/usage`: durable hourly aggregates plus only terminal raw runs that have not yet been aggregated.
+- Emit Warning once and Critical once per UTC budget period; a new period resets notification state without deleting historical events.
+- Assign delivery destinations per budget or use all enabled destinations.
+- Deliver budget alerts through the existing webhook destination, HMAC signing, retry/backoff, health and dead-letter infrastructure under the shared dispatcher lock.
+- Manage policies, threshold history, acknowledgement and budget delivery state from `/budgets`, including manual retry for non-delivered budget notifications.
+- Audit budget create/edit/enable/disable/delete, acknowledgement/requeue, plus system-originated warning/critical threshold crossings.
+- Detailed contract: `docs/budgets-and-usage-policy.md`.
+- Enforcement remains intentionally absent until component control commands exist; P5 is detection/notification policy only.
+
+## Then
 
 ### 6. Component control commands
 
@@ -89,9 +98,9 @@ Status: **complete**
 
 ### 7. Saved views
 
-- Save named filter combinations for Runs, Usage, Alerts, logs, and Audit.
+- Save named filter combinations for Runs, Usage, Alerts, Budgets, logs, and Audit.
 - Personal views first; shared/team views later if Monitor becomes multi-user.
-- Fast links for common operational slices such as production failures, expensive model runs, rate limits, dead letters, and security-sensitive changes.
+- Fast links for common operational slices such as production failures, expensive model runs, rate limits, dead letters, budget pressure, and security-sensitive changes.
 
 ### 8. Richer live experience
 
