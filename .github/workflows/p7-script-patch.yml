@@ -1,0 +1,40 @@
+name: p7-script-patch
+on:
+  push:
+    branches: [feature/saved-views]
+    paths: [.github/workflows/p7-script-patch.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/saved-views
+          fetch-depth: 0
+      - name: Enable quoted identifiers for raw Identity seed
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('.github/scripts/saved-views-ci.sh')
+          text = p.read_text(encoding='utf-8')
+          old = '''docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \\
+  -S localhost -U sa -P "$SQL_PASSWORD" -C -b -d "$DB_NAME" \\
+  -Q "
+    INSERT INTO AspNetUsers'''
+          new = '''docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -I \\
+  -S localhost -U sa -P "$SQL_PASSWORD" -C -b -d "$DB_NAME" \\
+  -Q "
+    INSERT INTO AspNetUsers'''
+          if old not in text:
+              raise SystemExit('Raw Identity seed sqlcmd anchor not found')
+          p.write_text(text.replace(old, new, 1), encoding='utf-8')
+      - name: Commit correction and remove helper
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/p7-script-patch.yml
+          git add .github/scripts/saved-views-ci.sh
+          git commit -m "test: use SQL Server compatible session for Identity seed"
+          git push origin HEAD:feature/saved-views
