@@ -263,7 +263,11 @@ public sealed class ComponentCommandService(
         var maxAttempts = MaxDeliveryAttempts();
         var componentIds = await db.ComponentCommands
             .AsNoTracking()
-            .Where(x => IsDueForExpiry(x, now, maxAttempts))
+            .Where(x =>
+                (x.Status == ComponentCommandStatus.Pending && x.ExpiresAt <= now) ||
+                (x.Status == ComponentCommandStatus.Leased &&
+                 x.LeaseExpiresAt <= now &&
+                 (x.ExpiresAt <= now || x.DeliveryAttempts >= maxAttempts)))
             .Select(x => x.ComponentId)
             .Distinct()
             .Take(100)
@@ -285,7 +289,6 @@ public sealed class ComponentCommandService(
 
                 try
                 {
-                    var beforeCount = db.ChangeTracker.Entries<ComponentCommand>().Count();
                     await ExpireDueCommandsAsync(componentId, DateTimeOffset.UtcNow, maxAttempts, cancellationToken);
                     var changed = db.ChangeTracker.Entries<ComponentCommand>()
                         .Count(x => x.State == EntityState.Modified);
@@ -322,25 +325,18 @@ public sealed class ComponentCommandService(
     {
         var commands = await db.ComponentCommands
             .Include(x => x.Component)
-            .Where(x => x.ComponentId == componentId && IsDueForExpiry(x, now, maxAttempts))
+            .Where(x =>
+                x.ComponentId == componentId &&
+                ((x.Status == ComponentCommandStatus.Pending && x.ExpiresAt <= now) ||
+                 (x.Status == ComponentCommandStatus.Leased &&
+                  x.LeaseExpiresAt <= now &&
+                  (x.ExpiresAt <= now || x.DeliveryAttempts >= maxAttempts))))
             .ToListAsync(cancellationToken);
 
         foreach (var command in commands)
         {
             Expire(command, now, maxAttempts);
         }
-    }
-
-    private static bool IsDueForExpiry(
-        ComponentCommand command,
-        DateTimeOffset now,
-        int maxAttempts)
-    {
-        return
-            (command.Status == ComponentCommandStatus.Pending && command.ExpiresAt <= now) ||
-            (command.Status == ComponentCommandStatus.Leased &&
-             command.LeaseExpiresAt <= now &&
-             (command.ExpiresAt <= now || command.DeliveryAttempts >= maxAttempts));
     }
 
     private void Expire(ComponentCommand command, DateTimeOffset now, int maxAttempts)
