@@ -1,0 +1,300 @@
+name: budgets-integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  budgets:
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: MonitorBudgetCi!2026Password
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorBudgetCi!2026Password' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore Monitor.sln
+      - run: dotnet build Monitor.sln --configuration Release --no-restore
+
+      - name: Exercise budget accounting, escalation, routing and audit
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          ASPNETCORE_URLS: http://127.0.0.1:5094
+          ConnectionStrings__Monitor: Server=127.0.0.1,1433;Database=MonitorBudgetCi;User Id=sa;Password=MonitorBudgetCi!2026Password;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
+          Monitor__IngestionApiKey: ci-budget-ingestion-key
+          Monitor__BootstrapAdmin__Email: budget-ci@monitor.local
+          Monitor__BootstrapAdmin__Password: MonitorBudgetAdmin2026
+          Retention__Enabled: false
+          FailureAlerting__Enabled: false
+          UsageBudgets__Enabled: true
+          UsageBudgets__InitialDelaySeconds: 0
+          UsageBudgets__SweepIntervalSeconds: 5
+          AlertDelivery__Enabled: true
+          AlertDelivery__SweepIntervalSeconds: 1
+          AlertDelivery__BaseRetrySeconds: 1
+          AlertDelivery__MaxAttempts: 3
+        run: |
+          set -euo pipefail
+
+          dotnet tool install --global dotnet-ef --version 10.0.10
+          dotnet ef database update \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --connection "$ConnectionStrings__Monitor"
+
+          sql_container=$(docker ps --filter 'ancestor=mcr.microsoft.com/mssql/server:2022-latest' --format '{{.ID}}' | head -n 1)
+          test -n "$sql_container"
+
+          cat >/tmp/budget_receiver.py <<'PY'
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          import json
+          class H(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  length = int(self.headers.get('Content-Length','0'))
+                  body = self.rfile.read(length).decode('utf-8')
+                  row = {
+                      'path': self.path,
+                      'event': self.headers.get('X-Monitor-Event'),
+                      'delivery': self.headers.get('X-Monitor-Delivery-Id'),
+                      'timestamp': self.headers.get('X-Monitor-Timestamp'),
+                      'signature': self.headers.get('X-Monitor-Signature'),
+                      'body': body,
+                  }
+                  with open('/tmp/budget_receiver.jsonl','a',encoding='utf-8') as f:
+                      f.write(json.dumps(row) + '\n')
+                  self.send_response(204)
+                  self.end_headers()
+              def log_message(self, *args): pass
+          HTTPServer(('127.0.0.1',5095), H).serve_forever()
+          PY
+          python3 /tmp/budget_receiver.py >/tmp/budget-receiver.log 2>&1 &
+          receiver_pid=$!
+
+          (
+            cd src/Monitor.Web
+            exec dotnet bin/Release/net10.0/Monitor.Web.dll
+          ) >/tmp/monitor-budget-ci.log 2>&1 &
+          app_pid=$!
+
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo '=== Monitor budget log ==='
+              cat /tmp/monitor-budget-ci.log 2>/dev/null || true
+              echo '=== receiver records ==='
+              cat /tmp/budget_receiver.jsonl 2>/dev/null || true
+            fi
+            kill "$app_pid" "$receiver_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+            wait "$receiver_pid" 2>/dev/null || true
+            return "$status"
+          }
+          trap cleanup EXIT
+
+          for attempt in {1..45}; do
+            if curl -fsS http://127.0.0.1:5094/api/health >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:5094/api/health >/dev/null
+
+          component_json=$(curl -fsS \
+            -H 'X-Monitor-Key: ci-budget-ingestion-key' \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"Budget Agent","slug":"budget-agent","type":"Agent","environment":"production","version":"1.0.0"}' \
+            http://127.0.0.1:5094/api/components/register)
+          component_id=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["id"])' <<< "$component_json")
+          test -n "$component_id"
+
+          curl -fsS -c /tmp/budget-cookies.txt http://127.0.0.1:5094/account/login -o /tmp/budget-login.html
+          login_token=$(python3 -c 'import re; h=open("/tmp/budget-login.html").read(); print(re.search(r"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",h).group(1))')
+          login_status=$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/budget-cookies.txt -c /tmp/budget-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$login_token" \
+            --data-urlencode 'Input.Email=budget-ci@monitor.local' \
+            --data-urlencode 'Input.Password=MonitorBudgetAdmin2026' \
+            --data-urlencode 'Input.RememberMe=false' \
+            http://127.0.0.1:5094/account/login)
+          test "$login_status" = '302'
+
+          get_token() {
+            local url="$1" output="$2"
+            curl -fsS -b /tmp/budget-cookies.txt "$url" -o "$output"
+            python3 - "$output" <<'PY'
+          import re,sys
+          h=open(sys.argv[1],encoding='utf-8').read()
+          m=re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"',h)
+          assert m
+          print(m.group(1))
+          PY
+          }
+
+          create_destination() {
+            local name="$1" path="$2"
+            local token status
+            token=$(get_token http://127.0.0.1:5094/alerts /tmp/budget-alerts.html)
+            status=$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/budget-cookies.txt -c /tmp/budget-cookies.txt \
+              --data-urlencode "__RequestVerificationToken=$token" \
+              --data-urlencode "DestinationInput.Name=$name" \
+              --data-urlencode "DestinationInput.EndpointUrl=http://127.0.0.1:5095/$path" \
+              --data-urlencode 'DestinationInput.Secret=budget-ci-signing-secret-2026' \
+              'http://127.0.0.1:5094/alerts?handler=CreateDestination')
+            test "$status" = '302'
+          }
+          create_destination 'Budget selected webhook' budget
+          create_destination 'Budget excluded webhook' excluded
+
+          selected_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorBudgetCi!2026Password' -C -b -d MonitorBudgetCi -h -1 -W -Q "SET NOCOUNT ON; SELECT CONVERT(nvarchar(36),Id) FROM AlertDeliveryDestinations WHERE Name=N'Budget selected webhook';" | tr -d '\r' | xargs)
+          excluded_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorBudgetCi!2026Password' -C -b -d MonitorBudgetCi -h -1 -W -Q "SET NOCOUNT ON; SELECT CONVERT(nvarchar(36),Id) FROM AlertDeliveryDestinations WHERE Name=N'Budget excluded webhook';" | tr -d '\r' | xargs)
+
+          editor_token=$(get_token http://127.0.0.1:5094/budgets/edit /tmp/budget-editor.html)
+          create_budget_status=$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/budget-cookies.txt -c /tmp/budget-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$editor_token" \
+            --data-urlencode 'Input.Name=CI production budget' \
+            --data-urlencode "Input.ComponentId=$component_id" \
+            --data-urlencode 'Input.Environment=' \
+            --data-urlencode 'Input.Model=budget-model' \
+            --data-urlencode 'Input.Period=Daily' \
+            --data-urlencode 'Input.CostLimitUsd=10' \
+            --data-urlencode 'Input.TokenLimit=1000' \
+            --data-urlencode 'Input.WarningPercent=80' \
+            --data-urlencode 'Input.CriticalPercent=100' \
+            --data-urlencode 'Input.Enabled=true' \
+            --data-urlencode 'Input.DeliverToAllEnabledDestinations=false' \
+            --data-urlencode "Input.SelectedDestinationIds=$selected_id" \
+            'http://127.0.0.1:5094/budgets/edit?handler=Save')
+          test "$create_budget_status" = '302'
+
+          budget_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorBudgetCi!2026Password' -C -b -d MonitorBudgetCi -h -1 -W -Q "SET NOCOUNT ON; SELECT CONVERT(nvarchar(36),Id) FROM UsageBudgets WHERE Name=N'CI production budget';" | tr -d '\r' | xargs)
+          test -n "$budget_id"
+
+          create_run() {
+            local external="$1" cost="$2" input="$3" output="$4"
+            local json id
+            json=$(curl -fsS -H 'X-Monitor-Key: ci-budget-ingestion-key' -H 'Content-Type: application/json' \
+              -d "{\"componentId\":\"$component_id\",\"name\":\"budget run\",\"externalId\":\"$external\",\"trigger\":\"CI\",\"model\":\"budget-model\",\"inputJson\":\"{}\"}" \
+              http://127.0.0.1:5094/api/runs)
+            id=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["id"])' <<< "$json")
+            curl -fsS -o /dev/null -H 'X-Monitor-Key: ci-budget-ingestion-key' -H 'Content-Type: application/json' \
+              -d "{\"status\":\"Success\",\"inputTokens\":$input,\"outputTokens\":$output,\"costUsd\":$cost,\"outputJson\":\"{}\",\"error\":null}" \
+              "http://127.0.0.1:5094/api/runs/$id/complete"
+            echo "$id"
+          }
+
+          aggregated_run_id=$(create_run aggregate-source 4.5 225 225)
+          pending_run_id=$(create_run pending-source 4.0 200 200)
+
+          docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorBudgetCi!2026Password' -C -b -d MonitorBudgetCi -Q "
+            SET NOCOUNT ON;
+            UPDATE Runs SET AggregatedAt=SYSUTCDATETIME() WHERE Id='$aggregated_run_id';
+            INSERT INTO RunAggregates
+              (Id,BucketStart,ComponentId,ComponentName,Environment,Model,TotalRuns,SuccessRuns,FailedRuns,CancelledRuns,InputTokens,OutputTokens,CostUsd,TotalDurationMs,MinDurationMs,MaxDurationMs,FirstStartedAt,LastStartedAt,CreatedAt,UpdatedAt)
+            VALUES
+              (NEWID(),DATEADD(hour,DATEDIFF(hour,0,SYSUTCDATETIME()),0),'$component_id',N'Budget Agent',N'production',N'budget-model',1,1,0,0,225,225,4.5,100,100,100,SYSUTCDATETIME(),SYSUTCDATETIME(),SYSUTCDATETIME(),SYSUTCDATETIME());
+          "
+
+          warning_ready=false
+          for attempt in {1..8}; do
+            warning_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorBudgetCi!2026Password' -C -b -d MonitorBudgetCi -h -1 -W -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM UsageBudgetAlertEvents WHERE UsageBudgetId='$budget_id' AND Level=1),N'|',
+                (SELECT COUNT(*) FROM UsageBudgetAlertEvents WHERE UsageBudgetId='$budget_id' AND Level=2),N'|',
+                (SELECT COUNT(*) FROM UsageBudgetAlertDeliveries d JOIN UsageBudgetAlertEvents e ON e.Id=d.BudgetAlertEventId WHERE e.UsageBudgetId='$budget_id'),N'|',
+                (SELECT COUNT(*) FROM UsageBudgetAlertDeliveries d JOIN UsageBudgetAlertEvents e ON e.Id=d.BudgetAlertEventId WHERE e.UsageBudgetId='$budget_id' AND d.DestinationId='$selected_id'),N'|',
+                (SELECT COUNT(*) FROM UsageBudgetAlertDeliveries d JOIN UsageBudgetAlertEvents e ON e.Id=d.BudgetAlertEventId WHERE e.UsageBudgetId='$budget_id' AND d.DestinationId='$excluded_id'),N'|',
+                (SELECT COUNT(*) FROM UsageBudgets WHERE Id='$budget_id' AND LastTriggeredLevel=1 AND ABS(LastObservedCostUsd-8.5)<0.0001 AND LastObservedTokens=850)
+              );" | tr -d '\r' | xargs)
+            if [ "$warning_state" = '1|0|1|1|0|1' ]; then warning_ready=true; break; fi
+            sleep 5
+          done
+          test "$warning_ready" = true
+
+          for attempt in {1..15}; do [ "$(wc -l </tmp/budget_receiver.jsonl 2>/dev/null || echo 0)" -ge 1 ] && break; sleep 1; done
+          python3 - <<'PY'
+          import json,hmac,hashlib
+          rows=[json.loads(x) for x in open('/tmp/budget_receiver.jsonl',encoding='utf-8') if x.strip()]
+          assert len(rows)>=1
+          row=rows[0]
+          assert row['path']=='/budget'
+          assert row['event']=='usage.budget.warning'
+          expected=hmac.new(b'budget-ci-signing-secret-2026', f"{row['timestamp']}.{row['body']}".encode(), hashlib.sha256).hexdigest()
+          assert row['signature']==f'sha256={expected}'
+          body=json.loads(row['body'])
+          assert body['usage']['costUsd']==8.5
+          assert body['usage']['tokens']==850
+          PY
+
+          sleep 7
+          warning_count=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorBudgetCi!2026Password' -C -b -d MonitorBudgetCi -h -1 -W -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM UsageBudgetAlertEvents WHERE UsageBudgetId='$budget_id';" | tr -d '\r' | xargs)
+          test "$warning_count" = '1'
+
+          create_run critical-source 2.0 100 100 >/dev/null
+
+          critical_ready=false
+          for attempt in {1..8}; do
+            critical_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorBudgetCi!2026Password' -C -b -d MonitorBudgetCi -h -1 -W -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM UsageBudgetAlertEvents WHERE UsageBudgetId='$budget_id' AND Level=1),N'|',
+                (SELECT COUNT(*) FROM UsageBudgetAlertEvents WHERE UsageBudgetId='$budget_id' AND Level=2),N'|',
+                (SELECT COUNT(*) FROM UsageBudgetAlertDeliveries d JOIN UsageBudgetAlertEvents e ON e.Id=d.BudgetAlertEventId WHERE e.UsageBudgetId='$budget_id'),N'|',
+                (SELECT COUNT(*) FROM UsageBudgets WHERE Id='$budget_id' AND LastTriggeredLevel=2 AND ABS(LastObservedCostUsd-10.5)<0.0001 AND LastObservedTokens=1050)
+              );" | tr -d '\r' | xargs)
+            if [ "$critical_state" = '1|1|2|1' ]; then critical_ready=true; break; fi
+            sleep 5
+          done
+          test "$critical_ready" = true
+
+          for attempt in {1..15}; do [ "$(wc -l </tmp/budget_receiver.jsonl 2>/dev/null || echo 0)" -ge 2 ] && break; sleep 1; done
+          python3 - <<'PY'
+          import json,hmac,hashlib
+          rows=[json.loads(x) for x in open('/tmp/budget_receiver.jsonl',encoding='utf-8') if x.strip()]
+          assert len(rows)==2, rows
+          assert all(r['path']=='/budget' for r in rows)
+          assert [r['event'] for r in rows]==['usage.budget.warning','usage.budget.critical']
+          for row in rows:
+              expected=hmac.new(b'budget-ci-signing-secret-2026', f"{row['timestamp']}.{row['body']}".encode(), hashlib.sha256).hexdigest()
+              assert row['signature']==f'sha256={expected}'
+          critical=json.loads(rows[1]['body'])
+          assert critical['usage']['costUsd']==10.5
+          assert critical['usage']['tokens']==1050
+          PY
+
+          sleep 7
+          no_duplicate_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorBudgetCi!2026Password' -C -b -d MonitorBudgetCi -h -1 -W -Q "SET NOCOUNT ON; SELECT CONCAT((SELECT COUNT(*) FROM UsageBudgetAlertEvents WHERE UsageBudgetId='$budget_id'),N'|',(SELECT COUNT(*) FROM UsageBudgetAlertDeliveries d JOIN UsageBudgetAlertEvents e ON e.Id=d.BudgetAlertEventId WHERE e.UsageBudgetId='$budget_id'));" | tr -d '\r' | xargs)
+          test "$no_duplicate_state" = '2|2'
+
+          audit_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorBudgetCi!2026Password' -C -b -d MonitorBudgetCi -h -1 -W -Q "SET NOCOUNT ON; SELECT CONCAT((SELECT COUNT(*) FROM AuditEvents WHERE Action=N'usage-budget.created' AND TargetId='$budget_id'),N'|',(SELECT COUNT(*) FROM AuditEvents WHERE Action=N'usage-budget.warning' AND TargetId='$budget_id'),N'|',(SELECT COUNT(*) FROM AuditEvents WHERE Action=N'usage-budget.critical' AND TargetId='$budget_id'));" | tr -d '\r' | xargs)
+          test "$audit_state" = '1|1|1'
+
+          curl -fsS -b /tmp/budget-cookies.txt http://127.0.0.1:5094/budgets -o /tmp/budgets-page.html
+          grep -q 'CI production budget' /tmp/budgets-page.html
+          grep -q 'Critical' /tmp/budgets-page.html
+          grep -q 'Budget notification delivery' /tmp/budgets-page.html
+
+          critical_event_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorBudgetCi!2026Password' -C -b -d MonitorBudgetCi -h -1 -W -Q "SET NOCOUNT ON; SELECT CONVERT(nvarchar(36),Id) FROM UsageBudgetAlertEvents WHERE UsageBudgetId='$budget_id' AND Level=2;" | tr -d '\r' | xargs)
+          ack_token=$(get_token http://127.0.0.1:5094/budgets /tmp/budgets-ack.html)
+          ack_status=$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/budget-cookies.txt -c /tmp/budget-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$ack_token" \
+            "http://127.0.0.1:5094/budgets?handler=Acknowledge&eventId=$critical_event_id")
+          test "$ack_status" = '302'
+
+          ack_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorBudgetCi!2026Password' -C -b -d MonitorBudgetCi -h -1 -W -Q "SET NOCOUNT ON; SELECT CONCAT((SELECT COUNT(*) FROM UsageBudgetAlertEvents WHERE Id='$critical_event_id' AND AcknowledgedAt IS NOT NULL AND AcknowledgedBy=N'budget-ci@monitor.local'),N'|',(SELECT COUNT(*) FROM AuditEvents WHERE Action=N'usage-budget.alert-acknowledged' AND TargetId='$critical_event_id'));" | tr -d '\r' | xargs)
+          test "$ack_state" = '1|1'

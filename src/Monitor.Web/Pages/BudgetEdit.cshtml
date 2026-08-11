@@ -1,0 +1,114 @@
+@page "/budgets/edit/{id:guid?}"
+@model BudgetEditModel
+@{
+    ViewData["Title"] = Model.IsEdit ? "Edit budget" : "New budget";
+}
+
+<header class="page-head compact">
+    <div>
+        <p class="eyebrow">USAGE POLICY</p>
+        <h1>@(Model.IsEdit ? "Edit budget" : "New budget")</h1>
+        <p class="lede">Scope a daily or monthly cost/token guardrail and choose how threshold alerts are delivered.</p>
+    </div>
+    <a href="/budgets">Back to budgets</a>
+</header>
+
+<section class="panel budget-editor">
+    <form method="post" asp-page-handler="Save" asp-route-id="@Model.BudgetId">
+        <div asp-validation-summary="ModelOnly" class="validation-summary"></div>
+
+        <div class="editor-grid">
+            <label>
+                <span>Name</span>
+                <input asp-for="Input.Name" placeholder="Production monthly AI budget" />
+                <span asp-validation-for="Input.Name" class="field-validation"></span>
+            </label>
+            <label>
+                <span>Period</span>
+                <select asp-for="Input.Period">
+                    <option value="Daily">Daily</option>
+                    <option value="Monthly">Monthly</option>
+                </select>
+            </label>
+            <label>
+                <span>Component</span>
+                <select asp-for="Input.ComponentId">
+                    <option value="">All components</option>
+                    @foreach (var component in Model.Components)
+                    {
+                        <option value="@component.Id">@component.Name · @component.Environment</option>
+                    }
+                </select>
+            </label>
+            <label>
+                <span>Environment</span>
+                <select asp-for="Input.Environment">
+                    <option value="">All environments</option>
+                    @foreach (var environment in Model.Environments)
+                    {
+                        <option value="@environment">@environment</option>
+                    }
+                </select>
+            </label>
+            <label>
+                <span>Model</span>
+                <select asp-for="Input.Model">
+                    <option value="">All models</option>
+                    @foreach (var modelName in Model.Models)
+                    {
+                        <option value="@modelName">@modelName</option>
+                    }
+                </select>
+            </label>
+            <label>
+                <span>Cost limit (USD)</span>
+                <input asp-for="Input.CostLimitUsd" type="number" min="0" step="0.000001" placeholder="250.00" />
+                <span asp-validation-for="Input.CostLimitUsd" class="field-validation"></span>
+            </label>
+            <label>
+                <span>Token limit</span>
+                <input asp-for="Input.TokenLimit" type="number" min="1" step="1" placeholder="10000000" />
+                <span asp-validation-for="Input.TokenLimit" class="field-validation"></span>
+            </label>
+            <label>
+                <span>Warning threshold (%)</span>
+                <input asp-for="Input.WarningPercent" type="number" min="1" max="1000" />
+                <span asp-validation-for="Input.WarningPercent" class="field-validation"></span>
+            </label>
+            <label>
+                <span>Critical threshold (%)</span>
+                <input asp-for="Input.CriticalPercent" type="number" min="1" max="1000" />
+                <span asp-validation-for="Input.CriticalPercent" class="field-validation"></span>
+            </label>
+        </div>
+
+        <div class="budget-checks">
+            <label class="check-row"><input asp-for="Input.Enabled" /> <span>Enabled</span></label>
+            <label class="check-row"><input asp-for="Input.DeliverToAllEnabledDestinations" /> <span>Deliver alerts to all enabled destinations</span></label>
+        </div>
+
+        <div class="destination-picker">
+            <div class="panel-head"><div><p class="eyebrow">DELIVERY</p><h2>Selected destinations</h2></div></div>
+            @if (Model.Destinations.Count == 0)
+            {
+                <p class="muted">No webhook destinations exist yet. Configure one on Alerts, or keep all-destinations mode for later.</p>
+            }
+            else
+            {
+                @foreach (var destination in Model.Destinations)
+                {
+                    <label class="destination-option">
+                        <input type="checkbox" name="Input.SelectedDestinationIds" value="@destination.Id" checked="@Model.Input.SelectedDestinationIds.Contains(destination.Id)" />
+                        <span><strong>@destination.Name</strong><small>@destination.EndpointUrl · @(destination.Enabled ? "enabled" : "disabled")</small></span>
+                    </label>
+                }
+            }
+            <span asp-validation-for="Input.SelectedDestinationIds" class="field-validation"></span>
+        </div>
+
+        <div class="editor-actions">
+            <button type="submit">@(Model.IsEdit ? "Save budget" : "Create budget")</button>
+            <a href="/budgets">Cancel</a>
+        </div>
+    </form>
+</section>

@@ -20,6 +20,10 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     public DbSet<FailureAlertEvent> FailureAlertEvents => Set<FailureAlertEvent>();
     public DbSet<AlertDeliveryDestination> AlertDeliveryDestinations => Set<AlertDeliveryDestination>();
     public DbSet<AlertDelivery> AlertDeliveries => Set<AlertDelivery>();
+    public DbSet<UsageBudget> UsageBudgets => Set<UsageBudget>();
+    public DbSet<UsageBudgetDestination> UsageBudgetDestinations => Set<UsageBudgetDestination>();
+    public DbSet<UsageBudgetAlertEvent> UsageBudgetAlertEvents => Set<UsageBudgetAlertEvent>();
+    public DbSet<UsageBudgetAlertDelivery> UsageBudgetAlertDeliveries => Set<UsageBudgetAlertDelivery>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -131,6 +135,61 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
             .OnDelete(DeleteBehavior.Restrict);
         delivery.HasOne(x => x.Destination)
             .WithMany(x => x.Deliveries)
+            .HasForeignKey(x => x.DestinationId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        var budget = modelBuilder.Entity<UsageBudget>();
+        budget.ToTable("UsageBudgets");
+        budget.HasKey(x => x.Id);
+        budget.Property(x => x.Name).HasMaxLength(200);
+        budget.Property(x => x.Environment).HasMaxLength(80);
+        budget.Property(x => x.Model).HasMaxLength(160);
+        budget.Property(x => x.DeliverToAllEnabledDestinations).HasDefaultValue(true);
+        budget.HasIndex(x => new { x.IsDeleted, x.Enabled, x.LastEvaluatedAt });
+        budget.HasIndex(x => new { x.ComponentId, x.Environment, x.Model, x.Period });
+        budget.HasOne(x => x.Component)
+            .WithMany()
+            .HasForeignKey(x => x.ComponentId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        var budgetDestination = modelBuilder.Entity<UsageBudgetDestination>();
+        budgetDestination.ToTable("UsageBudgetDestinations");
+        budgetDestination.HasKey(x => new { x.UsageBudgetId, x.DestinationId });
+        budgetDestination.HasIndex(x => x.DestinationId);
+        budgetDestination.HasOne(x => x.UsageBudget)
+            .WithMany(x => x.DestinationAssignments)
+            .HasForeignKey(x => x.UsageBudgetId)
+            .OnDelete(DeleteBehavior.Cascade);
+        budgetDestination.HasOne(x => x.Destination)
+            .WithMany()
+            .HasForeignKey(x => x.DestinationId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        var budgetAlert = modelBuilder.Entity<UsageBudgetAlertEvent>();
+        budgetAlert.ToTable("UsageBudgetAlertEvents");
+        budgetAlert.HasKey(x => x.Id);
+        budgetAlert.Property(x => x.AcknowledgedBy).HasMaxLength(256);
+        budgetAlert.HasIndex(x => x.TriggeredAt).IsDescending();
+        budgetAlert.HasIndex(x => x.AcknowledgedAt);
+        budgetAlert.HasIndex(x => new { x.UsageBudgetId, x.PeriodStart, x.Level });
+        budgetAlert.HasOne(x => x.UsageBudget)
+            .WithMany(x => x.AlertEvents)
+            .HasForeignKey(x => x.UsageBudgetId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        var budgetDelivery = modelBuilder.Entity<UsageBudgetAlertDelivery>();
+        budgetDelivery.ToTable("UsageBudgetAlertDeliveries");
+        budgetDelivery.HasKey(x => x.Id);
+        budgetDelivery.Property(x => x.LastError).HasMaxLength(4000);
+        budgetDelivery.HasIndex(x => new { x.Status, x.NextAttemptAt });
+        budgetDelivery.HasIndex(x => new { x.BudgetAlertEventId, x.DestinationId }).IsUnique();
+        budgetDelivery.HasIndex(x => new { x.DestinationId, x.CreatedAt }).IsDescending(false, true);
+        budgetDelivery.HasOne(x => x.BudgetAlertEvent)
+            .WithMany(x => x.Deliveries)
+            .HasForeignKey(x => x.BudgetAlertEventId)
+            .OnDelete(DeleteBehavior.Restrict);
+        budgetDelivery.HasOne(x => x.Destination)
+            .WithMany()
             .HasForeignKey(x => x.DestinationId)
             .OnDelete(DeleteBehavior.Restrict);
 
