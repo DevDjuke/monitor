@@ -1,4 +1,3 @@
-using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
@@ -354,8 +353,11 @@ public static class MonitoringEndpoints
     {
         var run = await db.Runs
             .AsNoTracking()
+            .AsSplitQuery()
             .Include(x => x.Component)
+            .Include(x => x.FailureGroup)
             .Include(x => x.Spans)
+            .Include(x => x.LogEvents)
             .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
 
         if (run is null)
@@ -375,6 +377,7 @@ public static class MonitoringEndpoints
             run.Sequence,
             run.ComponentId,
             Component = run.Component.Name,
+            run.Component.Environment,
             run.ExternalId,
             run.Name,
             run.Trigger,
@@ -388,18 +391,57 @@ public static class MonitoringEndpoints
             run.InputJson,
             run.OutputJson,
             run.Error,
-            Spans = run.Spans.OrderBy(x => x.StartedAt).Select(x => new
-            {
-                x.Id,
-                x.ParentSpanId,
-                x.Name,
-                x.Kind,
-                x.Status,
-                x.StartedAt,
-                x.CompletedAt,
-                x.AttributesJson,
-                x.Error
-            })
+            Failure = run.FailureGroup is null
+                ? null
+                : new
+                {
+                    run.FailureGroup.Id,
+                    run.FailureGroup.Category,
+                    run.FailureGroup.Fingerprint,
+                    run.FailureGroup.Occurrences
+                },
+            Spans = run.Spans
+                .OrderBy(x => x.StartedAt)
+                .ThenBy(x => x.Id)
+                .Select(x => new
+                {
+                    x.Id,
+                    x.ParentSpanId,
+                    x.Name,
+                    x.Kind,
+                    x.Status,
+                    x.StartedAt,
+                    x.CompletedAt,
+                    x.AttributesJson,
+                    x.Error,
+                    x.ErrorType,
+                    x.HttpStatusCode,
+                    x.ExternalSpanId,
+                    x.ExternalParentSpanId
+                }),
+            Logs = run.LogEvents
+                .OrderBy(x => x.Timestamp)
+                .ThenBy(x => x.CreatedAt)
+                .ThenBy(x => x.Id)
+                .Select(x => new
+                {
+                    x.Id,
+                    x.SpanId,
+                    x.Timestamp,
+                    x.ObservedAt,
+                    x.Level,
+                    x.SeverityText,
+                    x.EventName,
+                    x.Message,
+                    x.MessageTemplate,
+                    x.Source,
+                    x.PropertiesJson,
+                    x.ExceptionType,
+                    x.ExceptionMessage,
+                    x.ExceptionStackTrace,
+                    x.ExternalTraceId,
+                    x.ExternalSpanId
+                })
         });
     }
 
@@ -407,7 +449,7 @@ public static class MonitoringEndpoints
         StartRunRequest request,
         HttpContext httpContext,
         MonitorDbContext db,
-        IHubContext<MonitorHub> hub,
+        MonitorRealtimePublisher realtime,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Name))
@@ -440,7 +482,7 @@ public static class MonitoringEndpoints
         component.MarkRunStarted(now);
         db.Runs.Add(run);
         await db.SaveChangesAsync(cancellationToken);
-        await BroadcastRunChangedAsync(hub, run, component, "Started", cancellationToken);
+        await realtime.PublishRunChangedAsync(run, component, "Started", cancellationToken);
 
         return Results.Created($"/api/runs/{run.Id}", new { run.Id, run.StartedAt });
     }
@@ -451,7 +493,7 @@ public static class MonitoringEndpoints
         HttpContext httpContext,
         MonitorDbContext db,
         FailureGroupingService failureGrouping,
-        IHubContext<MonitorHub> hub,
+        MonitorRealtimePublisher realtime,
         CancellationToken cancellationToken)
     {
         if (request.Status == RunStatus.Running)
@@ -488,7 +530,7 @@ public static class MonitoringEndpoints
             await failureGrouping.GroupPendingAsync(cancellationToken);
         }
 
-        await BroadcastRunChangedAsync(hub, run, run.Component, "Completed", cancellationToken);
+        await realtime.PublishRunChangedAsync(run, run.Component, "Completed", cancellationToken);
         return Results.NoContent();
     }
 
@@ -542,29 +584,6 @@ public static class MonitoringEndpoints
     }
 
     private static IResult Forbidden() => Results.StatusCode(StatusCodes.Status403Forbidden);
-
-    private static Task BroadcastRunChangedAsync(
-        IHubContext<MonitorHub> hub,
-        AgentRun run,
-        MonitoredComponent component,
-        string change,
-        CancellationToken cancellationToken)
-    {
-        return hub.Clients.All.SendAsync(
-            "RunChanged",
-            new RunRealtimeEvent(
-                run.Id,
-                run.Sequence,
-                run.ComponentId,
-                component.Name,
-                component.Environment,
-                run.Name,
-                run.Model,
-                run.Status.ToString(),
-                run.StartedAt,
-                change),
-            cancellationToken);
-    }
 }
 
 public sealed record RegisterComponentRequest(

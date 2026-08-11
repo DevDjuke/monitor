@@ -4,24 +4,46 @@
     ViewData["Title"] = Model.Run.Name;
     var statusClass = Model.Run.Status.ToString().ToLowerInvariant();
     TimeSpan? duration = Model.Run.CompletedAt is null ? null : Model.Run.CompletedAt.Value - Model.Run.StartedAt;
+    var isRunning = Model.Run.Status == Monitor.Domain.RunStatus.Running;
 }
+
+@section Head {
+    <link rel="stylesheet" href="~/css/run-live.css" asp-append-version="true" />
+}
+
+<div id="run-live-root"
+     data-run-id="@Model.Run.Id"
+     data-run-status="@Model.Run.Status"
+     data-run-started-at="@Model.Run.StartedAt.ToString("O")"
+     data-run-completed-at="@(Model.Run.CompletedAt?.ToString("O") ?? string.Empty)">
 
 <header class="page-head compact run-head">
     <div>
         <p class="eyebrow">RUN / @Model.Run.Id</p>
-        <h1>@Model.Run.Name</h1>
+        <h1 id="run-live-name">@Model.Run.Name</h1>
         <p class="lede">@Model.Run.Component.Name · @Model.Run.StartedAt.ToString("u")</p>
     </div>
-    <span class="run-status @statusClass">@Model.Run.Status</span>
+    <div class="run-live-head-state">
+        <div class="run-live-connection @(isRunning ? "connecting" : "frozen")" id="run-live-connection" aria-live="polite">
+            <span></span>
+            <strong>@(isRunning ? "Connecting" : "Historical · frozen")</strong>
+        </div>
+        <span class="run-status @statusClass" id="run-live-status">@Model.Run.Status</span>
+    </div>
 </header>
 
+<button class="run-live-update-banner" id="run-live-update-banner" type="button" hidden>
+    <strong id="run-live-update-count">1 update available</strong>
+    <span>Refresh this frozen snapshot</span>
+</button>
+
 <section class="run-facts">
-    <div><span>Duration</span><strong>@(duration is null ? "running" : $"{duration.Value.TotalMilliseconds:0} ms")</strong></div>
-    <div><span>Model</span><strong>@(Model.Run.Model ?? "—")</strong></div>
-    <div><span>Input tokens</span><strong>@Model.Run.InputTokens.ToString("N0")</strong></div>
-    <div><span>Output tokens</span><strong>@Model.Run.OutputTokens.ToString("N0")</strong></div>
-    <div><span>Cost</span><strong>$@Model.Run.CostUsd.ToString("0.0000")</strong></div>
-    <div><span>Trigger</span><strong>@(Model.Run.Trigger ?? "—")</strong></div>
+    <div><span>Duration</span><strong id="run-live-duration" data-live-duration data-started-at="@Model.Run.StartedAt.ToString("O")" data-completed-at="@(Model.Run.CompletedAt?.ToString("O") ?? string.Empty)">@(duration is null ? "running" : $"{duration.Value.TotalMilliseconds:0} ms")</strong></div>
+    <div><span>Model</span><strong id="run-live-model">@(Model.Run.Model ?? "—")</strong></div>
+    <div><span>Input tokens</span><strong id="run-live-input-tokens">@Model.Run.InputTokens.ToString("N0")</strong></div>
+    <div><span>Output tokens</span><strong id="run-live-output-tokens">@Model.Run.OutputTokens.ToString("N0")</strong></div>
+    <div><span>Cost</span><strong id="run-live-cost">$@Model.Run.CostUsd.ToString("0.0000")</strong></div>
+    <div><span>Trigger</span><strong id="run-live-trigger">@(Model.Run.Trigger ?? "—")</strong></div>
 </section>
 
 @if (!string.IsNullOrWhiteSpace(Model.Run.TraceId))
@@ -37,7 +59,7 @@
 @if (Model.Run.FailureGroup is not null)
 {
     var failure = Model.Run.FailureGroup;
-    <section class="panel">
+    <section class="panel" id="run-live-failure-panel">
         <div class="panel-head"><div><p class="eyebrow">FAILURE FINGERPRINT</p><h2>@failure.Category</h2></div><span>@failure.Occurrences.ToString("N0") occurrences</span></div>
         <div class="rows">
             <div class="system-row"><div class="row-main"><strong>@failure.Operation</strong><span>Operation</span></div></div>
@@ -62,18 +84,15 @@
     </section>
 }
 
-<section class="panel">
+<section class="panel run-live-panel">
     <div class="panel-head">
         <div><p class="eyebrow">TIMELINE</p><h2>Run events</h2></div>
-        <span>@Model.LogEvents.Count logs · @Model.Spans.Count spans</span>
+        <span><strong id="run-live-log-count">@Model.LogEvents.Count</strong> logs · <strong id="run-live-span-count">@Model.Spans.Count</strong> spans</span>
     </div>
-    @if (Model.Timeline.Count == 0)
-    {
-        <div class="empty"><strong>No detailed telemetry reported.</strong><span>Spans and structured log events will appear here in timestamp order.</span></div>
-    }
-    else
-    {
-        <div class="run-timeline">
+    <div class="empty" id="run-live-timeline-empty" hidden="@(Model.Timeline.Count != 0)">
+        <strong>No detailed telemetry reported.</strong><span>Spans and structured log events will appear here in timestamp order.</span>
+    </div>
+    <div class="run-timeline" id="run-live-timeline" hidden="@(Model.Timeline.Count == 0)">
         @foreach (var item in Model.Timeline)
         {
             <div class="timeline-row @item.CssClass">
@@ -96,48 +115,50 @@
                 <span class="timeline-detail">@(item.Detail ?? string.Empty)</span>
             </div>
         }
-        </div>
-    }
+    </div>
 </section>
 
-<section class="panel trace-panel">
-    <div class="panel-head"><div><p class="eyebrow">TRACE</p><h2>Execution</h2></div><span>@Model.Spans.Count spans</span></div>
-    @if (Model.Spans.Count == 0)
-    {
-        <div class="empty"><strong>No spans reported.</strong><span>This run only contains its top-level timing and usage data.</span></div>
-    }
-    else
-    {
-        <div class="trace">
+<section class="panel trace-panel run-live-panel">
+    <div class="panel-head"><div><p class="eyebrow">TRACE</p><h2>Execution</h2></div><span><strong id="run-live-trace-count">@Model.Spans.Count</strong> spans</span></div>
+    <div class="empty" id="run-live-trace-empty" hidden="@(Model.Spans.Count != 0)">
+        <strong>No spans reported.</strong><span>This run only contains its top-level timing and usage data.</span>
+    </div>
+    <div class="trace" id="run-live-trace" hidden="@(Model.Spans.Count == 0)">
         @foreach (var span in Model.Spans)
         {
             var spanClass = span.Status.ToString().ToLowerInvariant();
             TimeSpan? spanDuration = span.CompletedAt is null ? null : span.CompletedAt.Value - span.StartedAt;
-            <div class="trace-row">
+            <div class="trace-row" data-live-span data-span-id="@span.Id" data-parent-span-id="@(span.ParentSpanId?.ToString() ?? string.Empty)" style="--trace-depth:0">
                 <span class="trace-line"></span>
                 <span class="status-dot @spanClass"></span>
                 <span class="trace-kind">@span.Kind</span>
                 <strong>@span.Name</strong>
-                <span class="trace-duration">@(spanDuration is null ? "running" : $"{spanDuration.Value.TotalMilliseconds:0} ms")</span>
+                <span class="trace-duration" data-live-duration data-started-at="@span.StartedAt.ToString("O")" data-completed-at="@(span.CompletedAt?.ToString("O") ?? string.Empty)">@(spanDuration is null ? "running" : $"{spanDuration.Value.TotalMilliseconds:0} ms")</span>
             </div>
             @if (!string.IsNullOrWhiteSpace(span.ErrorType) || span.HttpStatusCode.HasValue)
             {
                 <div class="muted">@(span.ErrorType ?? "error")@(span.HttpStatusCode.HasValue ? $" · HTTP {span.HttpStatusCode}" : string.Empty)</div>
             }
         }
-        </div>
-    }
+    </div>
 </section>
 
-@if (!string.IsNullOrWhiteSpace(Model.Run.Error))
-{
-    <section class="panel payload error-payload"><p class="eyebrow">ERROR</p><pre>@Model.Run.Error</pre></section>
-}
+<section class="panel payload error-payload" id="run-live-error-panel" hidden="@string.IsNullOrWhiteSpace(Model.Run.Error)">
+    <p class="eyebrow">ERROR</p><pre id="run-live-error">@(Model.Run.Error ?? string.Empty)</pre>
+</section>
+
 @if (!string.IsNullOrWhiteSpace(Model.Run.InputJson))
 {
     <section class="panel payload"><p class="eyebrow">INPUT</p><pre>@Model.Run.InputJson</pre></section>
 }
-@if (!string.IsNullOrWhiteSpace(Model.Run.OutputJson))
-{
-    <section class="panel payload"><p class="eyebrow">OUTPUT</p><pre>@Model.Run.OutputJson</pre></section>
+
+<section class="panel payload" id="run-live-output-panel" hidden="@string.IsNullOrWhiteSpace(Model.Run.OutputJson)">
+    <p class="eyebrow">OUTPUT</p><pre id="run-live-output">@(Model.Run.OutputJson ?? string.Empty)</pre>
+</section>
+
+</div>
+
+@section Scripts {
+    <script src="~/lib/microsoft/signalr/dist/browser/signalr.min.js"></script>
+    <script src="~/js/run-live.js" asp-append-version="true"></script>
 }

@@ -34,10 +34,14 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 var connectionString = builder.Configuration.GetConnectionString("Monitor")
     ?? "Server=(localdb)\\MSSQLLocalDB;Database=Monitor;Trusted_Connection=True;TrustServerCertificate=True;MultipleActiveResultSets=True";
 
-builder.Services.AddDbContext<MonitorDbContext>(options =>
-    options.UseSqlServer(connectionString));
+builder.Services.AddScoped<MonitorRealtimeSaveChangesInterceptor>();
+builder.Services.AddDbContext<MonitorDbContext>((services, options) =>
+    options
+        .UseSqlServer(connectionString)
+        .AddInterceptors(services.GetRequiredService<MonitorRealtimeSaveChangesInterceptor>()));
 
 builder.Services.AddScoped<AuditTrailWriter>();
+builder.Services.AddScoped<MonitorRealtimePublisher>();
 builder.Services.AddSingleton<SavedViewQueryPolicy>();
 builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection(RetentionOptions.SectionName));
 builder.Services.AddScoped<RetentionAggregationService>();

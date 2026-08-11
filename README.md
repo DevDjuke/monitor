@@ -50,6 +50,7 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - Audit evidence independent of mutable targets: no operational foreign keys or telemetry-retention cascades can erase an audit row.
 - Runs history with server-side search/filtering and stable keyset pagination.
 - SignalR-backed live run updates: the latest page refreshes automatically while older history remains stable.
+- Live run drill-down with authenticated per-run SignalR groups, incremental span/log reconciliation, continuously updating active durations, reconnect recovery, and explicit frozen terminal-history behavior.
 - Hourly durable run aggregates by component and model for long-range usage metrics.
 - Automated retention that purges only old, already-aggregated successful runs while preserving failed/cancelled forensic detail.
 - Bounded retention for unlinked/component-only logs so ordinary logging cannot grow indefinitely.
@@ -57,6 +58,7 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - Daily/monthly cost and token budgets with warning/critical threshold events and durable delivery.
 - Durable leased component commands with Pause/Resume, Disable/Enable, Restart, KillRun, and RefreshConfiguration semantics.
 - `/commands` cross-component command history plus component-scoped issuance and cancellation.
+- Live command transitions on central and component history surfaces without silently destabilizing filtered or historical views.
 - Server-side run admission enforcement for Paused/Disabled workload control state.
 - Personal saved operational views across Runs, Logs, Usage, Alerts, Budgets, Audit, and Commands.
 - Canonical per-user filter presets with up to six pinned sidebar fast links; Runs filter state is bookmarkable while keyset cursors remain transient.
@@ -69,7 +71,7 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - `Monitor.OtlpSampleWorker` dogfoods the standard OpenTelemetry .NET trace and logging exporters without referencing `Monitor.Client`.
 - Versioned EF Core migrations.
 - SQL Server persistence with LocalDB as the default development instance.
-- GitHub Actions SQL Server-backed integration tests for telemetry, traces, logs, migration upgrades, keyset pagination, credentials, failure grouping, alert evaluation, signed webhook delivery, budgets, leased component commands, personal saved-view ownership/canonicalization, retention safety, and audit atomicity/secret exclusion.
+- GitHub Actions SQL Server-backed integration tests for telemetry, traces, logs, migration upgrades, keyset pagination, credentials, failure grouping, alert evaluation, signed webhook delivery, budgets, leased component commands, personal saved-view ownership/canonicalization, richer live run/command behavior, retention safety, and audit atomicity/secret exclusion.
 
 The Monitor-native HTTP API and OTLP are complementary. The custom API carries Monitor-specific lifecycle semantics; OTLP provides vendor-neutral observability ingestion.
 
@@ -550,6 +552,7 @@ docs/
   component-ingestion-credentials.md
   component-control-commands.md
   saved-views.md
+  richer-live-experience.md
   budgets-and-usage-policy.md
   logs-and-run-events.md
   roadmap.md
@@ -557,4 +560,4 @@ docs/
 
 ## Roadmap
 
-The maintained implementation sequence is in `docs/roadmap.md`. Saved views are now complete alongside the core observability, policy, audit, credential, and command-control slices. We intentionally reevaluate the next product priority before starting the richer live-experience work.
+The maintained implementation sequence is in `docs/roadmap.md`. Saved views and the richer live run/command experience are complete alongside the core observability, policy, audit, credential, and command-control slices. The next platform priority should be reevaluated against the remaining later-platform work.
