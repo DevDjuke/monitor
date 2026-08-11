@@ -9,13 +9,13 @@ public sealed class MonitorRealtimePublisher(
     MonitorDbContext db,
     IHubContext<MonitorHub> hub)
 {
-    public async Task PublishRunChangedAsync(
+    public Task PublishRunChangedAsync(
         AgentRun run,
         MonitoredComponent component,
         string change,
         CancellationToken cancellationToken = default)
     {
-        await hub.Clients.All.SendAsync(
+        return hub.Clients.All.SendAsync(
             "RunChanged",
             new RunRealtimeEvent(
                 run.Id,
@@ -28,12 +28,6 @@ public sealed class MonitorRealtimePublisher(
                 run.Status.ToString(),
                 run.StartedAt,
                 change),
-            cancellationToken);
-
-        await PublishRunDetailChangedAsync(
-            run.Id,
-            "Run",
-            null,
             cancellationToken);
     }
 
