@@ -82,20 +82,20 @@ public sealed class AlertDeliveryWorker(
                     await db.SaveChangesAsync(cancellationToken);
                 }
 
-                var remaining = Math.Max(0, batchSize - failureDeliveries.Count);
-                var budgetDeliveries = remaining == 0
-                    ? []
-                    : await db.UsageBudgetAlertDeliveries
-                        .Where(x =>
-                            x.Destination.Enabled &&
-                            (x.Status == AlertDeliveryStatus.Pending || x.Status == AlertDeliveryStatus.RetryScheduled) &&
-                            x.NextAttemptAt <= now)
-                        .Include(x => x.Destination)
-                        .Include(x => x.BudgetAlertEvent).ThenInclude(x => x.UsageBudget)
-                        .OrderBy(x => x.NextAttemptAt)
-                        .ThenBy(x => x.CreatedAt)
-                        .Take(remaining)
-                        .ToListAsync(cancellationToken);
+                // Each outbox gets its own bounded slice so a continuously full failure queue
+                // cannot starve budget notifications (or vice versa) while the shared lock still
+                // guarantees one dispatcher across Monitor nodes.
+                var budgetDeliveries = await db.UsageBudgetAlertDeliveries
+                    .Where(x =>
+                        x.Destination.Enabled &&
+                        (x.Status == AlertDeliveryStatus.Pending || x.Status == AlertDeliveryStatus.RetryScheduled) &&
+                        x.NextAttemptAt <= now)
+                    .Include(x => x.Destination)
+                    .Include(x => x.BudgetAlertEvent).ThenInclude(x => x.UsageBudget)
+                    .OrderBy(x => x.NextAttemptAt)
+                    .ThenBy(x => x.CreatedAt)
+                    .Take(batchSize)
+                    .ToListAsync(cancellationToken);
 
                 foreach (var delivery in budgetDeliveries)
                 {
@@ -178,7 +178,6 @@ public sealed class AlertDeliveryWorker(
                 @LockTimeout = 0;
             SELECT @result;
             """;
-
         var parameter = command.CreateParameter();
         parameter.ParameterName = "@resource";
         parameter.Value = LockResource;
@@ -200,18 +199,9 @@ public sealed class AlertDeliveryWorker(
 
 internal static class AlertDeliveryDestinationHealthExtensions
 {
-    public static void RecordSuccessOrFailure(
-        this AlertDeliveryDestination destination,
-        WebhookSendResult result,
-        DateTimeOffset attemptedAt)
+    public static void RecordSuccessOrFailure(this AlertDeliveryDestination destination, WebhookSendResult result, DateTimeOffset attemptedAt)
     {
-        if (result.Succeeded)
-        {
-            destination.RecordSuccess(attemptedAt);
-        }
-        else
-        {
-            destination.RecordFailure(result.Error ?? "Webhook delivery failed.", attemptedAt);
-        }
+        if (result.Succeeded) destination.RecordSuccess(attemptedAt);
+        else destination.RecordFailure(result.Error ?? "Webhook delivery failed.", attemptedAt);
     }
 }
