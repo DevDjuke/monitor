@@ -15,7 +15,8 @@ This roadmap is the current product sequence for turning Monitor from an observa
 - Durable alert-delivery outbox with HMAC-signed webhook delivery, retry, and dead-letter handling.
 - Durable append-only operator audit trail with safe before/after snapshots and searchable history.
 - Daily/monthly cost and token budget policy with warning/critical alert delivery.
-- Server-side filters on Runs, Logs, Usage, Alerts, Budgets, and Audit.
+- Durable leased component control commands with acknowledgement, redelivery, timeout/expiry, and audit history.
+- Server-side filters on Runs, Logs, Usage, Alerts, Budgets, Commands, and Audit.
 
 ## Next
 
@@ -85,33 +86,44 @@ Status: **complete**
 - Detailed contract: `docs/budgets-and-usage-policy.md`.
 - Enforcement remains intentionally absent until component control commands exist; P5 is detection/notification policy only.
 
-## Then
-
 ### 6. Component control commands
 
-- Durable command/outbox model for pause, disable, restart, kill active run, and configuration refresh.
-- Agent polling or push transport with explicit acknowledgement/result.
-- Idempotent command execution and timeout state.
-- Full audit trail for operator commands.
+Status: **complete**
+
+- Persist commands as durable operational records with `Pending`, `Leased`, `Succeeded`, `Failed`, `Rejected`, `Cancelled`, and `Expired` states.
+- Support `Pause`/`Resume`, `Disable`/`Enable`, `Restart`, `KillRun`, and `RefreshConfiguration` commands.
+- Deliver commands through component polling with a short lease; the command id is the idempotency key and each delivery attempt receives a fresh lease token.
+- Redeliver an unacknowledged command after lease expiry while rejecting acknowledgements carrying a superseded lease token.
+- Serialize claim, completion, cancellation, and expiry per component with a SQL Server application lock.
+- Keep workload control separate from credential admission: Pause/Disable block new runs while heartbeat, existing-run telemetry, and command polling remain available.
+- Enforce the control state server-side when a new run is started, returning HTTP 409 rather than relying only on cooperative agent behavior.
+- Keep `TargetRunId` as forensic command data rather than an FK to Runs so successful-run retention cannot erase or block command history.
+- Audit operator issuance/cancellation, component success/failure/rejection, and system expiry with command payloads excluded from immutable audit snapshots.
+- Provide a dedicated `MonitorControlClient`, per-component command UI, and central filtered `/commands` history.
+- Dogfood the protocol in `Monitor.SampleWorker`; restart remains host-specific and is explicitly rejected unless a process supervisor integration exists.
+- Detailed contract: `docs/component-control-commands.md`.
 
 ## Polish and operator ergonomics
 
 ### 7. Saved views
 
-- Save named filter combinations for Runs, Usage, Alerts, Budgets, logs, and Audit.
+- Save named filter combinations for Runs, Usage, Alerts, Budgets, Commands, Logs, and Audit.
 - Personal views first; shared/team views later if Monitor becomes multi-user.
-- Fast links for common operational slices such as production failures, expensive model runs, rate limits, dead letters, budget pressure, and security-sensitive changes.
+- Fast links for common operational slices such as production failures, expensive model runs, rate limits, dead letters, budget pressure, command failures, and security-sensitive changes.
 
 ### 8. Richer live experience
 
 - Incremental live run/span tree rather than only list refreshes.
 - Live status and duration updates for active spans.
 - Streaming run events/logs now that the logs model exists.
+- Live command-state transitions now that the command model exists.
 - Clear latest-vs-historical behavior so realtime updates never destabilize forensic browsing.
 
 ## Later platform work
 
 - Additional alert-delivery adapters: email, Slack, Teams, Discord, PagerDuty-style integrations.
+- Host/process-supervisor command adapters for restart semantics where appropriate.
+- Optional budget enforcement policies that enqueue control commands rather than mutating workloads directly.
 - OTLP/HTTP JSON and OTLP/gRPC support.
 - OTLP metrics.
 - Daily/monthly aggregate rollups when real data volume makes hourly-only retention inefficient.

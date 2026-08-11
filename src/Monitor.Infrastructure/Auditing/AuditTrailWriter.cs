@@ -61,6 +61,32 @@ public sealed class AuditTrailWriter(MonitorDbContext db)
             occurredAt ?? DateTimeOffset.UtcNow);
     }
 
+    public AuditEvent RecordComponent(
+        Guid componentId,
+        string componentName,
+        string action,
+        string targetType,
+        string? targetId,
+        string? targetName = null,
+        object? before = null,
+        object? after = null,
+        object? metadata = null,
+        DateTimeOffset? occurredAt = null)
+    {
+        return Record(
+            AuditActorType.Component,
+            componentId.ToString("D"),
+            componentName,
+            action,
+            targetType,
+            targetId,
+            targetName,
+            before,
+            after,
+            metadata,
+            occurredAt ?? DateTimeOffset.UtcNow);
+    }
+
     private AuditEvent Record(
         AuditActorType actorType,
         string? actorId,

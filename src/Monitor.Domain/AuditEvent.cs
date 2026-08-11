@@ -87,6 +87,13 @@ public static class AuditActions
     public const string ComponentCredentialIssued = "component-credential.issued";
     public const string ComponentCredentialRotated = "component-credential.rotated";
     public const string ComponentCredentialRevoked = "component-credential.revoked";
+
+    public const string ComponentCommandIssued = "component-command.issued";
+    public const string ComponentCommandCancelled = "component-command.cancelled";
+    public const string ComponentCommandSucceeded = "component-command.succeeded";
+    public const string ComponentCommandFailed = "component-command.failed";
+    public const string ComponentCommandRejected = "component-command.rejected";
+    public const string ComponentCommandExpired = "component-command.expired";
 }
 
 public static class AuditTargetTypes
@@ -96,4 +103,5 @@ public static class AuditTargetTypes
     public const string AlertDestination = "alert-destination";
     public const string AlertDelivery = "alert-delivery";
     public const string ComponentCredential = "component-credential";
+    public const string ComponentCommand = "component-command";
 }
