@@ -1,0 +1,285 @@
+name: p7-sync
+on:
+  push:
+    branches: [feature/saved-views]
+    paths: [.github/workflows/p7-sync.yml]
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/saved-views
+          fetch-depth: 0
+      - name: Wire saved views into existing surfaces
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              if old not in text:
+                  raise SystemExit(f'Expected text not found in {path}: {old[:120]!r}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          def insert_after_first_header(path, surface):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              marker = '</header>'
+              if marker not in text:
+                  raise SystemExit(f'Header not found in {path}')
+              insertion = f'''</header>\n\n@await Component.InvokeAsync("SavedViews", new {{ surface = SavedViewSurface.{surface} }})'''
+              p.write_text(text.replace(marker, insertion, 1), encoding='utf-8')
+
+          # Fix the query-policy string overload before compilation.
+          replace_once(
+              'src/Monitor.Web/Services/SavedViewQueryPolicy.cs',
+              "raw.StartsWith('?', StringComparison.Ordinal)",
+              'raw.StartsWith("?", StringComparison.Ordinal)')
+
+          # Persistence model.
+          replace_once(
+              'src/Monitor.Infrastructure/MonitorDbContext.cs',
+              '    public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();',
+              '    public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();\n    public DbSet<SavedView> SavedViews => Set<SavedView>();')
+
+          saved_view_mapping = '''        var savedView = modelBuilder.Entity<SavedView>();
+          savedView.ToTable("SavedViews");
+          savedView.HasKey(x => x.Id);
+          savedView.Property(x => x.UserId).HasMaxLength(450);
+          savedView.Property(x => x.Name).HasMaxLength(120);
+          savedView.Property(x => x.NameKey).HasMaxLength(120);
+          savedView.Property(x => x.QueryString).HasMaxLength(4000);
+          savedView.HasIndex(x => new { x.UserId, x.Surface, x.NameKey }).IsUnique();
+          savedView.HasIndex(x => new { x.UserId, x.IsPinned, x.UpdatedAt }).IsDescending(false, false, true);
+          savedView.HasOne<MonitorUser>()
+              .WithMany()
+              .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Cascade);
+
+'''
+          replace_once(
+              'src/Monitor.Infrastructure/MonitorDbContext.cs',
+              '        var run = modelBuilder.Entity<AgentRun>();',
+              saved_view_mapping + '        var run = modelBuilder.Entity<AgentRun>();')
+
+          # DI.
+          replace_once(
+              'src/Monitor.Web/Program.cs',
+              'builder.Services.AddScoped<AuditTrailWriter>();',
+              'builder.Services.AddScoped<AuditTrailWriter>();\nbuilder.Services.AddSingleton<SavedViewQueryPolicy>();')
+
+          # Shared layout: global styling/interactions, management link, and pinned fast links.
+          replace_once(
+              'src/Monitor.Web/Pages/Shared/_Layout.cshtml',
+              '    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />',
+              '    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />\n    <link rel="stylesheet" href="~/css/saved-views.css" asp-append-version="true" />')
+          replace_once(
+              'src/Monitor.Web/Pages/Shared/_Layout.cshtml',
+              '                <a href="/commands">Commands</a>',
+              '                <a href="/commands">Commands</a>\n                <a href="/saved-views">Saved views</a>')
+          replace_once(
+              'src/Monitor.Web/Pages/Shared/_Layout.cshtml',
+              '            </nav>\n            <div class="sidebar-account">',
+              '            </nav>\n            @await Component.InvokeAsync("PinnedSavedViews")\n            <div class="sidebar-account">')
+          replace_once(
+              'src/Monitor.Web/Pages/Shared/_Layout.cshtml',
+              '    @await RenderSectionAsync("Scripts", required: false)',
+              '    <script src="~/js/saved-views.js" asp-append-version="true"></script>\n    @await RenderSectionAsync("Scripts", required: false)')
+
+          for path, surface in [
+              ('src/Monitor.Web/Pages/Runs.cshtml', 'Runs'),
+              ('src/Monitor.Web/Pages/Logs.cshtml', 'Logs'),
+              ('src/Monitor.Web/Pages/Usage.cshtml', 'Usage'),
+              ('src/Monitor.Web/Pages/Alerts.cshtml', 'Alerts'),
+              ('src/Monitor.Web/Pages/Budgets.cshtml', 'Budgets'),
+              ('src/Monitor.Web/Pages/Audit.cshtml', 'Audit'),
+              ('src/Monitor.Web/Pages/Commands.cshtml', 'Commands'),
+          ]:
+              insert_after_first_header(path, surface)
+
+          # Runs becomes URL-addressable. Cursor/history remain transient and never enter a saved view.
+          path = Path('src/Monitor.Web/wwwroot/js/runs.js')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''    function getFilters() {
+              return {
+                  search: elements.search.value.trim(),
+                  componentId: elements.component.value,
+                  status: elements.status.value,
+                  environment: elements.environment.value,
+                  model: elements.model.value,
+                  from: elements.from.value,
+                  to: elements.to.value,
+                  pageSize: Number(elements.pageSize.value) || 50
+              };
+          }
+'''
+          new = old + '''
+          function readUrlFilters() {
+              const params = new URLSearchParams(window.location.search);
+              return {
+                  search: params.get('search') || '',
+                  componentId: params.get('componentId') || '',
+                  status: params.get('status') || '',
+                  environment: params.get('environment') || '',
+                  model: params.get('model') || '',
+                  from: params.get('from') || '',
+                  to: params.get('to') || '',
+                  pageSize: Number(params.get('pageSize')) || 50
+              };
+          }
+
+          function applyUrlFilters(filters) {
+              elements.search.value = filters.search;
+              elements.status.value = [...elements.status.options].some(option => option.value === filters.status)
+                  ? filters.status
+                  : '';
+              elements.from.value = filters.from;
+              elements.to.value = filters.to;
+              elements.pageSize.value = ['25', '50', '100'].includes(String(filters.pageSize))
+                  ? String(filters.pageSize)
+                  : '50';
+
+              for (const [select, value] of [
+                  [elements.component, filters.componentId],
+                  [elements.environment, filters.environment],
+                  [elements.model, filters.model]
+              ]) {
+                  select.value = [...select.options].some(option => option.value === value) ? value : '';
+              }
+          }
+
+          function syncBrowserUrl() {
+              const filters = getFilters();
+              const params = new URLSearchParams();
+              if (filters.search) params.set('search', filters.search);
+              if (filters.componentId) params.set('componentId', filters.componentId);
+              if (filters.status) params.set('status', filters.status);
+              if (filters.environment) params.set('environment', filters.environment);
+              if (filters.model) params.set('model', filters.model);
+              if (filters.from) params.set('from', filters.from);
+              if (filters.to) params.set('to', filters.to);
+              if (filters.pageSize !== 50) params.set('pageSize', String(filters.pageSize));
+
+              const query = params.toString();
+              const url = query ? `/runs?${query}` : '/runs';
+              window.history.replaceState(null, '', url);
+              document.dispatchEvent(new CustomEvent('monitor:saved-view-url-changed'));
+          }
+'''
+          if old not in text:
+              raise SystemExit('runs.js getFilters anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''    async function loadOptions() {
+              try {
+                  const options = await fetchJson('/api/runs/options');
+                  fillSelect(elements.component, options.components, item => item.id, item => `${item.name} · ${item.environment}`);
+                  fillSelect(elements.environment, options.environments, item => item, item => item);
+                  fillSelect(elements.model, options.models, item => item, item => item);
+              } catch (error) {
+                  console.warn('Run filter options could not be loaded.', error);
+              }
+          }
+'''
+          new = '''    async function loadOptions() {
+              try {
+                  const options = await fetchJson('/api/runs/options');
+                  fillSelect(elements.component, options.components, item => item.id, item => `${item.name} · ${item.environment}`);
+                  fillSelect(elements.environment, options.environments, item => item, item => item);
+                  fillSelect(elements.model, options.models, item => item, item => item);
+              } catch (error) {
+                  console.warn('Run filter options could not be loaded.', error);
+              }
+          }
+'''
+          if old not in text:
+              raise SystemExit('runs.js loadOptions anchor not found')
+          text = text.replace(old, new, 1)
+
+          text = text.replace(
+              '''    function filtersChanged() {
+              resetPagination();
+              loadRuns();
+          }
+''',
+              '''    function filtersChanged() {
+              resetPagination();
+              syncBrowserUrl();
+              loadRuns();
+          }
+''',
+              1)
+
+          text = text.replace(
+              '''        resetPagination();
+              loadRuns();
+          });
+
+          loadOptions();
+          loadRuns();
+          startSignalR();
+          })();
+''',
+              '''        resetPagination();
+              syncBrowserUrl();
+              loadRuns();
+          });
+
+          async function initialise() {
+              const urlFilters = readUrlFilters();
+              await loadOptions();
+              applyUrlFilters(urlFilters);
+              await loadRuns();
+              startSignalR();
+          }
+
+          initialise();
+          })();
+''',
+              1)
+
+          path.write_text(text, encoding='utf-8')
+
+          # Saved-view picker/query inputs stay in sync when Runs changes the URL client-side.
+          path = Path('src/Monitor.Web/Views/Shared/Components/SavedViews/Default.cshtml')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              '<input type="hidden" name="queryString" value="@Model.CurrentQueryString" />',
+              '<input type="hidden" name="queryString" value="@Model.CurrentQueryString" data-saved-view-current-query />',
+              1)
+          path.write_text(text, encoding='utf-8')
+
+          path = Path('src/Monitor.Web/wwwroot/js/saved-views.js')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              "    document.addEventListener('change', event => {",
+              '''    function syncSavedViewControls() {
+              const currentUrl = `${window.location.pathname}${window.location.search}`;
+              for (const picker of document.querySelectorAll('[data-saved-view-picker]')) {
+                  const matching = [...picker.options].find(option => option.value === currentUrl);
+                  picker.value = matching?.value || '';
+              }
+              for (const input of document.querySelectorAll('[data-saved-view-current-query]')) {
+                  input.value = window.location.search;
+              }
+          }
+
+          document.addEventListener('monitor:saved-view-url-changed', syncSavedViewControls);
+          window.addEventListener('popstate', syncSavedViewControls);
+
+          document.addEventListener('change', event => {''',
+              1)
+          path.write_text(text, encoding='utf-8')
+      - name: Commit saved-view wiring
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "feat: wire saved views into operational surfaces"
+          git push origin HEAD:feature/saved-views
