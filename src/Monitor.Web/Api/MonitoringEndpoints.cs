@@ -538,7 +538,6 @@ public static class MonitoringEndpoints
         CreateSpanRequest request,
         HttpContext httpContext,
         MonitorDbContext db,
-        MonitorRealtimePublisher realtime,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.Name))
@@ -580,7 +579,6 @@ public static class MonitoringEndpoints
 
         db.Spans.Add(span);
         await db.SaveChangesAsync(cancellationToken);
-        await realtime.PublishSpanChangedAsync(span, cancellationToken);
         return Results.Created($"/api/runs/{runId}/spans/{span.Id}", new { span.Id });
     }
 
