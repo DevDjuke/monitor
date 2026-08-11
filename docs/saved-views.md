@@ -92,6 +92,10 @@ The audit trail is reserved for operational/control-plane state changes: credent
 
 The SQL-backed saved-view integration gate explicitly verifies that preference mutations leave the `AuditEvents` count unchanged.
 
+## Verification
+
+The permanent `saved-views-integration` workflow exercises the real SQL Server/Identity path. It verifies canonical query persistence, exact-route toolbar integration, pin limits, per-surface naming, cross-user projection and mutation isolation, the database uniqueness/FK constraints, absence of saved-view audit noise, and the Runs browser-URL versus keyset-cursor boundary.
+
 ## Future direction
 
 Shared/team views should not be implemented by simply making `SavedView.UserId` nullable or adding a global flag. If Monitor becomes multi-user, shared views should be introduced together with explicit roles/permissions, ownership/administration rules, and a clear answer to who may publish or modify team-wide operational shortcuts.
