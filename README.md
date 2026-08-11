@@ -7,6 +7,7 @@ Monitor starts with one deliberately small operational model:
 ```text
 MonitoredComponent
   ├─ LogEvent
+  ├─ ComponentCommand
   └─ AgentRun
        ├─ TraceSpan
        ├─ LogEvent
@@ -53,15 +54,20 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - Automated retention that purges only old, already-aggregated successful runs while preserving failed/cancelled forensic detail.
 - Bounded retention for unlinked/component-only logs so ordinary logging cannot grow indefinitely.
 - `/usage` retention, aggregate, and recurring-failure dashboard without double-counting retained raw runs.
+- Daily/monthly cost and token budgets with warning/critical threshold events and durable delivery.
+- Durable leased component commands with Pause/Resume, Disable/Enable, Restart, KillRun, and RefreshConfiguration semantics.
+- `/commands` cross-component command history plus component-scoped issuance and cancellation.
+- Server-side run admission enforcement for Paused/Disabled workload control state.
 - Private Razor control plane protected by ASP.NET Core Identity/cookie authentication.
 - Bootstrap ingestion key plus scoped API-key authentication for autonomous components and OTLP exporters.
 - One-time local owner setup and production bootstrap administrator support.
 - `Monitor.Client` .NET SDK for registration, heartbeats, runs, spans, structured events, completion, cancellation, and API errors.
-- `Monitor.SampleWorker` dogfoods the Monitor-native SDK.
+- `MonitorControlClient` .NET SDK for leased command polling and explicit success/failure/rejection acknowledgement.
+- `Monitor.SampleWorker` dogfoods both Monitor-native telemetry and component command polling/execution.
 - `Monitor.OtlpSampleWorker` dogfoods the standard OpenTelemetry .NET trace and logging exporters without referencing `Monitor.Client`.
 - Versioned EF Core migrations.
 - SQL Server persistence with LocalDB as the default development instance.
-- GitHub Actions SQL Server-backed integration tests for telemetry, traces, logs, migration upgrades, keyset pagination, credentials, failure grouping, alert evaluation, signed webhook delivery, retry/dead-letter behavior, retention safety, and audit atomicity/secret exclusion.
+- GitHub Actions SQL Server-backed integration tests for telemetry, traces, logs, migration upgrades, keyset pagination, credentials, failure grouping, alert evaluation, signed webhook delivery, budgets, leased component commands, retention safety, and audit atomicity/secret exclusion.
 
 The Monitor-native HTTP API and OTLP are complementary. The custom API carries Monitor-specific lifecycle semantics; OTLP provides vendor-neutral observability ingestion.
 
@@ -410,6 +416,20 @@ catch (Exception exception)
 
 `MonitorRun.MeasureSpanAsync` records span duration and failure state. If recording failed telemetry itself fails, the SDK preserves the original application exception rather than replacing it with the telemetry error.
 
+Control polling is separate from telemetry lifecycle calls:
+
+```csharp
+var control = new MonitorControlClient(httpClient, componentKey);
+var command = await control.ClaimNextAsync(component.Id, cancellationToken);
+if (command is not null)
+{
+    // Execute idempotently by command.Id in the workload/runtime.
+    await control.SucceedAsync(command, new { applied = true }, cancellationToken);
+}
+```
+
+Command delivery is at-least-once: the stable command id is the idempotency key and each lease attempt receives a fresh lease token. See `docs/component-control-commands.md`.
+
 ## Production bootstrap
 
 Public first-user setup is disabled in Production. Bootstrap the first administrator through environment variables:
@@ -515,9 +535,9 @@ curl -X POST http://localhost:5000/api/runs/{runId}/complete \
 
 ```text
 src/
-  Monitor.Domain/          protocol-independent monitoring + log/failure/alert/audit model
+  Monitor.Domain/          protocol-independent monitoring + log/failure/alert/budget/command/audit model
   Monitor.Client/          .NET Monitor-native ingestion client SDK
-  Monitor.Infrastructure/  EF Core persistence, retention, auditing, grouping/alerting/correlation + Identity store
+  Monitor.Infrastructure/  EF Core persistence, retention, auditing, command leasing, grouping/alerting/correlation + Identity store
   Monitor.Web/             HTTP/OTLP ingestion + Razor control plane + background workers
 samples/
   Monitor.SampleWorker/        synthetic Monitor.Client BackgroundService
@@ -526,10 +546,12 @@ docs/
   architecture.md
   audit-trail.md
   component-ingestion-credentials.md
+  component-control-commands.md
+  budgets-and-usage-policy.md
   logs-and-run-events.md
   roadmap.md
 ```
 
 ## Roadmap
 
-The maintained implementation sequence is in `docs/roadmap.md`. Alert-rule management, component credentials, logs/run events, and the durable audit trail are complete. The next planned slice is **budgets and usage policy**, followed by component control commands.
+The maintained implementation sequence is in `docs/roadmap.md`. Alert-rule management, component credentials, logs/run events, audit, budgets, and durable component control commands are complete. The next planned slice is **saved views**, followed by the richer live experience.

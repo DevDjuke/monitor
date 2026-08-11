@@ -94,7 +94,7 @@ The application contract is append-only: `AuditEvent` exposes no mutation method
 
 Snapshots are deliberately allow-listed rather than serializing arbitrary tracked entities. Credential plaintext, credential hashes, and protected webhook signing secrets are excluded. Credential audit snapshots contain safe identifiers such as the public key id; webhook destination snapshots contain safe endpoint/configuration state but not `ProtectedSecret`.
 
-Current operator coverage includes alert acknowledgement, alert-rule create/update/enable/disable/delete, webhook destination create/enable/disable/test, alert-delivery requeue, and component credential issue/rotate/revoke. The writer also supports system actors so future automated control-plane mutations and commands can use the same audit model; existing autonomous telemetry processing is not duplicated into audit merely because it is system-executed.
+Current operator coverage includes alert acknowledgement, alert-rule create/update/enable/disable/delete, webhook destination create/enable/disable/test, alert-delivery requeue, component credential issue/rotate/revoke, budget operations, and component-command issue/cancel. Component command acknowledgements use `Component` actors and expiry uses a `System` actor; existing autonomous telemetry processing is not duplicated into audit merely because it is system-executed.
 
 The authenticated `/audit` page is a server-filtered projection over this record stream. It filters by time window, actor, action, target type/id, and free text, and exposes structured before/after/metadata snapshots for investigation.
 
@@ -229,4 +229,12 @@ Longer-term archival tiers or aggregate rollups (hourly -> daily/monthly) can be
 
 ## Control plane
 
-Commands are intentionally absent from the current foundation. Observability and detection must be trustworthy before Monitor is allowed to alter remote workloads. Future commands should be durable auditable entities with requested/accepted/completed states rather than fire-and-forget HTTP actions, and operator/system command-state changes should emit `AuditEvent` records through the same audit contract.
+Component commands are durable operational records rather than fire-and-forget actions. Operators issue commands from component context; components claim them through a component-scoped authenticated endpoint, execute them in their own runtime, and explicitly report `Succeeded`, `Failed`, or `Rejected`.
+
+A claim changes `Pending` to `Leased` and assigns a fresh lease token. The command id remains stable across redelivery and is the workload's idempotency key. If a lease expires before acknowledgement, the same command becomes claimable again with a new token. Claim, completion, cancellation, and expiry all serialize on the same per-component SQL Server application lock, so competing Monitor nodes cannot terminalize a command inconsistently.
+
+`ComponentControlState` (`Active`, `Paused`, `Disabled`) is intentionally separate from the registry `Enabled`/credential-admission flag. Pause/Disable prevent new runs while allowing heartbeat, existing-run telemetry, and command polling. Server-side run creation enforces this state and returns HTTP 409 when new work is blocked.
+
+`KillRun` stores its target run id as forensic data rather than a foreign key so successful-run retention cannot erase or prevent command history. Restart remains runtime/host-specific; a component must map it to an actual supervisor rather than Monitor claiming generic remote-process control.
+
+Operator issue/cancel, component acknowledgement, and system expiry all emit durable `AuditEvent` records. Command payload JSON is excluded from immutable audit snapshots. The full protocol is documented in `docs/component-control-commands.md`.

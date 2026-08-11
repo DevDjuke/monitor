@@ -288,7 +288,7 @@
                 <small>Use a label that identifies the exporter, deployment, or machine using the key.</small>
             </label>
             <button class="primary-action" type="submit">Issue ingestion key</button>
-            <p class="form-hint">Component keys can only submit or read telemetry belonging to <strong>@component.Name</strong> in <strong>@component.Environment</strong>. A disabled component cannot use the key for normal telemetry, but it may still poll the control endpoint so it can receive Enable.</p>
+            <p class="form-hint">Component keys can only submit or read telemetry belonging to <strong>@component.Name</strong> in <strong>@component.Environment</strong>. Workload Pause/Disable commands keep telemetry and command polling available; registry disabling or credential revocation remains a hard ingestion-authentication boundary.</p>
         </form>
     </section>
 </div>
