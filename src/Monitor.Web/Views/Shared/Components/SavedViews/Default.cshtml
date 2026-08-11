@@ -38,7 +38,7 @@
         <form method="post" asp-page="/SavedViews" asp-page-handler="Create" class="saved-view-create-form">
             <input type="hidden" name="surface" value="@Model.Surface" />
             <input type="hidden" name="queryString" value="@Model.CurrentQueryString" data-saved-view-current-query />
-            <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
+            <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" data-saved-view-return-url />
             <label>
                 <span>Name</span>
                 <input name="name" maxlength="120" autocomplete="off" required placeholder="Production failures" />
