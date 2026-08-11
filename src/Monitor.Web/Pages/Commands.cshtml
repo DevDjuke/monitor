@@ -2,11 +2,13 @@
 @model CommandsModel
 @{
     ViewData["Title"] = "Commands";
+    var liveMode = string.Equals(Model.Window, "all", StringComparison.OrdinalIgnoreCase) ? "historical" : "live";
 }
 
 @section Head {
     <link rel="stylesheet" href="~/css/filters.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/css/commands.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/commands-live.css" asp-append-version="true" />
 }
 
 <header class="page-head compact">
@@ -14,6 +16,10 @@
         <p class="eyebrow">CONTROL PLANE</p>
         <h1>Commands</h1>
         <p class="lede">Durable leased commands with explicit component acknowledgement and retry-safe delivery.</p>
+    </div>
+    <div class="command-live-state @(liveMode == "historical" ? "frozen" : "connecting")" id="command-live-state" aria-live="polite">
+        <span></span>
+        <strong>@(liveMode == "historical" ? "Historical · frozen" : "Connecting")</strong>
     </div>
 </header>
 
@@ -81,7 +87,17 @@
     </form>
 </section>
 
-<section class="panel table-panel command-history-panel">
+<button class="command-live-banner" id="command-live-banner" type="button" hidden>
+    <strong id="command-live-banner-title">Command activity changed</strong>
+    <span>Refresh this view</span>
+</button>
+
+<section class="panel table-panel command-history-panel"
+         id="command-live-root"
+         data-command-live-mode="@liveMode"
+         data-command-component-filter="@(Model.ComponentId?.ToString() ?? string.Empty)"
+         data-command-type-filter="@(Model.Type?.ToString() ?? string.Empty)"
+         data-command-status-filter="@(Model.Status?.ToString() ?? string.Empty)">
     <div class="panel-head">
         <div><p class="eyebrow">HISTORY</p><h2>Component commands</h2></div>
         <span>@Model.Commands.Count shown</span>
@@ -99,13 +115,13 @@
                 <tbody>
                 @foreach (var command in Model.Commands)
                 {
-                    <tr>
+                    <tr data-command-id="@command.Id" data-command-component-id="@command.ComponentId" data-command-type="@command.Type" data-command-status="@command.Status">
                         <td><a class="table-link" href="/components/@command.ComponentId">@command.ComponentName</a><small>@command.Environment</small></td>
                         <td><strong>@command.Type</strong>@if (command.TargetRunId is not null){<small>run @command.TargetRunId</small>}</td>
-                        <td><span class="command-state @command.Status.ToString().ToLowerInvariant()">@command.Status</span></td>
+                        <td><span class="command-state @command.Status.ToString().ToLowerInvariant()" data-command-status-label>@command.Status</span></td>
                         <td>@command.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss") UTC<small>@(command.RequestedBy ?? "system") · expires @command.ExpiresAt.ToString("yyyy-MM-dd HH:mm:ss")</small></td>
-                        <td><strong>@command.DeliveryAttempts attempt(s)</strong>@if (command.LeaseExpiresAt is not null){<small>lease until @command.LeaseExpiresAt.Value.ToString("HH:mm:ss") UTC</small>}</td>
-                        <td>
+                        <td data-command-delivery><strong>@command.DeliveryAttempts attempt(s)</strong>@if (command.LeaseExpiresAt is not null){<small>lease until @command.LeaseExpiresAt.Value.ToString("HH:mm:ss") UTC</small>}</td>
+                        <td data-command-result>
                             @if (!string.IsNullOrWhiteSpace(command.Error))
                             {
                                 <span class="command-error">@command.Error</span>
@@ -123,7 +139,7 @@
                                 <span>—</span>
                             }
                         </td>
-                        <td>
+                        <td data-command-actions>
                             @if (command.CanCancel)
                             {
                                 <form method="post" asp-page-handler="Cancel" asp-route-componentId="@command.ComponentId" asp-route-commandId="@command.Id">
@@ -139,3 +155,8 @@
         </div>
     }
 </section>
+
+@section Scripts {
+    <script src="~/lib/microsoft/signalr/dist/browser/signalr.min.js"></script>
+    <script src="~/js/commands-live.js" asp-append-version="true"></script>
+}
