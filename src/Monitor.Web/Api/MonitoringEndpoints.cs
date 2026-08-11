@@ -353,6 +353,7 @@ public static class MonitoringEndpoints
     {
         var run = await db.Runs
             .AsNoTracking()
+            .AsSplitQuery()
             .Include(x => x.Component)
             .Include(x => x.FailureGroup)
             .Include(x => x.Spans)
