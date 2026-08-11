@@ -113,21 +113,28 @@
         return !statusFilter || normalise(statusFilter) === normalise(event.status);
     }
 
+    function mayMatchCurrentTextView(event) {
+        // New command notifications can be captured before the Component navigation is loaded.
+        // With a free-text filter we therefore prefer one harmless refresh prompt over
+        // incorrectly hiding a command that might match after full SQL projection.
+        return Boolean(currentSearch()) || eventMatchesSearch(event);
+    }
+
     function handleCommandChanged(event) {
         if (!event || !event.commandId || !matchesStableFilters(event)) return;
 
         const row = root.querySelector(`[data-command-id="${CSS.escape(String(event.commandId))}"]`);
 
         if (state.mode === 'historical') {
-            if (row || (eventMatchesStatusFilter(event) && eventMatchesSearch(event))) {
+            if (row || (eventMatchesStatusFilter(event) && mayMatchCurrentTextView(event))) {
                 showBanner('Command activity changed outside this frozen history snapshot');
             }
             return;
         }
 
         if (!row) {
-            if (eventMatchesStatusFilter(event) && eventMatchesSearch(event)) {
-                showBanner('New command activity matches this view');
+            if (eventMatchesStatusFilter(event) && mayMatchCurrentTextView(event)) {
+                showBanner('New command activity may match this view');
             }
             return;
         }
