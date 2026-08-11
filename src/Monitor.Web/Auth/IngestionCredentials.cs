@@ -87,8 +87,7 @@ public sealed class IngestionCredentialAuthenticator(
     public async Task<IngestionIdentity?> AuthenticateAsync(
         HttpContext httpContext,
         bool allowOperator,
-        CancellationToken cancellationToken = default,
-        bool allowDisabledComponent = false)
+        CancellationToken cancellationToken = default)
     {
         if (allowOperator && httpContext.User.Identity?.IsAuthenticated == true)
         {
@@ -117,7 +116,7 @@ public sealed class IngestionCredentialAuthenticator(
             .Where(x =>
                 x.KeyId == keyId &&
                 x.RevokedAt == null &&
-                (allowDisabledComponent || x.Component.Enabled))
+                x.Component.Enabled)
             .Select(x => new CredentialLookup(
                 x.Id,
                 x.ComponentId,
