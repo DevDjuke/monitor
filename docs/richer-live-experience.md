@@ -27,6 +27,8 @@ It captures immutable realtime payloads before `SaveChanges`, but publishes them
 
 The interceptor does not query the same `MonitorDbContext` from `SavedChanges`. This avoids save-pipeline re-entrancy and means native ingestion, OTLP ingestion, operator actions, component acknowledgements, and background command expiry all share the same persisted-event boundary.
 
+Realtime publication after a successful SQL commit is deliberately best-effort. If SignalR publication fails, Monitor logs the failure but does not turn an already committed mutation into an HTTP/application failure. Connected clients recover through the same authoritative snapshot/reconnect path used for missed events.
+
 The older coarse `RunChanged` event remains for the `/runs` list. It is intentionally separate from P8's run-detail invalidations.
 
 ## SignalR groups
@@ -95,7 +97,8 @@ Monitor deliberately does **not** silently insert, remove, or reorder rows when 
 
 - a newly matching command raises a refresh banner;
 - a transition that no longer matches the selected status filter leaves the row visible but marks it as filter-mismatched and raises a refresh banner;
-- `Window=all` command history is treated as frozen historical browsing and only raises update banners.
+- `Window=all` command history is treated as frozen historical browsing and only raises update banners;
+- when a free-text filter is active and a newly published command lacks enough denormalized text to prove whether it matches, Monitor conservatively raises a refresh prompt instead of risking a false negative.
 
 This mirrors the existing `/runs` latest-vs-older-page contract.
 
@@ -107,7 +110,7 @@ This mirrors the existing `/runs` latest-vs-older-page contract.
 - ordered spans with parent identity, timing, status, diagnostics, attributes, and OTLP ids;
 - ordered structured logs with run/span correlation, severity, message/template, properties, exception details, source, and OTLP ids.
 
-The endpoint keeps the existing ingestion-credential/operator authorization boundary.
+The endpoint keeps the existing ingestion-credential/operator authorization boundary. Because it loads both span and log collections repeatedly while a run is live, EF Core uses split-query loading for this snapshot to avoid multiplying the two child collections into a large Cartesian result set.
 
 ## Deliberate non-goals
 
