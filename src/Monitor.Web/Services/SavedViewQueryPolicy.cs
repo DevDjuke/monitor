@@ -54,6 +54,27 @@ public sealed class SavedViewQueryPolicy
     public IReadOnlyList<SavedViewSurfaceDefinition> GetDefinitions() =>
         Definitions.Values.OrderBy(x => x.Surface).ToArray();
 
+    public bool TryResolveSurface(PathString path, out SavedViewSurface surface)
+    {
+        var value = path.Value?.TrimEnd('/');
+        if (string.IsNullOrEmpty(value))
+        {
+            value = "/";
+        }
+
+        foreach (var definition in Definitions.Values)
+        {
+            if (string.Equals(value, definition.Path, StringComparison.OrdinalIgnoreCase))
+            {
+                surface = definition.Surface;
+                return true;
+            }
+        }
+
+        surface = default;
+        return false;
+    }
+
     public string Canonicalize(SavedViewSurface surface, string? rawQueryString)
     {
         if (string.IsNullOrWhiteSpace(rawQueryString) || rawQueryString == "?")
