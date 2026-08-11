@@ -224,7 +224,8 @@ test "$(sql_scalar "SET NOCOUNT ON; SELECT COUNT(*) FROM SavedViews WHERE UserId
 test "$(sql_scalar "SET NOCOUNT ON; SELECT COUNT(*) FROM SavedViews WHERE UserId = N'$owner_id' AND NameKey = N'PINNED OVERFLOW';")" = '0'
 
 # Seed another Identity user's private preference and verify ownership isolation in both projection and mutation.
-docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+# `-I` gives the raw test session QUOTED_IDENTIFIER ON, matching normal application/EF SQL sessions.
+docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd -I \
   -S localhost -U sa -P "$SQL_PASSWORD" -C -b -d "$DB_NAME" \
   -Q "
     INSERT INTO AspNetUsers
