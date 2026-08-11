@@ -2,7 +2,6 @@ using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
 using Monitor.Web.Auth;
-using Monitor.Web.Realtime;
 
 namespace Monitor.Web.Api;
 
@@ -39,7 +38,6 @@ public static class LogEndpoints
         CreateLogEventRequest request,
         HttpContext httpContext,
         MonitorDbContext db,
-        MonitorRealtimePublisher realtime,
         CancellationToken cancellationToken)
     {
         var run = await db.Runs
@@ -83,7 +81,6 @@ public static class LogEndpoints
 
         db.LogEvents.Add(logEvent);
         await db.SaveChangesAsync(cancellationToken);
-        await realtime.PublishLogAppendedAsync(logEvent, cancellationToken);
         return Results.Created($"/api/logs/{logEvent.Id}", new { logEvent.Id, logEvent.Timestamp });
     }
 
