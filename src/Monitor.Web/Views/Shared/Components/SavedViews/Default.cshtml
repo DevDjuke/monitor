@@ -4,10 +4,7 @@
     <div class="saved-view-picker-wrap">
         <div class="saved-view-label">
             <span>Saved view</span>
-            @if (Model.ActiveViewId is not null)
-            {
-                <strong>Applied</strong>
-            }
+            <strong data-saved-view-applied @(Model.ActiveViewId is null ? "hidden" : null)>Applied</strong>
         </div>
         <select class="saved-view-picker" data-saved-view-picker aria-label="Apply saved @Model.SurfaceName view">
             @if (Model.ActiveViewId is null)
