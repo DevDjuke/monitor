@@ -16,6 +16,7 @@ public sealed class ComponentDetailModel(
     MonitorDbContext db,
     ComponentCredentialIssuer credentialIssuer,
     AuditTrailWriter audit,
+    ComponentCommandService commandService,
     IOptions<ComponentCommandOptions> commandOptions) : PageModel
 {
     private readonly ComponentCommandOptions _commandOptions = commandOptions.Value;
@@ -139,36 +140,17 @@ public sealed class ComponentDetailModel(
         Guid commandId,
         CancellationToken cancellationToken)
     {
-        var command = await db.ComponentCommands
-            .Include(x => x.Component)
-            .SingleOrDefaultAsync(x => x.Id == commandId && x.ComponentId == id, cancellationToken);
-        if (command is null)
+        var result = await commandService.CancelAsync(id, commandId, User, cancellationToken);
+        if (!result.Found)
         {
             return NotFound();
         }
 
-        if (command.IsTerminal)
-        {
-            TempData["StatusMessage"] = $"Command is already {command.Status}.";
-            return RedirectToPage(new { id });
-        }
-
-        var before = ComponentCommandService.Snapshot(command);
-        var now = DateTimeOffset.UtcNow;
-        command.Cancel(User.Identity?.Name, now);
-        audit.RecordOperator(
-            User,
-            AuditActions.ComponentCommandCancelled,
-            AuditTargetTypes.ComponentCommand,
-            command.Id.ToString("D"),
-            command.Type.ToString(),
-            before,
-            ComponentCommandService.Snapshot(command),
-            new { componentId = id, command.TargetRunId },
-            now);
-
-        await db.SaveChangesAsync(cancellationToken);
-        TempData["StatusMessage"] = "Component command cancelled.";
+        TempData["StatusMessage"] = result.LockUnavailable
+            ? "That component command is busy; retry cancellation in a moment."
+            : result.AlreadyTerminal
+                ? $"Command is already {result.Status}."
+                : "Component command cancelled.";
         return RedirectToPage(new { id });
     }
 
