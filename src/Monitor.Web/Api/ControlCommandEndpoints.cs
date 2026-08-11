@@ -20,7 +20,8 @@ public static class ControlCommandEndpoints
             var identity = await authenticator.AuthenticateAsync(
                 httpContext,
                 allowOperator: true,
-                httpContext.RequestAborted);
+                cancellationToken: httpContext.RequestAborted,
+                allowDisabledComponent: true);
 
             if (identity is null)
             {
