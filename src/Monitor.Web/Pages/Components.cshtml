@@ -4,6 +4,10 @@
     ViewData["Title"] = "Components";
 }
 
+@section Head {
+    <link rel="stylesheet" href="~/css/commands.css" asp-append-version="true" />
+}
+
 <header class="page-head compact">
     <div>
         <p class="eyebrow">REGISTRY</p>
@@ -21,13 +25,14 @@
     {
         <div class="table-wrap">
             <table>
-                <thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Environment</th><th>Version</th><th>Credentials</th><th>Heartbeat</th><th>Last run</th></tr></thead>
+                <thead><tr><th>Status</th><th>Control</th><th>Name</th><th>Type</th><th>Environment</th><th>Version</th><th>Credentials</th><th>Heartbeat</th><th>Last run</th></tr></thead>
                 <tbody>
                 @foreach (var component in Model.Components)
                 {
                     var statusClass = component.Status.ToString().ToLowerInvariant();
                     <tr>
                         <td><span class="status-label"><i class="status-dot @statusClass"></i>@component.Status</span></td>
+                        <td><span class="control-state @component.ControlState.ToString().ToLowerInvariant()">@component.ControlState</span></td>
                         <td><a class="table-link" href="/components/@component.Id"><strong>@component.Name</strong></a><small>@component.Slug</small></td>
                         <td>@component.Type</td>
                         <td>@component.Environment</td>
