@@ -1,0 +1,457 @@
+name: component-commands-integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  component-commands:
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: MonitorCommandCi!2026Password
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorCommandCi!2026Password' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore Monitor.sln
+      - run: dotnet build Monitor.sln --configuration Release --no-restore
+
+      - name: Exercise leased control commands, recovery, authorization and audit
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          ASPNETCORE_URLS: http://127.0.0.1:5088
+          ConnectionStrings__Monitor: Server=127.0.0.1,1433;Database=MonitorCommandCi;User Id=sa;Password=MonitorCommandCi!2026Password;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
+          Monitor__IngestionApiKey: ci-command-bootstrap-key
+          Monitor__BootstrapAdmin__Email: command-ci@monitor.local
+          Monitor__BootstrapAdmin__Password: MonitorCommandAdmin2026
+          Retention__Enabled: false
+          FailureAlerting__Enabled: false
+          UsageBudgets__Enabled: false
+          AlertDelivery__Enabled: false
+          ComponentCommands__Enabled: true
+          ComponentCommands__LeaseSeconds: 5
+          ComponentCommands__SweepIntervalSeconds: 2
+          ComponentCommands__DefaultExpiryMinutes: 5
+          ComponentCommands__MaxDeliveryAttempts: 3
+        run: |
+          set -euo pipefail
+
+          dotnet tool install --global dotnet-ef --version 10.0.10
+          dotnet ef database update \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --connection "$ConnectionStrings__Monitor"
+
+          sql_container=$(docker ps \
+            --filter 'ancestor=mcr.microsoft.com/mssql/server:2022-latest' \
+            --format '{{.ID}}' | head -n 1)
+          test -n "$sql_container"
+
+          sql() {
+            docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P 'MonitorCommandCi!2026Password' -C -b \
+              -d MonitorCommandCi -Q "$1"
+          }
+
+          scalar() {
+            docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P 'MonitorCommandCi!2026Password' -C -b \
+              -d MonitorCommandCi -h -1 -W -Q "SET NOCOUNT ON; $1" \
+              | tr -d '\r' | xargs
+          }
+
+          (
+            cd src/Monitor.Web
+            exec dotnet bin/Release/net10.0/Monitor.Web.dll
+          ) > /tmp/monitor-command-ci.log 2>&1 &
+          app_pid=$!
+
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "=== Monitor command log ==="
+              cat /tmp/monitor-command-ci.log 2>/dev/null || true
+              echo "=== End diagnostic log ==="
+            fi
+            kill "$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+            return "$status"
+          }
+          trap cleanup EXIT
+
+          app_ready=false
+          for attempt in {1..45}; do
+            if curl -fsS http://127.0.0.1:5088/api/health > /dev/null; then
+              app_ready=true
+              break
+            fi
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "Monitor exited while starting."
+              wait "$app_pid" || true
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$app_ready" = true
+
+          register_component() {
+            local name="$1"
+            local slug="$2"
+            curl -fsS \
+              -H 'X-Monitor-Key: ci-command-bootstrap-key' \
+              -H 'Content-Type: application/json' \
+              -d "{\"name\":\"$name\",\"slug\":\"$slug\",\"type\":\"Agent\",\"environment\":\"development\",\"version\":\"1.0.0\"}" \
+              http://127.0.0.1:5088/api/components/register
+          }
+
+          component_a_json=$(register_component 'Command Agent A' 'command-agent-a')
+          component_b_json=$(register_component 'Command Agent B' 'command-agent-b')
+          component_a_id=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["id"])' <<< "$component_a_json")
+          component_b_id=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["id"])' <<< "$component_b_json")
+          test -n "$component_a_id"
+          test -n "$component_b_id"
+
+          # Create deterministic scoped credentials directly; credential issuance itself has its own integration gate.
+          key_a_id='CommandCiKeyA01'
+          key_b_id='CommandCiKeyB01'
+          component_a_key="mon_c_${key_a_id}.command-ci-secret-a"
+          component_b_key="mon_c_${key_b_id}.command-ci-secret-b"
+          key_a_hash=$(printf '%s' "$component_a_key" | sha256sum | awk '{print $1}')
+          key_b_hash=$(printf '%s' "$component_b_key" | sha256sum | awk '{print $1}')
+          credential_a_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+          credential_b_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+
+          sql "
+            INSERT INTO ComponentIngestionCredentials
+              (Id, ComponentId, Name, KeyId, KeyHash, CreatedAt, CreatedBy, LastUsedAt, RevokedAt, RevokedBy)
+            VALUES
+              ('$credential_a_id', '$component_a_id', N'Command CI A', N'$key_a_id', CONVERT(varbinary(32), '$key_a_hash', 2), SYSDATETIMEOFFSET(), N'ci', NULL, NULL, NULL),
+              ('$credential_b_id', '$component_b_id', N'Command CI B', N'$key_b_id', CONVERT(varbinary(32), '$key_b_hash', 2), SYSDATETIMEOFFSET(), N'ci', NULL, NULL, NULL);
+          "
+
+          # Log in as the operator so command issuance/cancellation exercises the real Razor surface.
+          curl -fsS -c /tmp/monitor-command-cookies.txt \
+            http://127.0.0.1:5088/account/login \
+            -o /tmp/monitor-command-login.html
+          login_token=$(python3 -c '
+          import re
+          html = open("/tmp/monitor-command-login.html", encoding="utf-8").read()
+          match = re.search(r"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", html)
+          assert match, "login antiforgery token not found"
+          print(match.group(1))
+          ')
+          login_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-command-cookies.txt \
+            -c /tmp/monitor-command-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$login_token" \
+            --data-urlencode 'Input.Email=command-ci@monitor.local' \
+            --data-urlencode 'Input.Password=MonitorCommandAdmin2026' \
+            --data-urlencode 'Input.RememberMe=false' \
+            http://127.0.0.1:5088/account/login)
+          test "$login_status" = "302"
+
+          get_component_token() {
+            local component_id="$1"
+            local output="$2"
+            curl -fsS -b /tmp/monitor-command-cookies.txt \
+              "http://127.0.0.1:5088/components/$component_id" -o "$output"
+            python3 - "$output" <<'PY'
+          import re, sys
+          html = open(sys.argv[1], encoding='utf-8').read()
+          match = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', html)
+          assert match, 'component antiforgery token not found'
+          print(match.group(1))
+          PY
+          }
+
+          type_number() {
+            case "$1" in
+              Pause) echo 1 ;;
+              Resume) echo 2 ;;
+              Disable) echo 3 ;;
+              Enable) echo 4 ;;
+              Restart) echo 5 ;;
+              KillRun) echo 6 ;;
+              RefreshConfiguration) echo 7 ;;
+              *) echo "unknown command type $1" >&2; return 1 ;;
+            esac
+          }
+
+          issue_command() {
+            local component_id="$1"
+            local type="$2"
+            local target_run_id="${3:-}"
+            local payload="${4:-}"
+            local token
+            token=$(get_component_token "$component_id" "/tmp/component-${component_id}-issue.html")
+
+            args=(
+              -sS -o /dev/null -w '%{http_code}'
+              -b /tmp/monitor-command-cookies.txt
+              -c /tmp/monitor-command-cookies.txt
+              --data-urlencode "__RequestVerificationToken=$token"
+              --data-urlencode "CommandInput.Type=$type"
+              --data-urlencode 'CommandInput.ExpiryMinutes=5'
+            )
+            if [ -n "$target_run_id" ]; then
+              args+=(--data-urlencode "CommandInput.TargetRunId=$target_run_id")
+            fi
+            if [ -n "$payload" ]; then
+              args+=(--data-urlencode "CommandInput.PayloadJson=$payload")
+            fi
+
+            status=$(curl "${args[@]}" \
+              "http://127.0.0.1:5088/components/$component_id?handler=IssueCommand")
+            test "$status" = "302"
+
+            local type_id
+            type_id=$(type_number "$type")
+            scalar "SELECT TOP 1 CONVERT(varchar(36), Id) FROM ComponentCommands WHERE ComponentId = '$component_id' AND Type = $type_id ORDER BY CreatedAt DESC;"
+          }
+
+          claim() {
+            local component_id="$1"
+            local key="$2"
+            local output="$3"
+            curl -sS -o "$output" -w '%{http_code}' \
+              -X POST -H "X-Monitor-Key: $key" \
+              "http://127.0.0.1:5088/api/components/$component_id/commands/claim"
+          }
+
+          complete_command() {
+            local component_id="$1"
+            local key="$2"
+            local command_id="$3"
+            local lease_token="$4"
+            local outcome="$5"
+            local output="$6"
+            curl -sS -o "$output" -w '%{http_code}' \
+              -H "X-Monitor-Key: $key" \
+              -H 'Content-Type: application/json' \
+              -d "{\"leaseToken\":\"$lease_token\",\"outcome\":\"$outcome\",\"resultJson\":\"{\\\"ci\\\":true}\",\"error\":null}" \
+              "http://127.0.0.1:5088/api/components/$component_id/commands/$command_id/complete"
+          }
+
+          pause_id=$(issue_command "$component_a_id" Pause)
+          test -n "$pause_id"
+
+          # Scoped credentials cannot claim another component's queue.
+          cross_claim_status=$(claim "$component_a_id" "$component_b_key" /tmp/cross-claim.json)
+          test "$cross_claim_status" = "403"
+
+          claim1_status=$(claim "$component_a_id" "$component_a_key" /tmp/pause-claim-1.json)
+          test "$claim1_status" = "200"
+          read -r claim1_id lease1 attempt1 <<< "$(python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/pause-claim-1.json'))
+          print(d['id'], d['leaseToken'], d['deliveryAttempt'])
+          PY
+          )"
+          test "${claim1_id,,}" = "${pause_id,,}"
+          test "$attempt1" = "1"
+
+          # An expired lease makes the same command eligible for redelivery with a fresh token.
+          sleep 6
+          claim2_status=$(claim "$component_a_id" "$component_a_key" /tmp/pause-claim-2.json)
+          test "$claim2_status" = "200"
+          read -r claim2_id lease2 attempt2 <<< "$(python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/pause-claim-2.json'))
+          print(d['id'], d['leaseToken'], d['deliveryAttempt'])
+          PY
+          )"
+          test "${claim2_id,,}" = "${pause_id,,}"
+          test "$attempt2" = "2"
+          test "$lease1" != "$lease2"
+
+          stale_status=$(complete_command "$component_a_id" "$component_a_key" "$pause_id" "$lease1" Succeeded /tmp/stale-complete.json)
+          test "$stale_status" = "409"
+
+          pause_complete_status=$(complete_command "$component_a_id" "$component_a_key" "$pause_id" "$lease2" Succeeded /tmp/pause-complete.json)
+          test "$pause_complete_status" = "200"
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/pause-complete.json'))
+          assert d['status'] == 'Succeeded'
+          assert d['alreadyTerminal'] is False
+          PY
+
+          duplicate_status=$(complete_command "$component_a_id" "$component_a_key" "$pause_id" "$lease2" Succeeded /tmp/pause-duplicate.json)
+          test "$duplicate_status" = "200"
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/pause-duplicate.json'))
+          assert d['status'] == 'Succeeded'
+          assert d['alreadyTerminal'] is True
+          PY
+
+          pause_state=$(scalar "SELECT CONCAT(ControlState, '|', CASE WHEN Enabled = 1 THEN 1 ELSE 0 END) FROM Components WHERE Id = '$component_a_id';")
+          test "$pause_state" = "1|1"
+
+          # Pause blocks only NEW work; heartbeat/telemetry admission remains alive.
+          blocked_run_status=$(curl -sS -o /tmp/paused-run.json -w '%{http_code}' \
+            -H "X-Monitor-Key: $component_a_key" \
+            -H 'Content-Type: application/json' \
+            -d "{\"componentId\":\"$component_a_id\",\"name\":\"must be blocked\",\"externalId\":\"paused-ci\",\"trigger\":\"CI\",\"model\":null,\"inputJson\":null}" \
+            http://127.0.0.1:5088/api/runs)
+          test "$blocked_run_status" = "409"
+          grep -q 'component_work_blocked' /tmp/paused-run.json
+
+          heartbeat_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -X POST -H "X-Monitor-Key: $component_a_key" \
+            "http://127.0.0.1:5088/api/components/$component_a_id/heartbeat")
+          test "$heartbeat_status" = "204"
+
+          resume_id=$(issue_command "$component_a_id" Resume)
+          resume_claim_status=$(claim "$component_a_id" "$component_a_key" /tmp/resume-claim.json)
+          test "$resume_claim_status" = "200"
+          read -r resume_claim_id resume_lease <<< "$(python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/resume-claim.json'))
+          print(d['id'], d['leaseToken'])
+          PY
+          )"
+          test "${resume_claim_id,,}" = "${resume_id,,}"
+          test "$(complete_command "$component_a_id" "$component_a_key" "$resume_id" "$resume_lease" Succeeded /tmp/resume-complete.json)" = "200"
+          test "$(scalar "SELECT ControlState FROM Components WHERE Id = '$component_a_id';")" = "0"
+
+          running_run_status=$(curl -sS -o /tmp/active-run.json -w '%{http_code}' \
+            -H "X-Monitor-Key: $component_a_key" \
+            -H 'Content-Type: application/json' \
+            -d "{\"componentId\":\"$component_a_id\",\"name\":\"active after resume\",\"externalId\":\"active-ci\",\"trigger\":\"CI\",\"model\":null,\"inputJson\":\"{}\"}" \
+            http://127.0.0.1:5088/api/runs)
+          case "$running_run_status" in 200|201) ;; *) echo "unexpected run-start status $running_run_status"; exit 1 ;; esac
+          active_run_id=$(python3 -c 'import json; print(json.load(open("/tmp/active-run.json"))["id"])')
+
+          disable_id=$(issue_command "$component_a_id" Disable)
+          disable_claim_status=$(claim "$component_a_id" "$component_a_key" /tmp/disable-claim.json)
+          test "$disable_claim_status" = "200"
+          disable_lease=$(python3 -c 'import json; print(json.load(open("/tmp/disable-claim.json"))["leaseToken"])')
+          test "$(complete_command "$component_a_id" "$component_a_key" "$disable_id" "$disable_lease" Succeeded /tmp/disable-complete.json)" = "200"
+          disable_state=$(scalar "SELECT CONCAT(ControlState, '|', CASE WHEN Enabled = 1 THEN 1 ELSE 0 END) FROM Components WHERE Id = '$component_a_id';")
+          test "$disable_state" = "2|1"
+
+          # Existing work may still report completion while workload control is Disabled.
+          existing_complete_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "X-Monitor-Key: $component_a_key" \
+            -H 'Content-Type: application/json' \
+            -d '{"status":"Success","inputTokens":0,"outputTokens":0,"costUsd":0,"outputJson":"{}","error":null}' \
+            "http://127.0.0.1:5088/api/runs/$active_run_id/complete")
+          test "$existing_complete_status" = "204"
+
+          disabled_new_run_status=$(curl -sS -o /tmp/disabled-run.json -w '%{http_code}' \
+            -H "X-Monitor-Key: $component_a_key" \
+            -H 'Content-Type: application/json' \
+            -d "{\"componentId\":\"$component_a_id\",\"name\":\"disabled block\",\"externalId\":\"disabled-ci\",\"trigger\":\"CI\",\"model\":null,\"inputJson\":null}" \
+            http://127.0.0.1:5088/api/runs)
+          test "$disabled_new_run_status" = "409"
+
+          enable_id=$(issue_command "$component_a_id" Enable)
+          enable_claim_status=$(claim "$component_a_id" "$component_a_key" /tmp/enable-claim.json)
+          test "$enable_claim_status" = "200"
+          enable_lease=$(python3 -c 'import json; print(json.load(open("/tmp/enable-claim.json"))["leaseToken"])')
+          test "$(complete_command "$component_a_id" "$component_a_key" "$enable_id" "$enable_lease" Succeeded /tmp/enable-complete.json)" = "200"
+          test "$(scalar "SELECT ControlState FROM Components WHERE Id = '$component_a_id';")" = "0"
+
+          # Cancellation goes through the same locked service and removes the command from the claimable queue.
+          payload_marker='DO_NOT_AUDIT_COMMAND_PAYLOAD_6'
+          refresh_id=$(issue_command "$component_a_id" RefreshConfiguration '' "{\"marker\":\"$payload_marker\"}")
+          cancel_token=$(get_component_token "$component_a_id" /tmp/component-cancel.html)
+          cancel_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-command-cookies.txt \
+            -c /tmp/monitor-command-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$cancel_token" \
+            "http://127.0.0.1:5088/components/$component_a_id?handler=CancelCommand&commandId=$refresh_id")
+          test "$cancel_status" = "302"
+          test "$(scalar "SELECT Status FROM ComponentCommands WHERE Id = '$refresh_id';")" = "6"
+
+          empty_claim_status=$(claim "$component_a_id" "$component_a_key" /tmp/empty-claim.json)
+          test "$empty_claim_status" = "204"
+
+          payload_audit_count=$(scalar "
+            SELECT COUNT(*) FROM AuditEvents
+            WHERE ISNULL(BeforeJson, N'') LIKE N'%$payload_marker%'
+               OR ISNULL(AfterJson, N'') LIKE N'%$payload_marker%'
+               OR ISNULL(MetadataJson, N'') LIKE N'%$payload_marker%';")
+          test "$payload_audit_count" = "0"
+
+          # Expiry worker terminalizes abandoned commands and records a system audit event.
+          expired_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+          sql "
+            INSERT INTO ComponentCommands
+              (Id, ComponentId, Type, Status, TargetRunId, PayloadJson, RequestedBy, CreatedAt, AvailableAt, ExpiresAt,
+               LeaseToken, LeasedAt, LeaseExpiresAt, DeliveryAttempts, CompletedAt, ResultJson, Error, CancelledAt, CancelledBy)
+            VALUES
+              ('$expired_id', '$component_a_id', 5, 1, NULL, NULL, N'ci-expiry',
+               DATEADD(second, -20, SYSDATETIMEOFFSET()), DATEADD(second, -20, SYSDATETIMEOFFSET()), DATEADD(second, -10, SYSDATETIMEOFFSET()),
+               NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL);
+          "
+
+          expired=false
+          for attempt in {1..10}; do
+            if [ "$(scalar "SELECT Status FROM ComponentCommands WHERE Id = '$expired_id';")" = "7" ]; then
+              expired=true
+              break
+            fi
+            sleep 2
+          done
+          test "$expired" = true
+
+          audit_state=$(scalar "
+            SELECT CONCAT(
+              (SELECT COUNT(*) FROM AuditEvents WHERE Action = N'component-command.issued' AND ActorType = 0), N'|',
+              (SELECT COUNT(*) FROM AuditEvents WHERE Action = N'component-command.succeeded' AND ActorType = 2), N'|',
+              (SELECT COUNT(*) FROM AuditEvents WHERE Action = N'component-command.cancelled' AND ActorType = 0), N'|',
+              (SELECT COUNT(*) FROM AuditEvents WHERE Action = N'component-command.expired' AND ActorType = 1)
+            );")
+          python3 - "$audit_state" <<'PY'
+          import sys
+          issued, succeeded, cancelled, expired = map(int, sys.argv[1].split('|'))
+          assert issued >= 5, sys.argv[1]
+          assert succeeded >= 4, sys.argv[1]
+          assert cancelled >= 1, sys.argv[1]
+          assert expired >= 1, sys.argv[1]
+          PY
+
+          # Command history is independent of run retention: TargetRunId is forensic data, not an FK to Runs.
+          run_fk_count=$(scalar "
+            SELECT COUNT(*)
+            FROM sys.foreign_keys fk
+            JOIN sys.tables parent ON parent.object_id = fk.parent_object_id
+            JOIN sys.tables referenced ON referenced.object_id = fk.referenced_object_id
+            WHERE parent.name = N'ComponentCommands' AND referenced.name = N'Runs';")
+          test "$run_fk_count" = "0"
+
+          curl -fsS -b /tmp/monitor-command-cookies.txt \
+            "http://127.0.0.1:5088/commands?componentId=$component_a_id&window=all" \
+            -o /tmp/commands-page.html
+          grep -q 'Component commands' /tmp/commands-page.html
+          grep -q 'Pause' /tmp/commands-page.html
+          grep -q 'Succeeded' /tmp/commands-page.html
+
+          curl -fsS -b /tmp/monitor-command-cookies.txt \
+            "http://127.0.0.1:5088/components/$component_a_id" \
+            -o /tmp/component-command-page.html
+          grep -q 'Issue command' /tmp/component-command-page.html
+          grep -q 'Leased execution' /tmp/component-command-page.html
+          grep -q 'Recent control operations' /tmp/component-command-page.html
+
+          echo "Component command integration assertions passed."
