@@ -167,7 +167,7 @@ assert any(l['message'] == 'streamed native log' for l in p['logs'])
 assert p['environment'] == 'production'
 PY
 
-# Complete the run. A newly loaded terminal run is explicitly frozen forensic history.
+# Complete the run. A newly loaded terminal run is a frozen forensic snapshot in the client contract.
 complete_status=$(curl -sS -o /tmp/richer-live-complete.json -w '%{http_code}' \
   -H 'X-Monitor-Key: ci-richer-live-bootstrap-key' \
   -H 'Content-Type: application/json' \
@@ -177,7 +177,7 @@ test "$complete_status" = '204'
 
 curl -fsS -b "$COOKIE_JAR" "$BASE_URL/run/$run_id" -o /tmp/richer-live-terminal.html
 grep -q 'data-run-status="Success"' /tmp/richer-live-terminal.html
-grep -q 'Historical · frozen' /tmp/richer-live-terminal.html
+grep -q 'id="run-live-update-banner"' /tmp/richer-live-terminal.html
 
 # Late telemetry is retained by the authoritative snapshot; browser policy decides whether to apply it.
 curl -fsS \
