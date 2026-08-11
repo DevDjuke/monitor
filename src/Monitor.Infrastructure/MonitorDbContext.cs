@@ -20,6 +20,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     public DbSet<FailureAlertEvent> FailureAlertEvents => Set<FailureAlertEvent>();
     public DbSet<AlertDeliveryDestination> AlertDeliveryDestinations => Set<AlertDeliveryDestination>();
     public DbSet<AlertDelivery> AlertDeliveries => Set<AlertDelivery>();
+    public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -132,6 +133,21 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
             .WithMany(x => x.Deliveries)
             .HasForeignKey(x => x.DestinationId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        var auditEvent = modelBuilder.Entity<AuditEvent>();
+        auditEvent.ToTable("AuditEvents");
+        auditEvent.HasKey(x => x.Id);
+        auditEvent.Property(x => x.ActorId).HasMaxLength(450);
+        auditEvent.Property(x => x.ActorName).HasMaxLength(256);
+        auditEvent.Property(x => x.Action).HasMaxLength(120);
+        auditEvent.Property(x => x.TargetType).HasMaxLength(120);
+        auditEvent.Property(x => x.TargetId).HasMaxLength(200);
+        auditEvent.Property(x => x.TargetName).HasMaxLength(240);
+        auditEvent.HasIndex(x => x.OccurredAt).IsDescending();
+        auditEvent.HasIndex(x => new { x.ActorType, x.OccurredAt }).IsDescending(false, true);
+        auditEvent.HasIndex(x => new { x.Action, x.OccurredAt }).IsDescending(false, true);
+        auditEvent.HasIndex(x => new { x.TargetType, x.OccurredAt }).IsDescending(false, true);
+        auditEvent.HasIndex(x => new { x.TargetType, x.TargetId, x.OccurredAt }).IsDescending(false, false, true);
 
         var run = modelBuilder.Entity<AgentRun>();
         run.ToTable("Runs");
