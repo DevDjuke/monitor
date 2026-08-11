@@ -27,153 +27,107 @@
 
 <section class="panel budget-filters">
     <form method="get" class="filter-grid">
-        <label>
-            <span>State</span>
-            <select asp-for="State">
-                <option value="all">Active budgets</option>
-                <option value="enabled">Enabled</option>
-                <option value="disabled">Disabled</option>
-                <option value="warning">Warning</option>
-                <option value="critical">Critical</option>
-                <option value="deleted">Deleted</option>
-            </select>
-        </label>
-        <label>
-            <span>Period</span>
-            <select asp-for="Period">
-                <option value="">Daily + monthly</option>
-                <option value="Daily">Daily</option>
-                <option value="Monthly">Monthly</option>
-            </select>
-        </label>
-        <label class="filter-search">
-            <span>Search</span>
-            <input asp-for="Search" placeholder="name, component, environment, model…" />
-        </label>
-        <div class="filter-actions">
-            <button type="submit">Apply filters</button>
-            <a href="/budgets">Reset</a>
-        </div>
+        <label><span>State</span><select asp-for="State"><option value="all">Active budgets</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="warning">Warning</option><option value="critical">Critical</option><option value="deleted">Deleted</option></select></label>
+        <label><span>Period</span><select asp-for="Period"><option value="">Daily + monthly</option><option value="Daily">Daily</option><option value="Monthly">Monthly</option></select></label>
+        <label class="filter-search"><span>Search</span><input asp-for="Search" placeholder="name, component, environment, model…" /></label>
+        <div class="filter-actions"><button type="submit">Apply filters</button><a href="/budgets">Reset</a></div>
     </form>
 </section>
 
 <section class="panel table-panel">
-    <div class="panel-head">
-        <div><p class="eyebrow">POLICIES</p><h2>Usage budgets</h2></div>
-        <span>@Model.Budgets.Count shown</span>
-    </div>
-
+    <div class="panel-head"><div><p class="eyebrow">POLICIES</p><h2>Usage budgets</h2></div><span>@Model.Budgets.Count shown</span></div>
     @if (Model.Budgets.Count == 0)
     {
         <div class="empty"><strong>No matching budgets.</strong><span>Create a policy to start tracking cost or token thresholds.</span></div>
     }
     else
     {
-        <div class="table-wrap">
-            <table class="budget-table">
-                <thead><tr><th>Budget</th><th>Scope</th><th>Limits</th><th>Usage</th><th>State</th><th>Actions</th></tr></thead>
-                <tbody>
-                @foreach (var budget in Model.Budgets)
-                {
-                    var stateClass = budget.LastLevel?.ToString().ToLowerInvariant() ?? "normal";
-                    <tr>
-                        <td>
-                            <strong>@budget.Name</strong>
-                            <small>@budget.Period</small>
-                        </td>
-                        <td>
-                            <strong>@(budget.ComponentName ?? "All components")</strong>
-                            <small>@(budget.Environment ?? "all environments") · @(budget.Model ?? "all models")</small>
-                        </td>
-                        <td>
-                            @if (budget.CostLimitUsd is not null)
-                            {
-                                <div>$@budget.CostLimitUsd.Value.ToString("N2")</div>
-                            }
-                            @if (budget.TokenLimit is not null)
-                            {
-                                <small>@budget.TokenLimit.Value.ToString("N0") tokens</small>
-                            }
-                            <small>warning @budget.WarningPercent% · critical @budget.CriticalPercent%</small>
-                        </td>
-                        <td>
-                            <strong>@budget.UtilizationPercent.ToString("N1")%</strong>
-                            <small>$@budget.ObservedCostUsd.ToString("N4") · @budget.ObservedTokens.ToString("N0") tokens</small>
-                            <div class="budget-meter"><i style="width:@Math.Min(100, budget.UtilizationPercent).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%"></i></div>
-                        </td>
-                        <td>
-                            <span class="budget-state @stateClass">@(budget.LastLevel?.ToString() ?? (budget.Enabled ? "OK" : "Disabled"))</span>
-                            @if (budget.LastEvaluatedAt is not null)
-                            {
-                                <small>@budget.LastEvaluatedAt.Value.ToString("u")</small>
-                            }
-                        </td>
-                        <td class="budget-actions">
-                            @if (!budget.IsDeleted)
-                            {
-                                <a href="/budgets/edit/@budget.Id">Edit</a>
-                                <form method="post" asp-page-handler="Toggle" asp-route-id="@budget.Id">
-                                    <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
-                                    <button type="submit">@(budget.Enabled ? "Disable" : "Enable")</button>
-                                </form>
-                                <form method="post" asp-page-handler="Delete" asp-route-id="@budget.Id" onsubmit="return confirm('Delete this budget? Historical alerts will remain.');">
-                                    <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
-                                    <button type="submit" class="danger-link">Delete</button>
-                                </form>
-                            }
-                            else
-                            {
-                                <span class="muted">Deleted</span>
-                            }
-                        </td>
-                    </tr>
-                }
-                </tbody>
-            </table>
-        </div>
+        <div class="table-wrap"><table class="budget-table"><thead><tr><th>Budget</th><th>Scope</th><th>Limits</th><th>Usage</th><th>State</th><th>Actions</th></tr></thead><tbody>
+        @foreach (var budget in Model.Budgets)
+        {
+            var stateClass = budget.LastLevel?.ToString().ToLowerInvariant() ?? "normal";
+            <tr>
+                <td><strong>@budget.Name</strong><small>@budget.Period</small></td>
+                <td><strong>@(budget.ComponentName ?? "All components")</strong><small>@(budget.Environment ?? "all environments") · @(budget.Model ?? "all models")</small></td>
+                <td>
+                    @if (budget.CostLimitUsd is not null) { <div>$@budget.CostLimitUsd.Value.ToString("N2")</div> }
+                    @if (budget.TokenLimit is not null) { <small>@budget.TokenLimit.Value.ToString("N0") tokens</small> }
+                    <small>warning @budget.WarningPercent% · critical @budget.CriticalPercent%</small>
+                </td>
+                <td><strong>@budget.UtilizationPercent.ToString("N1")%</strong><small>$@budget.ObservedCostUsd.ToString("N4") · @budget.ObservedTokens.ToString("N0") tokens</small><div class="budget-meter"><i style="width:@Math.Min(100, budget.UtilizationPercent).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%"></i></div></td>
+                <td><span class="budget-state @stateClass">@(budget.LastLevel?.ToString() ?? (budget.Enabled ? "OK" : "Disabled"))</span>@if (budget.LastEvaluatedAt is not null) { <small>@budget.LastEvaluatedAt.Value.ToString("u")</small> }</td>
+                <td class="budget-actions">
+                    @if (!budget.IsDeleted)
+                    {
+                        <a href="/budgets/edit/@budget.Id">Edit</a>
+                        <form method="post" asp-page-handler="Toggle" asp-route-id="@budget.Id"><input type="hidden" name="returnUrl" value="@Model.ReturnUrl" /><button type="submit">@(budget.Enabled ? "Disable" : "Enable")</button></form>
+                        <form method="post" asp-page-handler="Delete" asp-route-id="@budget.Id" onsubmit="return confirm('Delete this budget? Historical alerts will remain.');"><input type="hidden" name="returnUrl" value="@Model.ReturnUrl" /><button type="submit" class="danger-link">Delete</button></form>
+                    }
+                    else { <span class="muted">Deleted</span> }
+                </td>
+            </tr>
+        }
+        </tbody></table></div>
     }
 </section>
 
 <section class="panel table-panel">
-    <div class="panel-head">
-        <div><p class="eyebrow">BUDGET ALERTS</p><h2>Recent threshold crossings</h2></div>
-        <span>@Model.RecentAlerts.Count recent</span>
-    </div>
+    <div class="panel-head"><div><p class="eyebrow">BUDGET ALERTS</p><h2>Recent threshold crossings</h2></div><span>@Model.RecentAlerts.Count recent</span></div>
     @if (Model.RecentAlerts.Count == 0)
     {
         <div class="empty"><strong>No budget alerts yet.</strong><span>Warning and critical events appear here once a policy crosses its threshold.</span></div>
     }
     else
     {
-        <div class="table-wrap">
-            <table class="budget-alert-table">
-                <thead><tr><th>Time</th><th>Budget</th><th>Level</th><th>Observed</th><th>Delivery</th><th>Status</th></tr></thead>
-                <tbody>
-                @foreach (var alert in Model.RecentAlerts)
-                {
-                    <tr>
-                        <td>@alert.TriggeredAt.ToString("u")</td>
-                        <td><strong>@alert.BudgetName</strong><small>@alert.PeriodStart.ToString("u") → @alert.PeriodEnd.ToString("u")</small></td>
-                        <td><span class="budget-state @alert.Level.ToString().ToLowerInvariant()">@alert.Level</span><small>@alert.UtilizationPercent.ToString("N1")%</small></td>
-                        <td>$@alert.ObservedCostUsd.ToString("N4")<small>@alert.ObservedTokens.ToString("N0") tokens</small></td>
-                        <td><strong>@alert.Delivered delivered</strong><small>@alert.Pending pending · @alert.DeadLetter dead-letter</small></td>
-                        <td>
-                            @if (alert.AcknowledgedAt is null)
-                            {
-                                <form method="post" asp-page-handler="Acknowledge" asp-route-eventId="@alert.Id">
-                                    <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
-                                    <button type="submit">Acknowledge</button>
-                                </form>
-                            }
-                            else
-                            {
-                                <span>Acknowledged</span><small>@alert.AcknowledgedBy · @alert.AcknowledgedAt.Value.ToString("u")</small>
-                            }
-                        </td>
-                    </tr>
-                }
-                </tbody>
-            </table>
-        </div>
+        <div class="table-wrap"><table class="budget-alert-table"><thead><tr><th>Time</th><th>Budget</th><th>Level</th><th>Observed</th><th>Delivery</th><th>Status</th></tr></thead><tbody>
+        @foreach (var alert in Model.RecentAlerts)
+        {
+            <tr>
+                <td>@alert.TriggeredAt.ToString("u")</td>
+                <td><strong>@alert.BudgetName</strong><small>@alert.PeriodStart.ToString("u") → @alert.PeriodEnd.ToString("u")</small></td>
+                <td><span class="budget-state @alert.Level.ToString().ToLowerInvariant()">@alert.Level</span><small>@alert.UtilizationPercent.ToString("N1")%</small></td>
+                <td>$@alert.ObservedCostUsd.ToString("N4")<small>@alert.ObservedTokens.ToString("N0") tokens</small></td>
+                <td><strong>@alert.Delivered delivered</strong><small>@alert.Pending pending · @alert.DeadLetter dead-letter</small></td>
+                <td>
+                    @if (alert.AcknowledgedAt is null)
+                    {
+                        <form method="post" asp-page-handler="Acknowledge" asp-route-eventId="@alert.Id"><input type="hidden" name="returnUrl" value="@Model.ReturnUrl" /><button type="submit">Acknowledge</button></form>
+                    }
+                    else { <span>Acknowledged</span><small>@alert.AcknowledgedBy · @alert.AcknowledgedAt.Value.ToString("u")</small> }
+                </td>
+            </tr>
+        }
+        </tbody></table></div>
+    }
+</section>
+
+<section class="panel table-panel">
+    <div class="panel-head"><div><p class="eyebrow">DELIVERY OUTBOX</p><h2>Budget notification delivery</h2></div><span>@Model.RecentDeliveries.Count recent</span></div>
+    @if (Model.RecentDeliveries.Count == 0)
+    {
+        <div class="empty"><strong>No budget deliveries yet.</strong><span>Threshold events enqueue the same signed webhook delivery infrastructure used by failure alerts.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap"><table><thead><tr><th>Created</th><th>Budget</th><th>Destination</th><th>Status</th><th>Attempts</th><th>Result</th><th>Action</th></tr></thead><tbody>
+        @foreach (var delivery in Model.RecentDeliveries)
+        {
+            <tr>
+                <td>@delivery.CreatedAt.ToString("u")</td>
+                <td><strong>@delivery.BudgetName</strong><small>@delivery.Level</small></td>
+                <td>@delivery.DestinationName</td>
+                <td>@delivery.Status</td>
+                <td>@delivery.AttemptCount</td>
+                <td>@(delivery.ResponseStatusCode?.ToString() ?? "—")@if (!string.IsNullOrWhiteSpace(delivery.LastError)) { <small>@delivery.LastError</small> }</td>
+                <td>
+                    @if (delivery.Status != Monitor.Domain.AlertDeliveryStatus.Delivered)
+                    {
+                        <form method="post" asp-page-handler="RequeueDelivery" asp-route-deliveryId="@delivery.Id"><input type="hidden" name="returnUrl" value="@Model.ReturnUrl" /><button type="submit">Retry now</button></form>
+                    }
+                    else { <span class="muted">Delivered</span> }
+                </td>
+            </tr>
+        }
+        </tbody></table></div>
     }
 </section>
