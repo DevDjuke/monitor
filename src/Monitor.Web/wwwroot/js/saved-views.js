@@ -1,6 +1,26 @@
 (() => {
     'use strict';
 
+    function syncSavedViewControls() {
+        const currentUrl = `${window.location.pathname}${window.location.search}`;
+
+        for (const picker of document.querySelectorAll('[data-saved-view-picker]')) {
+            const matching = [...picker.options].find(option => option.value === currentUrl);
+            picker.value = matching?.value || '';
+        }
+
+        for (const input of document.querySelectorAll('[data-saved-view-current-query]')) {
+            input.value = window.location.search;
+        }
+
+        for (const input of document.querySelectorAll('[data-saved-view-return-url]')) {
+            input.value = currentUrl;
+        }
+    }
+
+    document.addEventListener('monitor:saved-view-url-changed', syncSavedViewControls);
+    window.addEventListener('popstate', syncSavedViewControls);
+
     document.addEventListener('change', event => {
         const picker = event.target.closest?.('[data-saved-view-picker]');
         if (!picker || !picker.value) return;
@@ -16,4 +36,6 @@
             event.preventDefault();
         }
     });
+
+    syncSavedViewControls();
 })();
