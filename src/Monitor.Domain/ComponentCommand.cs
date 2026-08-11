@@ -61,7 +61,6 @@ public sealed class ComponentCommand
     public string? CancelledBy { get; private set; }
 
     public MonitoredComponent Component { get; private set; } = null!;
-    public AgentRun? TargetRun { get; private set; }
 
     public bool IsTerminal => Status is
         ComponentCommandStatus.Succeeded or
