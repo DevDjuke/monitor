@@ -1,0 +1,371 @@
+name: saved-views-integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  saved-views:
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: MonitorSavedViewCi!2026Password
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore Monitor.sln
+      - run: dotnet build Monitor.sln --configuration Release --no-restore
+
+      - name: Exercise personal saved views, canonical filters, pinning and ownership isolation
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          ASPNETCORE_URLS: http://127.0.0.1:5092
+          ConnectionStrings__Monitor: Server=127.0.0.1,1433;Database=MonitorSavedViewCi;User Id=sa;Password=MonitorSavedViewCi!2026Password;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
+          Monitor__IngestionApiKey: saved-view-ci-ingestion-key
+          Monitor__BootstrapAdmin__Email: saved-view-ci@monitor.local
+          Monitor__BootstrapAdmin__Password: MonitorSavedViewAdmin2026
+          Retention__Enabled: false
+          FailureAlerting__Enabled: false
+          UsageBudgets__Enabled: false
+          AlertDelivery__Enabled: false
+          ComponentCommands__Enabled: false
+        run: |
+          set -euo pipefail
+
+          dotnet tool install --global dotnet-ef --version 10.0.10
+          dotnet ef database update \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --connection "$ConnectionStrings__Monitor"
+
+          sql_container=$(docker ps \
+            --filter 'ancestor=mcr.microsoft.com/mssql/server:2022-latest' \
+            --format '{{.ID}}' | head -n 1)
+          test -n "$sql_container"
+
+          (
+            cd src/Monitor.Web
+            exec dotnet bin/Release/net10.0/Monitor.Web.dll
+          ) > /tmp/monitor-saved-view-ci.log 2>&1 &
+          app_pid=$!
+
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "=== Monitor saved-view log ==="
+              cat /tmp/monitor-saved-view-ci.log 2>/dev/null || true
+              echo "=== End diagnostic log ==="
+            fi
+            kill "$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+            return "$status"
+          }
+          trap cleanup EXIT
+
+          app_ready=false
+          for attempt in {1..45}; do
+            if curl -fsS http://127.0.0.1:5092/api/health > /dev/null; then
+              app_ready=true
+              break
+            fi
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "Monitor exited while starting."
+              wait "$app_pid" || true
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$app_ready" = true
+
+          curl -fsS -c /tmp/monitor-saved-view-cookies.txt \
+            http://127.0.0.1:5092/account/login \
+            -o /tmp/monitor-saved-view-login.html
+
+          login_token=$(python3 -c '
+          import re
+          html = open("/tmp/monitor-saved-view-login.html", encoding="utf-8").read()
+          match = re.search(r"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", html)
+          assert match, "login antiforgery token not found"
+          print(match.group(1))
+          ')
+
+          login_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-saved-view-cookies.txt \
+            -c /tmp/monitor-saved-view-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$login_token" \
+            --data-urlencode 'Input.Email=saved-view-ci@monitor.local' \
+            --data-urlencode 'Input.Password=MonitorSavedViewAdmin2026' \
+            --data-urlencode 'Input.RememberMe=false' \
+            http://127.0.0.1:5092/account/login)
+          test "$login_status" = "302"
+
+          get_page_token() {
+            local url="$1"
+            local output="$2"
+            curl -fsS -b /tmp/monitor-saved-view-cookies.txt "$url" -o "$output"
+            python3 - "$output" <<'PY'
+          import re
+          import sys
+          html = open(sys.argv[1], encoding='utf-8').read()
+          match = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', html)
+          assert match, f'antiforgery token not found in {sys.argv[1]}'
+          print(match.group(1))
+          PY
+          }
+
+          # Every supported operational surface receives the reusable toolbar; nearby pages do not.
+          for surface in runs logs usage alerts budgets audit commands; do
+            curl -fsS -b /tmp/monitor-saved-view-cookies.txt \
+              "http://127.0.0.1:5092/$surface" \
+              -o "/tmp/saved-view-${surface}.html"
+            grep -q 'aria-label="Saved views"' "/tmp/saved-view-${surface}.html"
+            grep -q 'Save current view' "/tmp/saved-view-${surface}.html"
+          done
+
+          curl -fsS -b /tmp/monitor-saved-view-cookies.txt \
+            http://127.0.0.1:5092/alerts/rules \
+            -o /tmp/saved-view-alert-rules.html
+          if grep -q 'aria-label="Saved views"' /tmp/saved-view-alert-rules.html; then
+            echo 'Saved-view toolbar leaked onto an unsupported route.'
+            exit 1
+          fi
+
+          # The server stores only the allow-listed filter state; transient cursor and unknown input disappear.
+          runs_token=$(get_page_token \
+            'http://127.0.0.1:5092/runs?status=Failed&environment=production&before=999&evil=1' \
+            /tmp/saved-view-runs-filtered.html)
+
+          python3 - <<'PY'
+          import html
+          import re
+          page = html.unescape(open('/tmp/saved-view-runs-filtered.html', encoding='utf-8').read())
+          match = re.search(r'name="queryString" value="([^"]*)"[^>]*data-saved-view-current-query', page)
+          assert match, 'canonical saved-view input not found'
+          assert match.group(1) == '?status=Failed&environment=production', match.group(1)
+          assert 'before=999' not in match.group(1)
+          assert 'evil=1' not in match.group(1)
+          PY
+
+          audit_before=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -b -d MonitorSavedViewCi -h -1 -W \
+            -Q 'SET NOCOUNT ON; SELECT COUNT(*) FROM AuditEvents;' | tr -d '\r' | xargs)
+
+          create_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-saved-view-cookies.txt \
+            -c /tmp/monitor-saved-view-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$runs_token" \
+            --data-urlencode 'surface=Runs' \
+            --data-urlencode 'name=Production failures' \
+            --data-urlencode 'queryString=?status=Failed&environment=production&before=999&evil=1' \
+            --data-urlencode 'isPinned=true' \
+            --data-urlencode 'returnUrl=/runs?status=Failed&environment=production' \
+            'http://127.0.0.1:5092/saved-views?handler=Create')
+          test "$create_status" = "302"
+
+          owner_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -b -d MonitorSavedViewCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT TOP 1 Id FROM AspNetUsers WHERE NormalizedEmail = N'SAVED-VIEW-CI@MONITOR.LOCAL';" \
+            | tr -d '\r' | xargs)
+          test -n "$owner_id"
+
+          saved_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -b -d MonitorSavedViewCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT TOP 1 CONVERT(nvarchar(36), Id) FROM SavedViews WHERE UserId = N'$owner_id' AND Surface = 1 AND NameKey = N'PRODUCTION FAILURES';" \
+            | tr -d '\r' | xargs)
+          test -n "$saved_id"
+
+          stored_query=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -b -d MonitorSavedViewCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT QueryString FROM SavedViews WHERE Id = '$saved_id';" \
+            | tr -d '\r' | xargs)
+          test "$stored_query" = '?status=Failed&environment=production'
+
+          # Exact filter state applies the named view and a pin becomes a global sidebar fast link.
+          curl -fsS -b /tmp/monitor-saved-view-cookies.txt \
+            'http://127.0.0.1:5092/runs?status=Failed&environment=production' \
+            -o /tmp/saved-view-applied.html
+          python3 - <<'PY'
+          import re
+          page = open('/tmp/saved-view-applied.html', encoding='utf-8').read()
+          assert re.search(r'<option[^>]*selected[^>]*>★ Production failures</option>', page), 'saved view was not selected'
+          PY
+
+          curl -fsS -b /tmp/monitor-saved-view-cookies.txt \
+            http://127.0.0.1:5092/logs \
+            -o /tmp/saved-view-pinned.html
+          grep -q 'PINNED VIEWS' /tmp/saved-view-pinned.html
+          grep -q 'Production failures' /tmp/saved-view-pinned.html
+
+          manage_token=$(get_page_token http://127.0.0.1:5092/saved-views /tmp/saved-view-manage.html)
+
+          rename_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-saved-view-cookies.txt \
+            -c /tmp/monitor-saved-view-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$manage_token" \
+            --data-urlencode "id=$saved_id" \
+            --data-urlencode 'name=Prod failures' \
+            --data-urlencode 'returnUrl=/saved-views' \
+            'http://127.0.0.1:5092/saved-views?handler=Rename')
+          test "$rename_status" = "302"
+
+          renamed=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -b -d MonitorSavedViewCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT Name FROM SavedViews WHERE Id = '$saved_id';" | tr -d '\r' | xargs)
+          test "$renamed" = 'Prod failures'
+
+          # Same name on a different surface is valid; the same user/surface name is rejected.
+          manage_token=$(get_page_token http://127.0.0.1:5092/saved-views /tmp/saved-view-manage-2.html)
+          curl -sS -o /dev/null \
+            -b /tmp/monitor-saved-view-cookies.txt \
+            -c /tmp/monitor-saved-view-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$manage_token" \
+            --data-urlencode 'surface=Runs' \
+            --data-urlencode 'name=Prod failures' \
+            --data-urlencode 'queryString=?status=Success' \
+            --data-urlencode 'returnUrl=/saved-views' \
+            'http://127.0.0.1:5092/saved-views?handler=Create'
+
+          same_surface_count=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -b -d MonitorSavedViewCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM SavedViews WHERE UserId = N'$owner_id' AND Surface = 1 AND NameKey = N'PROD FAILURES';" \
+            | tr -d '\r' | xargs)
+          test "$same_surface_count" = '1'
+
+          manage_token=$(get_page_token http://127.0.0.1:5092/saved-views /tmp/saved-view-manage-3.html)
+          other_surface_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-saved-view-cookies.txt \
+            -c /tmp/monitor-saved-view-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$manage_token" \
+            --data-urlencode 'surface=Logs' \
+            --data-urlencode 'name=Prod failures' \
+            --data-urlencode 'queryString=?Window=24h' \
+            --data-urlencode 'returnUrl=/saved-views' \
+            'http://127.0.0.1:5092/saved-views?handler=Create')
+          test "$other_surface_status" = '302'
+
+          # Pinning is deliberately bounded to six sidebar links.
+          for n in 2 3 4 5 6; do
+            manage_token=$(get_page_token http://127.0.0.1:5092/saved-views "/tmp/saved-view-pin-$n.html")
+            curl -sS -o /dev/null \
+              -b /tmp/monitor-saved-view-cookies.txt \
+              -c /tmp/monitor-saved-view-cookies.txt \
+              --data-urlencode "__RequestVerificationToken=$manage_token" \
+              --data-urlencode 'surface=Runs' \
+              --data-urlencode "name=Pinned $n" \
+              --data-urlencode 'queryString=' \
+              --data-urlencode 'isPinned=true' \
+              --data-urlencode 'returnUrl=/saved-views' \
+              'http://127.0.0.1:5092/saved-views?handler=Create'
+          done
+
+          pinned_count=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -b -d MonitorSavedViewCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM SavedViews WHERE UserId = N'$owner_id' AND IsPinned = 1;" \
+            | tr -d '\r' | xargs)
+          test "$pinned_count" = '6'
+
+          manage_token=$(get_page_token http://127.0.0.1:5092/saved-views /tmp/saved-view-pin-overflow.html)
+          curl -sS -o /dev/null \
+            -b /tmp/monitor-saved-view-cookies.txt \
+            -c /tmp/monitor-saved-view-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$manage_token" \
+            --data-urlencode 'surface=Runs' \
+            --data-urlencode 'name=Pinned overflow' \
+            --data-urlencode 'queryString=' \
+            --data-urlencode 'isPinned=true' \
+            --data-urlencode 'returnUrl=/saved-views' \
+            'http://127.0.0.1:5092/saved-views?handler=Create'
+
+          pinned_count_after=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -b -d MonitorSavedViewCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM SavedViews WHERE UserId = N'$owner_id' AND IsPinned = 1;" \
+            | tr -d '\r' | xargs)
+          test "$pinned_count_after" = '6'
+
+          # Create preference data owned by a second Identity user and prove the signed-in owner cannot see or mutate it.
+          docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -b -d MonitorSavedViewCi \
+            -Q "
+              INSERT INTO AspNetUsers
+                (Id, UserName, NormalizedUserName, Email, NormalizedEmail, EmailConfirmed, PasswordHash, SecurityStamp, ConcurrencyStamp, PhoneNumber, PhoneNumberConfirmed, TwoFactorEnabled, LockoutEnd, LockoutEnabled, AccessFailedCount)
+              VALUES
+                (N'ci-other-user', N'other@monitor.local', N'OTHER@MONITOR.LOCAL', N'other@monitor.local', N'OTHER@MONITOR.LOCAL', 1, NULL, NEWID(), NEWID(), NULL, 0, 0, NULL, 0, 0);
+
+              INSERT INTO SavedViews
+                (Id, UserId, Surface, Name, NameKey, QueryString, IsPinned, CreatedAt, UpdatedAt)
+              VALUES
+                ('11111111-1111-1111-1111-111111111111', N'ci-other-user', 1, N'Other private view', N'OTHER PRIVATE VIEW', N'?status=Failed', 0, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET());
+            "
+
+          curl -fsS -b /tmp/monitor-saved-view-cookies.txt \
+            http://127.0.0.1:5092/saved-views \
+            -o /tmp/saved-view-owner-only.html
+          if grep -q 'Other private view' /tmp/saved-view-owner-only.html; then
+            echo 'Another user saved view leaked into the owner workspace.'
+            exit 1
+          fi
+
+          manage_token=$(python3 -c '
+          import re
+          page=open("/tmp/saved-view-owner-only.html", encoding="utf-8").read()
+          match=re.search(r"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", page)
+          assert match
+          print(match.group(1))
+          ')
+          cross_delete_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-saved-view-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$manage_token" \
+            --data-urlencode 'id=11111111-1111-1111-1111-111111111111' \
+            --data-urlencode 'returnUrl=/saved-views' \
+            'http://127.0.0.1:5092/saved-views?handler=Delete')
+          test "$cross_delete_status" = '404'
+
+          other_row_count=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -b -d MonitorSavedViewCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM SavedViews WHERE Id = '11111111-1111-1111-1111-111111111111';" \
+            | tr -d '\r' | xargs)
+          test "$other_row_count" = '1'
+
+          # Preference operations must not dilute the immutable operational audit trail.
+          audit_after=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -b -d MonitorSavedViewCi -h -1 -W \
+            -Q 'SET NOCOUNT ON; SELECT COUNT(*) FROM AuditEvents;' | tr -d '\r' | xargs)
+          test "$audit_after" = "$audit_before"
+
+          # Database schema enforces ownership/name uniqueness and the Identity relationship.
+          schema_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -b -d MonitorSavedViewCi -h -1 -W \
+            -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM sys.indexes WHERE object_id = OBJECT_ID(N'SavedViews') AND name = N'IX_SavedViews_UserId_Surface_NameKey' AND is_unique = 1), N'|',
+                (SELECT COUNT(*) FROM sys.foreign_keys WHERE parent_object_id = OBJECT_ID(N'SavedViews') AND referenced_object_id = OBJECT_ID(N'AspNetUsers'))
+              );
+            " | tr -d '\r' | xargs)
+          test "$schema_state" = '1|1'
+
+          # Runs filter UI now has a stable browser-URL contract, while the keyset cursor remains API-only.
+          curl -fsS -b /tmp/monitor-saved-view-cookies.txt \
+            http://127.0.0.1:5092/js/runs.js \
+            -o /tmp/saved-view-runs.js
+          grep -q 'history.replaceState' /tmp/saved-view-runs.js
+          grep -q "params.set('before', state.cursor)" /tmp/saved-view-runs.js
+          grep -q "monitor:saved-view-url-changed" /tmp/saved-view-runs.js
