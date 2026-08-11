@@ -1,0 +1,106 @@
+@page "/saved-views"
+@model SavedViewsModel
+@using Monitor.Web.Components
+@{
+    ViewData["Title"] = "Saved views";
+    var pinnedCount = Model.Rows.Count(x => x.IsPinned);
+}
+
+@section Head {
+    <link rel="stylesheet" href="~/css/saved-views.css" asp-append-version="true" />
+}
+
+<header class="page-head compact">
+    <div>
+        <p class="eyebrow">PERSONAL WORKSPACE</p>
+        <h1>Saved views</h1>
+        <p class="lede">Named operational filter sets for your account. Pin the views you use constantly for one-click access from the sidebar.</p>
+    </div>
+</header>
+
+@if (TempData[SavedViewTempData.StatusKey] is string statusMessage)
+{
+    var isError = TempData[SavedViewTempData.IsErrorKey] as bool? ?? false;
+    <div class="notice @(isError ? "saved-view-error-notice" : "success-notice")">@statusMessage</div>
+}
+
+<section class="metrics" aria-label="Saved view summary">
+    <article class="metric"><span>Saved views</span><strong>@Model.Rows.Count</strong><small>personal filter sets</small></article>
+    <article class="metric"><span>Pinned</span><strong>@pinnedCount / 6</strong><small>sidebar fast links</small></article>
+    <article class="metric"><span>Surfaces</span><strong>@Model.Rows.Select(x => x.Surface).Distinct().Count()</strong><small>with saved views</small></article>
+</section>
+
+@if (Model.Rows.Count == 0)
+{
+    <section class="panel">
+        <div class="empty">
+            <strong>No saved views yet.</strong>
+            <span>Open Runs, Logs, Usage, Alerts, Budgets, Audit, or Commands; set the filters you want and choose <em>Save current view</em>.</span>
+        </div>
+    </section>
+}
+else
+{
+    <div class="saved-view-groups">
+        @foreach (var surface in Model.Surfaces)
+        {
+            var rows = Model.Rows.Where(x => x.Surface == surface.Surface).ToList();
+            if (rows.Count == 0)
+            {
+                continue;
+            }
+
+            <section class="panel saved-view-group" id="saved-views-@surface.Surface.ToString().ToLowerInvariant()">
+                <div class="panel-head">
+                    <div>
+                        <p class="eyebrow">@surface.DisplayName.ToUpperInvariant()</p>
+                        <h2>@surface.DisplayName views</h2>
+                    </div>
+                    <a class="secondary-action" href="@surface.Path">Open @surface.DisplayName</a>
+                </div>
+
+                <div class="saved-view-card-list">
+                    @foreach (var view in rows)
+                    {
+                        <article class="saved-view-card">
+                            <div class="saved-view-card-main">
+                                <div class="saved-view-card-title">
+                                    @if (view.IsPinned)
+                                    {
+                                        <span class="saved-view-star" title="Pinned">★</span>
+                                    }
+                                    <strong>@view.Name</strong>
+                                </div>
+                                <code>@(string.IsNullOrWhiteSpace(view.QueryString) ? "default filters" : view.QueryString)</code>
+                                <small>Updated @view.UpdatedAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</small>
+                            </div>
+
+                            <div class="saved-view-card-actions">
+                                <a class="primary-action" href="@view.Url">Apply</a>
+                                <form method="post" asp-page-handler="TogglePin">
+                                    <input type="hidden" name="id" value="@view.Id" />
+                                    <input type="hidden" name="returnUrl" value="/saved-views" />
+                                    <button class="inline-button" type="submit">@(view.IsPinned ? "Unpin" : "Pin")</button>
+                                </form>
+                                <details class="saved-view-rename">
+                                    <summary>Rename</summary>
+                                    <form method="post" asp-page-handler="Rename">
+                                        <input type="hidden" name="id" value="@view.Id" />
+                                        <input type="hidden" name="returnUrl" value="/saved-views" />
+                                        <input name="name" value="@view.Name" maxlength="120" required autocomplete="off" />
+                                        <button class="inline-button" type="submit">Save name</button>
+                                    </form>
+                                </details>
+                                <form method="post" asp-page-handler="Delete" data-confirm="Delete saved view '@view.Name'?">
+                                    <input type="hidden" name="id" value="@view.Id" />
+                                    <input type="hidden" name="returnUrl" value="/saved-views" />
+                                    <button class="inline-button danger-button" type="submit">Delete</button>
+                                </form>
+                            </div>
+                        </article>
+                    }
+                </div>
+            </section>
+        }
+    </div>
+}
