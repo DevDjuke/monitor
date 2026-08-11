@@ -48,8 +48,8 @@ public sealed class SavedViewsViewComponent(
 
         var active = rows.FirstOrDefault(x => x.IsActive);
         var tempData = tempDataFactory.GetTempData(HttpContext);
-        var status = tempData.Peek(SavedViewTempData.StatusKey) as string;
-        var statusIsError = tempData.Peek(SavedViewTempData.IsErrorKey) as bool? ?? false;
+        var status = tempData[SavedViewTempData.StatusKey] as string;
+        var statusIsError = tempData[SavedViewTempData.IsErrorKey] as bool? ?? false;
 
         return View(new SavedViewToolbarModel(
             surface,
