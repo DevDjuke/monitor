@@ -82,6 +82,58 @@ public sealed class WebhookAlertSender(
             cancellationToken);
     }
 
+    public async Task<WebhookSendResult> SendBudgetAlertAsync(
+        UsageBudgetAlertDelivery delivery,
+        CancellationToken cancellationToken)
+    {
+        var alertEvent = delivery.BudgetAlertEvent;
+        var budget = alertEvent.UsageBudget;
+        var eventType = alertEvent.Level == UsageBudgetAlertLevel.Critical
+            ? "usage.budget.critical"
+            : "usage.budget.warning";
+
+        var payload = new
+        {
+            schemaVersion = 1,
+            type = eventType,
+            deliveryId = delivery.Id,
+            alertEventId = alertEvent.Id,
+            triggeredAt = alertEvent.TriggeredAt,
+            level = alertEvent.Level.ToString(),
+            budget = new
+            {
+                id = budget.Id,
+                name = budget.Name,
+                period = budget.Period.ToString(),
+                componentId = budget.ComponentId,
+                environment = budget.Environment,
+                model = budget.Model,
+                costLimitUsd = alertEvent.CostLimitUsd,
+                tokenLimit = alertEvent.TokenLimit,
+                warningPercent = alertEvent.WarningPercent,
+                criticalPercent = alertEvent.CriticalPercent
+            },
+            period = new
+            {
+                start = alertEvent.PeriodStart,
+                end = alertEvent.PeriodEnd
+            },
+            usage = new
+            {
+                costUsd = alertEvent.ObservedCostUsd,
+                tokens = alertEvent.ObservedTokens,
+                utilizationPercent = alertEvent.UtilizationPercent
+            }
+        };
+
+        return await SendAsync(
+            delivery.Destination,
+            delivery.Id,
+            eventType,
+            JsonSerializer.Serialize(payload),
+            cancellationToken);
+    }
+
     public async Task<WebhookSendResult> SendTestAsync(
         AlertDeliveryDestination destination,
         CancellationToken cancellationToken)
