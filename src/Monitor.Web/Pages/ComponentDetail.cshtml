@@ -8,6 +8,7 @@
 @section Head {
     <link rel="stylesheet" href="~/css/component-credentials.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/css/commands.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/commands-live.css" asp-append-version="true" />
 }
 
 <header class="page-head compact run-head">
@@ -123,13 +124,26 @@
     </section>
 </div>
 
-<section class="panel table-panel command-history-panel">
+<button class="command-live-banner" id="command-live-banner" type="button" hidden>
+    <strong id="command-live-banner-title">Command activity changed</strong>
+    <span>Refresh this component view</span>
+</button>
+
+<section class="panel table-panel command-history-panel"
+         id="command-live-root"
+         data-command-live-mode="live"
+         data-command-component-filter="@component.Id"
+         data-command-type-filter=""
+         data-command-status-filter="">
     <div class="panel-head">
         <div>
             <p class="eyebrow">COMMAND HISTORY</p>
             <h2>Recent control operations</h2>
         </div>
-        <span>@Model.Commands.Count shown · <a href="/commands?componentId=@component.Id">all commands</a></span>
+        <div class="command-live-panel-meta">
+            <div class="command-live-state connecting" id="command-live-state" aria-live="polite"><span></span><strong>Connecting</strong></div>
+            <span>@Model.Commands.Count shown · <a href="/commands?componentId=@component.Id">all commands</a></span>
+        </div>
     </div>
 
     @if (Model.Commands.Count == 0)
@@ -146,7 +160,7 @@
                 <tbody>
                 @foreach (var command in Model.Commands)
                 {
-                    <tr>
+                    <tr data-command-id="@command.Id" data-command-component-id="@component.Id" data-command-type="@command.Type" data-command-status="@command.Status">
                         <td>
                             <strong>@command.Type</strong>
                             @if (command.TargetRunId is not null)
@@ -154,19 +168,19 @@
                                 <small>run @command.TargetRunId</small>
                             }
                         </td>
-                        <td><span class="command-state @command.Status.ToString().ToLowerInvariant()">@command.Status</span></td>
+                        <td><span class="command-state @command.Status.ToString().ToLowerInvariant()" data-command-status-label>@command.Status</span></td>
                         <td>
                             @command.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss") UTC
                             <small>@(command.RequestedBy ?? "system") · expires @command.ExpiresAt.ToString("HH:mm:ss")</small>
                         </td>
-                        <td>
+                        <td data-command-delivery>
                             <strong>@command.DeliveryAttempts attempt(s)</strong>
                             @if (command.LeaseExpiresAt is not null)
                             {
                                 <small>lease until @command.LeaseExpiresAt.Value.ToString("HH:mm:ss") UTC</small>
                             }
                         </td>
-                        <td>
+                        <td data-command-result>
                             @if (!string.IsNullOrWhiteSpace(command.Error))
                             {
                                 <span class="command-error">@command.Error</span>
@@ -184,7 +198,7 @@
                                 <span>—</span>
                             }
                         </td>
-                        <td>
+                        <td data-command-actions>
                             @if (command.CanCancel)
                             {
                                 <form method="post" asp-page-handler="CancelCommand" asp-route-id="@component.Id" asp-route-commandId="@command.Id">
@@ -294,6 +308,8 @@
 </div>
 
 @section Scripts {
+<script src="~/lib/microsoft/signalr/dist/browser/signalr.min.js"></script>
+<script src="~/js/commands-live.js" asp-append-version="true"></script>
 <script>
 (() => {
     const copyButton = document.getElementById('copy-issued-credential');
