@@ -1,0 +1,301 @@
+name: audit-integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: MonitorAuditCi!2026Password
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorAuditCi!2026Password' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore Monitor.sln
+      - run: dotnet build Monitor.sln --configuration Release --no-restore
+
+      - name: Exercise transactional operator audit trail
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          ASPNETCORE_URLS: http://127.0.0.1:5087
+          ConnectionStrings__Monitor: Server=127.0.0.1,1433;Database=MonitorAuditCi;User Id=sa;Password=MonitorAuditCi!2026Password;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
+          Monitor__IngestionApiKey: ci-audit-ingestion-key
+          Monitor__BootstrapAdmin__Email: audit-ci@monitor.local
+          Monitor__BootstrapAdmin__Password: MonitorAuditAdmin2026
+          Retention__Enabled: false
+          FailureAlerting__Enabled: false
+          AlertDelivery__Enabled: false
+        run: |
+          set -euo pipefail
+
+          dotnet tool install --global dotnet-ef --version 10.0.10
+          dotnet ef database update \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --connection "$ConnectionStrings__Monitor"
+
+          sql_container=$(docker ps \
+            --filter 'ancestor=mcr.microsoft.com/mssql/server:2022-latest' \
+            --format '{{.ID}}' | head -n 1)
+          test -n "$sql_container"
+
+          (
+            cd src/Monitor.Web
+            exec dotnet bin/Release/net10.0/Monitor.Web.dll
+          ) > /tmp/monitor-audit-ci.log 2>&1 &
+          app_pid=$!
+
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "=== Monitor audit log ==="
+              cat /tmp/monitor-audit-ci.log 2>/dev/null || true
+              echo "=== Audit rows ==="
+              docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+                -S localhost -U sa -P 'MonitorAuditCi!2026Password' -C -d MonitorAuditCi \
+                -Q "SELECT TOP(50) OccurredAt, ActorType, ActorName, Action, TargetType, TargetId, TargetName, BeforeJson, AfterJson, MetadataJson FROM AuditEvents ORDER BY OccurredAt DESC;" \
+                2>/dev/null || true
+              echo "=== End diagnostic output ==="
+            fi
+            kill "$app_pid" 2>/dev/null || true
+            wait "$app_pid" 2>/dev/null || true
+            return "$status"
+          }
+          trap cleanup EXIT
+
+          app_ready=false
+          for attempt in {1..45}; do
+            if curl -fsS http://127.0.0.1:5087/api/health > /dev/null; then
+              app_ready=true
+              break
+            fi
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              echo "Monitor exited while starting."
+              wait "$app_pid" || true
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$app_ready" = true
+
+          component_json=$(curl -fsS \
+            -H 'X-Monitor-Key: ci-audit-ingestion-key' \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"Audit CI Agent","slug":"audit-ci-agent","type":"Agent","environment":"development","version":"1.0.0"}' \
+            http://127.0.0.1:5087/api/components/register)
+          component_id=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["id"])' <<< "$component_json")
+          test -n "$component_id"
+
+          curl -fsS -c /tmp/monitor-audit-cookies.txt \
+            http://127.0.0.1:5087/account/login \
+            -o /tmp/monitor-audit-login.html
+
+          login_token=$(python3 -c '
+          import re
+          html = open("/tmp/monitor-audit-login.html", encoding="utf-8").read()
+          match = re.search(r"name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"", html)
+          assert match, "login antiforgery token not found"
+          print(match.group(1))
+          ')
+
+          login_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-audit-cookies.txt \
+            -c /tmp/monitor-audit-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$login_token" \
+            --data-urlencode 'Input.Email=audit-ci@monitor.local' \
+            --data-urlencode 'Input.Password=MonitorAuditAdmin2026' \
+            --data-urlencode 'Input.RememberMe=false' \
+            http://127.0.0.1:5087/account/login)
+          test "$login_status" = "302"
+
+          get_token() {
+            local url="$1"
+            local output="$2"
+            curl -fsS -b /tmp/monitor-audit-cookies.txt "$url" -o "$output"
+            python3 - "$output" <<'PY'
+          import re
+          import sys
+          html = open(sys.argv[1], encoding="utf-8").read()
+          match = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', html)
+          assert match, f"antiforgery token not found in {sys.argv[1]}"
+          print(match.group(1))
+          PY
+          }
+
+          # Create an alert destination. The signing secret must never enter audit JSON.
+          alerts_token=$(get_token 'http://127.0.0.1:5087/alerts' /tmp/monitor-audit-alerts-create.html)
+          create_destination_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-audit-cookies.txt \
+            -c /tmp/monitor-audit-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$alerts_token" \
+            --data-urlencode 'DestinationInput.Name=CI audit webhook' \
+            --data-urlencode 'DestinationInput.EndpointUrl=http://127.0.0.1:5999/audit' \
+            --data-urlencode 'DestinationInput.Secret=ci-audit-signing-secret-DO-NOT-LEAK-2026' \
+            'http://127.0.0.1:5087/alerts?handler=CreateDestination')
+          test "$create_destination_status" = "302"
+
+          destination_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorAuditCi!2026Password' -C -b -d MonitorAuditCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT CONVERT(nvarchar(36), Id) FROM AlertDeliveryDestinations WHERE Name = N'CI audit webhook';" \
+            | tr -d '\r' | xargs)
+          test -n "$destination_id"
+
+          destination_audit_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorAuditCi!2026Password' -C -b -d MonitorAuditCi -h -1 -W \
+            -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM AuditEvents WHERE Action = N'alert-destination.created' AND TargetType = N'alert-destination' AND TargetId = '$destination_id' AND ActorType = 0 AND ActorName = N'audit-ci@monitor.local'), N'|',
+                (SELECT COUNT(*) FROM AuditEvents WHERE TargetId = '$destination_id' AND AfterJson LIKE N'%CI audit webhook%' AND AfterJson LIKE N'%endpointUrl%'), N'|',
+                (SELECT COUNT(*) FROM AuditEvents WHERE BeforeJson LIKE N'%ci-audit-signing-secret-DO-NOT-LEAK-2026%' OR AfterJson LIKE N'%ci-audit-signing-secret-DO-NOT-LEAK-2026%' OR MetadataJson LIKE N'%ci-audit-signing-secret-DO-NOT-LEAK-2026%'), N'|',
+                (SELECT COUNT(*) FROM AuditEvents WHERE BeforeJson LIKE N'%ProtectedSecret%' OR AfterJson LIKE N'%ProtectedSecret%' OR MetadataJson LIKE N'%ProtectedSecret%')
+              );
+            " | tr -d '\r' | xargs)
+          test "$destination_audit_state" = "1|1|0|0"
+
+          # Exercise credential issue -> rotation -> revoke through the real component page.
+          credential_token=$(get_token "http://127.0.0.1:5087/components/$component_id" /tmp/monitor-audit-component-issue.html)
+          issue_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-audit-cookies.txt \
+            -c /tmp/monitor-audit-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$credential_token" \
+            --data-urlencode 'CredentialInput.Name=CI audit credential' \
+            "http://127.0.0.1:5087/components/$component_id?handler=CreateCredential")
+          test "$issue_status" = "302"
+
+          original_credential_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorAuditCi!2026Password' -C -b -d MonitorAuditCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT CONVERT(nvarchar(36), Id) FROM ComponentIngestionCredentials WHERE ComponentId = '$component_id' AND RevokedAt IS NULL;" \
+            | tr -d '\r' | xargs)
+          test -n "$original_credential_id"
+
+          rotate_token=$(get_token "http://127.0.0.1:5087/components/$component_id" /tmp/monitor-audit-component-rotate.html)
+          rotate_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-audit-cookies.txt \
+            -c /tmp/monitor-audit-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$rotate_token" \
+            "http://127.0.0.1:5087/components/$component_id?handler=RotateCredential&credentialId=$original_credential_id")
+          test "$rotate_status" = "302"
+
+          replacement_credential_id=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorAuditCi!2026Password' -C -b -d MonitorAuditCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT CONVERT(nvarchar(36), Id) FROM ComponentIngestionCredentials WHERE ComponentId = '$component_id' AND RevokedAt IS NULL;" \
+            | tr -d '\r' | xargs)
+          test -n "$replacement_credential_id"
+          test "$replacement_credential_id" != "$original_credential_id"
+
+          revoke_token=$(get_token "http://127.0.0.1:5087/components/$component_id" /tmp/monitor-audit-component-revoke.html)
+          revoke_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-audit-cookies.txt \
+            -c /tmp/monitor-audit-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$revoke_token" \
+            "http://127.0.0.1:5087/components/$component_id?handler=RevokeCredential&credentialId=$replacement_credential_id")
+          test "$revoke_status" = "302"
+
+          credential_audit_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorAuditCi!2026Password' -C -b -d MonitorAuditCi -h -1 -W \
+            -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM AuditEvents WHERE Action = N'component-credential.issued' AND TargetId = '$original_credential_id' AND ActorName = N'audit-ci@monitor.local'), N'|',
+                (SELECT COUNT(*) FROM AuditEvents WHERE Action = N'component-credential.rotated' AND TargetId = '$original_credential_id' AND MetadataJson LIKE N'%$replacement_credential_id%'), N'|',
+                (SELECT COUNT(*) FROM AuditEvents WHERE Action = N'component-credential.revoked' AND TargetId = '$replacement_credential_id'), N'|',
+                (SELECT COUNT(*) FROM AuditEvents WHERE BeforeJson LIKE N'%KeyHash%' OR AfterJson LIKE N'%KeyHash%' OR MetadataJson LIKE N'%KeyHash%')
+              );
+            " | tr -d '\r' | xargs)
+          test "$credential_audit_state" = "1|1|1|0"
+
+          # Prove mutation + audit are one save boundary. Reject the next audit insert and
+          # verify the destination cannot become disabled without its audit evidence.
+          docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorAuditCi!2026Password' -C -b -d MonitorAuditCi \
+            -Q "
+              CREATE TRIGGER TR_AuditEvents_CiReject
+              ON AuditEvents
+              AFTER INSERT
+              AS
+              BEGIN
+                SET NOCOUNT ON;
+                IF EXISTS (SELECT 1 FROM inserted WHERE Action = N'alert-destination.disabled')
+                  THROW 51000, 'CI intentionally rejected audit insert', 1;
+              END;
+            " > /dev/null
+
+          toggle_token=$(get_token 'http://127.0.0.1:5087/alerts' /tmp/monitor-audit-alerts-toggle-fail.html)
+          failed_toggle_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-audit-cookies.txt \
+            -c /tmp/monitor-audit-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$toggle_token" \
+            "http://127.0.0.1:5087/alerts?handler=ToggleDestination&destinationId=$destination_id")
+          test "$failed_toggle_status" = "500"
+
+          rollback_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorAuditCi!2026Password' -C -b -d MonitorAuditCi -h -1 -W \
+            -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM AlertDeliveryDestinations WHERE Id = '$destination_id' AND Enabled = 1), N'|',
+                (SELECT COUNT(*) FROM AuditEvents WHERE Action = N'alert-destination.disabled' AND TargetId = '$destination_id')
+              );
+            " | tr -d '\r' | xargs)
+          test "$rollback_state" = "1|0"
+
+          docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorAuditCi!2026Password' -C -b -d MonitorAuditCi \
+            -Q "DROP TRIGGER TR_AuditEvents_CiReject;" > /dev/null
+
+          toggle_token=$(get_token 'http://127.0.0.1:5087/alerts' /tmp/monitor-audit-alerts-toggle-success.html)
+          successful_toggle_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -b /tmp/monitor-audit-cookies.txt \
+            -c /tmp/monitor-audit-cookies.txt \
+            --data-urlencode "__RequestVerificationToken=$toggle_token" \
+            "http://127.0.0.1:5087/alerts?handler=ToggleDestination&destinationId=$destination_id")
+          test "$successful_toggle_status" = "302"
+
+          committed_state=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorAuditCi!2026Password' -C -b -d MonitorAuditCi -h -1 -W \
+            -Q "
+              SET NOCOUNT ON;
+              SELECT CONCAT(
+                (SELECT COUNT(*) FROM AlertDeliveryDestinations WHERE Id = '$destination_id' AND Enabled = 0), N'|',
+                (SELECT COUNT(*) FROM AuditEvents WHERE Action = N'alert-destination.disabled' AND TargetId = '$destination_id' AND BeforeJson LIKE N'%\"enabled\":true%' AND AfterJson LIKE N'%\"enabled\":false%')
+              );
+            " | tr -d '\r' | xargs)
+          test "$committed_state" = "1|1"
+
+          # Audit records are independent evidence: no foreign keys point from AuditEvents to
+          # operational targets, and the authenticated UI can filter the durable history.
+          audit_fk_count=$(docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U sa -P 'MonitorAuditCi!2026Password' -C -b -d MonitorAuditCi -h -1 -W \
+            -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.foreign_keys WHERE parent_object_id = OBJECT_ID(N'AuditEvents');" \
+            | tr -d '\r' | xargs)
+          test "$audit_fk_count" = "0"
+
+          curl -fsS -b /tmp/monitor-audit-cookies.txt \
+            'http://127.0.0.1:5087/audit?Window=24h&Action=alert-destination.disabled&TargetType=alert-destination&Search=CI%20audit%20webhook' \
+            -o /tmp/monitor-audit-page.html
+          grep -q 'AUDIT TRAIL\|Audit trail' /tmp/monitor-audit-page.html
+          grep -q 'alert-destination.disabled' /tmp/monitor-audit-page.html
+          grep -q 'CI audit webhook' /tmp/monitor-audit-page.html
+          grep -q 'audit-ci@monitor.local' /tmp/monitor-audit-page.html
+          grep -q 'Inspect change' /tmp/monitor-audit-page.html
