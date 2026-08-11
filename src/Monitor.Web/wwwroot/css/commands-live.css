@@ -32,6 +32,19 @@
 .command-live-state.frozen { color: #aaa1ff; }
 .command-live-state.frozen > span { background: var(--accent); box-shadow: 0 0 14px rgba(124,108,255,.38); }
 
+.command-live-panel-meta {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.command-live-panel-meta .command-live-state { margin-top: 0; }
+.command-live-panel-meta a { color: inherit; }
+.command-live-panel-meta a:hover { color: var(--text); }
+
 .command-live-banner {
     width: min(1480px, 100%);
     min-height: 46px;
@@ -80,6 +93,12 @@
 }
 
 @media (max-width: 680px) {
+    .command-live-panel-meta {
+        align-items: flex-end;
+        flex-direction: column;
+        gap: 5px;
+    }
+
     .command-live-banner {
         align-items: flex-start;
         flex-direction: column;
