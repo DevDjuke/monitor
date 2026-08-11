@@ -17,9 +17,10 @@ MonitoredComponent
                       └─ AlertDeliveryDestination
 
 RunAggregate
+AuditEvent
 ```
 
-The goal is to make every autonomous component answer the same questions: Is it alive? What is it doing? What did it do? How long did it take? What tools/models did it call? What did it log? How many tokens did it use? What did it cost? What failed, is that failure recurring, has it crossed an operational threshold, and was that alert actually delivered?
+The goal is to make every autonomous component answer the same questions: Is it alive? What is it doing? What did it do? How long did it take? What tools/models did it call? What did it log? How many tokens did it use? What did it cost? What failed, is that failure recurring, has it crossed an operational threshold, was that alert delivered, and who changed the control-plane state around it?
 
 ## Current vertical slice
 
@@ -37,10 +38,15 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - Deterministic failure categories/fingerprints with occurrence and first/last-seen tracking.
 - Failure-group drill-down with raw occurrence history, rolling rates, and a 24-hour hourly recurrence trend.
 - Persistent recurrence alert rules with threshold/window/cooldown semantics and per-rule destination assignment.
-- Durable alert events with acknowledgement audit state and duplicate-evidence suppression.
+- Durable alert events with acknowledgement state and duplicate-evidence suppression.
 - Transactional alert-delivery outbox rows created together with each alert event.
 - HMAC-SHA256 signed webhook delivery with encrypted signing secrets, retries, permanent-failure handling, dead letters, and manual requeue.
 - `/alerts` operational queue for alert events, rule state, webhook destinations, delivery health, and delivery history.
+- Append-only `AuditEvent` records for operator control-plane mutations with actor/action/target identity and safe before/after/metadata snapshots.
+- Transactional audit writes: operational mutation and audit evidence share one EF Core/SQL Server save boundary.
+- `/audit` server-side filtering by time, actor, action, target, target id, and text with expandable structured change snapshots.
+- Secret-safe audit policy: credential plaintext/hash and webhook protected signing secrets are never copied into audit JSON.
+- Audit evidence independent of mutable targets: no operational foreign keys or telemetry-retention cascades can erase an audit row.
 - Runs history with server-side search/filtering and stable keyset pagination.
 - SignalR-backed live run updates: the latest page refreshes automatically while older history remains stable.
 - Hourly durable run aggregates by component and model for long-range usage metrics.
@@ -55,7 +61,7 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - `Monitor.OtlpSampleWorker` dogfoods the standard OpenTelemetry .NET trace and logging exporters without referencing `Monitor.Client`.
 - Versioned EF Core migrations.
 - SQL Server persistence with LocalDB as the default development instance.
-- GitHub Actions SQL Server-backed integration tests for telemetry, traces, logs, migration upgrades, keyset pagination, credentials, failure grouping, alert evaluation, signed webhook delivery, retry/dead-letter behavior, and retention safety.
+- GitHub Actions SQL Server-backed integration tests for telemetry, traces, logs, migration upgrades, keyset pagination, credentials, failure grouping, alert evaluation, signed webhook delivery, retry/dead-letter behavior, retention safety, and audit atomicity/secret exclusion.
 
 The Monitor-native HTTP API and OTLP are complementary. The custom API carries Monitor-specific lifecycle semantics; OTLP provides vendor-neutral observability ingestion.
 
@@ -255,6 +261,26 @@ Retry behavior:
 
 For multi-node Monitor deployments, ASP.NET Core Data Protection keys must be shared/persisted across nodes so every dispatcher can decrypt stored webhook signing secrets.
 
+## Audit trail
+
+`/audit` is the append-only control-plane change history. It is separate from telemetry and from alert/delivery state: a log describes workload behavior, while an audit row records who or what changed Monitor itself.
+
+Each audit row stores the occurrence time, actor type/id/name, a stable action string, target type/id/name, and optional structured `BeforeJson`, `AfterJson`, and `MetadataJson` snapshots.
+
+Current operator coverage includes:
+
+- alert acknowledgement;
+- alert-rule create/edit/enable/disable/delete;
+- webhook destination create/enable/disable/test;
+- alert-delivery requeue;
+- component credential issue/rotate/revoke.
+
+`AuditTrailWriter` stages the audit row in the same `MonitorDbContext` as the operational mutation. The handler then performs one `SaveChangesAsync`, so SQL Server commits or rolls back the change and its audit evidence together. The permanent audit CI gate proves this by deliberately rejecting an audit insert and verifying the corresponding operational mutation also rolls back.
+
+Audit snapshots are allow-listed. Component credential plaintext/hashes and protected webhook signing secrets are never copied into audit JSON. `AuditEvents` has no foreign keys to operational targets, so target deletion or telemetry retention cannot cascade away history. The telemetry retention worker does not purge audit events.
+
+Detailed invariants and extension guidance are in `docs/audit-trail.md`.
+
 ## Retention and aggregation
 
 Terminal runs are aggregated into durable hourly buckets keyed by UTC hour, component, and model. Aggregation is idempotent at the run level: `AggregatedAt` is committed atomically with the run's contribution to the aggregate.
@@ -265,11 +291,12 @@ The default policy is:
 - retain successful raw run/span/log detail for 30 days;
 - retain unlinked/component-only logs for 30 days;
 - run the retention sweep every 15 minutes;
-- retain failed and cancelled raw run/span/log/error detail indefinitely.
+- retain failed and cancelled raw run/span/log/error detail indefinitely;
+- keep audit records outside telemetry retention.
 
 Only successful runs are deleted, and only after aggregation. Their run-linked spans and log events cascade with the raw run. Failed/cancelled runs and their linked telemetry remain forensic evidence. Unlinked logs have a separate bounded window because they do not have a run outcome.
 
-Configure the policy through `appsettings.json` or environment variables:
+Configure the telemetry policy through `appsettings.json` or environment variables:
 
 ```json
 {
@@ -287,7 +314,7 @@ Configure the policy through `appsettings.json` or environment variables:
 
 Equivalent environment variables use normal ASP.NET Core double-underscore syntax, including `Retention__SuccessfulRunDetailDays` and `Retention__UnlinkedLogDetailDays`.
 
-Set `Retention__Enabled=false` to stop aggregation and purging. Existing raw data and aggregate buckets are left untouched.
+Set `Retention__Enabled=false` to stop telemetry aggregation and purging. Existing raw data and aggregate buckets are left untouched.
 
 ## Run the Monitor.Client sample worker
 
@@ -301,13 +328,15 @@ dotnet run --project samples/Monitor.SampleWorker
 
 The worker registers as `sample-website-auditor`, sends heartbeats, starts synthetic website-audit runs, emits HTTP/tool/model/agent spans plus structured run events and token/cost data, and intentionally fails every fifth run so the control plane has realistic success/failure evidence.
 
-## Runs and logs history
+## Runs, logs, and audit history
 
 `/runs` uses authenticated server-side filtering plus stable keyset pagination. Each run receives a database-generated monotonic sequence, so older history remains stable while new telemetry is arriving. SignalR refreshes the latest matching slice without shifting older pages underneath the operator.
 
 `/logs` is also server-filtered and query-string driven. Filters include time window, component, environment, minimum severity, source, run, span, free-text search, and result size. Structured properties and exception detail remain expandable instead of being flattened into the display message.
 
 Run drill-down merges spans and log events into one timestamp-ordered timeline while retaining the dedicated trace tree for parent/child execution structure.
+
+`/audit` filters the durable control-plane record by time window, actor, action, target type/id, and free text. Before/after/metadata JSON remains expandable for forensic review.
 
 ## Client SDK
 
@@ -486,15 +515,16 @@ curl -X POST http://localhost:5000/api/runs/{runId}/complete \
 
 ```text
 src/
-  Monitor.Domain/          protocol-independent monitoring + log/failure/alert/delivery model
+  Monitor.Domain/          protocol-independent monitoring + log/failure/alert/audit model
   Monitor.Client/          .NET Monitor-native ingestion client SDK
-  Monitor.Infrastructure/  EF Core persistence, retention, grouping/alerting/correlation + Identity store
+  Monitor.Infrastructure/  EF Core persistence, retention, auditing, grouping/alerting/correlation + Identity store
   Monitor.Web/             HTTP/OTLP ingestion + Razor control plane + background workers
 samples/
   Monitor.SampleWorker/        synthetic Monitor.Client BackgroundService
   Monitor.OtlpSampleWorker/    standard OpenTelemetry trace + logging exporter sample
 docs/
   architecture.md
+  audit-trail.md
   component-ingestion-credentials.md
   logs-and-run-events.md
   roadmap.md
@@ -502,4 +532,4 @@ docs/
 
 ## Roadmap
 
-The maintained implementation sequence is in `docs/roadmap.md`. With alert-rule management, component credentials, and logs/run events complete, the next planned slice is the durable **audit trail**, followed by budgets/usage policy and control-plane commands.
+The maintained implementation sequence is in `docs/roadmap.md`. Alert-rule management, component credentials, logs/run events, and the durable audit trail are complete. The next planned slice is **budgets and usage policy**, followed by component control commands.

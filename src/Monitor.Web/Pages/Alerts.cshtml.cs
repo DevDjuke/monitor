@@ -4,11 +4,15 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
+using Monitor.Infrastructure.Auditing;
 using Monitor.Web.Services;
 
 namespace Monitor.Web.Pages;
 
-public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookSender) : PageModel
+public sealed class AlertsModel(
+    MonitorDbContext db,
+    WebhookAlertSender webhookSender,
+    AuditTrailWriter audit) : PageModel
 {
     [BindProperty(SupportsGet = true)]
     public string Window { get; set; } = "24h";
@@ -65,8 +69,23 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
             return NotFound();
         }
 
-        alertEvent.Acknowledge(User.Identity?.Name, DateTimeOffset.UtcNow);
-        await db.SaveChangesAsync(cancellationToken);
+        if (alertEvent.AcknowledgedAt is null)
+        {
+            var now = DateTimeOffset.UtcNow;
+            alertEvent.Acknowledge(User.Identity?.Name, now);
+            audit.RecordOperator(
+                User,
+                AuditActions.AlertAcknowledged,
+                AuditTargetTypes.Alert,
+                alertEvent.Id.ToString("D"),
+                before: new { acknowledgedAt = (DateTimeOffset?)null, acknowledgedBy = (string?)null },
+                after: new { alertEvent.AcknowledgedAt, alertEvent.AcknowledgedBy },
+                metadata: new { alertEvent.FailureGroupId, alertEvent.AlertRuleId },
+                occurredAt: now);
+
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
         TempData["StatusMessage"] = "Alert acknowledged.";
         return RedirectBack(returnUrl);
     }
@@ -80,7 +99,20 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
             return NotFound();
         }
 
-        rule.SetEnabled(!rule.Enabled, DateTimeOffset.UtcNow);
+        var beforeEnabled = rule.Enabled;
+        var now = DateTimeOffset.UtcNow;
+        rule.SetEnabled(!rule.Enabled, now);
+        audit.RecordOperator(
+            User,
+            rule.Enabled ? AuditActions.AlertRuleEnabled : AuditActions.AlertRuleDisabled,
+            AuditTargetTypes.AlertRule,
+            rule.Id.ToString("D"),
+            rule.Name,
+            new { enabled = beforeEnabled },
+            new { rule.Enabled },
+            new { rule.FailureGroupId },
+            now);
+
         await db.SaveChangesAsync(cancellationToken);
         TempData["StatusMessage"] = rule.Enabled ? "Alert rule enabled." : "Alert rule disabled.";
         return RedirectBack(returnUrl);
@@ -99,14 +131,24 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
 
         try
         {
+            var now = DateTimeOffset.UtcNow;
             var protectedSecret = webhookSender.ProtectSecret(DestinationInput.Secret);
             var destination = AlertDeliveryDestination.CreateWebhook(
                 DestinationInput.Name,
                 DestinationInput.EndpointUrl,
                 protectedSecret,
-                DateTimeOffset.UtcNow);
+                now);
 
             db.AlertDeliveryDestinations.Add(destination);
+            audit.RecordOperator(
+                User,
+                AuditActions.AlertDestinationCreated,
+                AuditTargetTypes.AlertDestination,
+                destination.Id.ToString("D"),
+                destination.Name,
+                after: SnapshotDestination(destination),
+                occurredAt: now);
+
             await db.SaveChangesAsync(cancellationToken);
             TempData["StatusMessage"] = "Webhook destination created. Future alert events will be queued for delivery.";
             return RedirectBack(returnUrl);
@@ -128,7 +170,19 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
             return NotFound();
         }
 
-        destination.SetEnabled(!destination.Enabled, DateTimeOffset.UtcNow);
+        var before = SnapshotDestination(destination);
+        var now = DateTimeOffset.UtcNow;
+        destination.SetEnabled(!destination.Enabled, now);
+        audit.RecordOperator(
+            User,
+            destination.Enabled ? AuditActions.AlertDestinationEnabled : AuditActions.AlertDestinationDisabled,
+            AuditTargetTypes.AlertDestination,
+            destination.Id.ToString("D"),
+            destination.Name,
+            before,
+            SnapshotDestination(destination),
+            occurredAt: now);
+
         await db.SaveChangesAsync(cancellationToken);
         TempData["StatusMessage"] = destination.Enabled
             ? "Webhook destination enabled."
@@ -145,6 +199,7 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
             return NotFound();
         }
 
+        var before = SnapshotDestination(destination);
         var now = DateTimeOffset.UtcNow;
         var result = await webhookSender.SendTestAsync(destination, cancellationToken);
         if (result.Succeeded)
@@ -157,6 +212,17 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
             destination.RecordFailure(result.Error ?? "Test webhook failed.", now);
             TempData["StatusMessage"] = $"Test webhook failed: {result.Error}";
         }
+
+        audit.RecordOperator(
+            User,
+            AuditActions.AlertDestinationTested,
+            AuditTargetTypes.AlertDestination,
+            destination.Id.ToString("D"),
+            destination.Name,
+            before,
+            SnapshotDestination(destination),
+            new { result.Succeeded, result.StatusCode },
+            now);
 
         await db.SaveChangesAsync(cancellationToken);
         return RedirectBack(returnUrl);
@@ -176,7 +242,37 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
             return RedirectBack(returnUrl);
         }
 
-        delivery.Requeue(DateTimeOffset.UtcNow);
+        var before = new
+        {
+            delivery.Status,
+            delivery.AttemptCount,
+            delivery.NextAttemptAt,
+            delivery.LastAttemptAt,
+            delivery.DeliveredAt,
+            delivery.ResponseStatusCode,
+            delivery.LastError
+        };
+        var now = DateTimeOffset.UtcNow;
+        delivery.Requeue(now);
+        audit.RecordOperator(
+            User,
+            AuditActions.AlertDeliveryRequeued,
+            AuditTargetTypes.AlertDelivery,
+            delivery.Id.ToString("D"),
+            before: before,
+            after: new
+            {
+                delivery.Status,
+                delivery.AttemptCount,
+                delivery.NextAttemptAt,
+                delivery.LastAttemptAt,
+                delivery.DeliveredAt,
+                delivery.ResponseStatusCode,
+                delivery.LastError
+            },
+            metadata: new { delivery.AlertEventId, delivery.DestinationId },
+            occurredAt: now);
+
         await db.SaveChangesAsync(cancellationToken);
         TempData["StatusMessage"] = "Alert delivery requeued for immediate retry.";
         return RedirectBack(returnUrl);
@@ -459,6 +555,17 @@ public sealed class AlertsModel(MonitorDbContext db, WebhookAlertSender webhookS
         !string.IsNullOrWhiteSpace(returnUrl) && Url.IsLocalUrl(returnUrl)
             ? LocalRedirect(returnUrl)
             : RedirectToPage();
+
+    private static object SnapshotDestination(AlertDeliveryDestination destination) => new
+    {
+        destination.Name,
+        destination.Kind,
+        destination.EndpointUrl,
+        destination.Enabled,
+        destination.LastSuccessAt,
+        destination.LastFailureAt,
+        destination.LastFailure
+    };
 
     public sealed class CreateDestinationInput
     {

@@ -3,10 +3,11 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
+using Monitor.Infrastructure.Auditing;
 
 namespace Monitor.Web.Pages;
 
-public sealed class AlertRulesModel(MonitorDbContext db) : PageModel
+public sealed class AlertRulesModel(MonitorDbContext db, AuditTrailWriter audit) : PageModel
 {
     [BindProperty(SupportsGet = true)]
     public string? Search { get; set; }
@@ -44,7 +45,19 @@ public sealed class AlertRulesModel(MonitorDbContext db) : PageModel
             return RedirectBack(returnUrl);
         }
 
-        rule.SetEnabled(!rule.Enabled, DateTimeOffset.UtcNow);
+        var beforeEnabled = rule.Enabled;
+        var now = DateTimeOffset.UtcNow;
+        rule.SetEnabled(!rule.Enabled, now);
+        audit.RecordOperator(
+            User,
+            rule.Enabled ? AuditActions.AlertRuleEnabled : AuditActions.AlertRuleDisabled,
+            AuditTargetTypes.AlertRule,
+            rule.Id.ToString("D"),
+            rule.Name,
+            new { enabled = beforeEnabled },
+            new { rule.Enabled },
+            occurredAt: now);
+
         await db.SaveChangesAsync(cancellationToken);
         TempData["StatusMessage"] = rule.Enabled ? "Alert rule enabled." : "Alert rule disabled.";
         return RedirectBack(returnUrl);
@@ -58,7 +71,19 @@ public sealed class AlertRulesModel(MonitorDbContext db) : PageModel
             return NotFound();
         }
 
-        rule.Delete(DateTimeOffset.UtcNow);
+        var now = DateTimeOffset.UtcNow;
+        var before = new { rule.Enabled, rule.IsDeleted, rule.DeletedAt };
+        rule.Delete(now);
+        audit.RecordOperator(
+            User,
+            AuditActions.AlertRuleDeleted,
+            AuditTargetTypes.AlertRule,
+            rule.Id.ToString("D"),
+            rule.Name,
+            before,
+            new { rule.Enabled, rule.IsDeleted, rule.DeletedAt },
+            occurredAt: now);
+
         await db.SaveChangesAsync(cancellationToken);
         TempData["StatusMessage"] = "Alert rule deleted. Historical alert events remain intact for audit and forensic review.";
         return RedirectBack(returnUrl);

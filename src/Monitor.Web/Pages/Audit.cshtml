@@ -1,0 +1,177 @@
+@page "/audit"
+@model AuditModel
+@{
+    ViewData["Title"] = "Audit";
+}
+
+<header class="page-head compact">
+    <div>
+        <p class="eyebrow">CONTROL PLANE</p>
+        <h1>Audit trail</h1>
+        <p class="lede">Append-only operator and system change history. Audit records are deliberately independent from their targets so later deletion cannot erase the evidence.</p>
+    </div>
+</header>
+
+<section class="panel audit-filters">
+    <form method="get" class="filter-grid audit-filter-grid">
+        <label>
+            <span>Window</span>
+            <select asp-for="Window">
+                <option value="24h">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="90d">Last 90 days</option>
+                <option value="all">All history</option>
+            </select>
+        </label>
+        <label>
+            <span>Actor type</span>
+            <select asp-for="ActorType">
+                <option value="">All actors</option>
+                @foreach (var actorType in Model.ActorTypes)
+                {
+                    <option value="@actorType">@actorType</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Actor</span>
+            <input asp-for="Actor" placeholder="user name or id" />
+        </label>
+        <label>
+            <span>Action</span>
+            <select asp-for="Action">
+                <option value="">All actions</option>
+                @foreach (var action in Model.Actions)
+                {
+                    <option value="@action">@action</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Target type</span>
+            <select asp-for="TargetType">
+                <option value="">All targets</option>
+                @foreach (var targetType in Model.TargetTypes)
+                {
+                    <option value="@targetType">@targetType</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Target ID</span>
+            <input asp-for="TargetId" placeholder="GUID or target id" />
+        </label>
+        <label class="filter-search audit-search">
+            <span>Search</span>
+            <input asp-for="Search" placeholder="actor, action, target, before/after metadata…" />
+        </label>
+        <label>
+            <span>Rows</span>
+            <select asp-for="Take">
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+                <option value="500">500</option>
+            </select>
+        </label>
+        <div class="filter-actions">
+            <button type="submit">Apply filters</button>
+            <a href="/audit">Reset</a>
+        </div>
+    </form>
+</section>
+
+<section class="audit-summary">
+    <div><span>Matching</span><strong>@Model.MatchingCount.ToString("N0")</strong></div>
+    <div><span>Operator actions</span><strong>@Model.OperatorCount.ToString("N0")</strong></div>
+    <div><span>System actions</span><strong>@Model.SystemCount.ToString("N0")</strong></div>
+    <div><span>With state snapshots</span><strong>@Model.ChangedStateCount.ToString("N0")</strong></div>
+</section>
+
+<section class="panel table-panel audit-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">CHANGE HISTORY</p>
+            <h2>@Model.ScopeLabel</h2>
+        </div>
+        <span>showing @Model.Rows.Count</span>
+    </div>
+
+    @if (Model.Rows.Count == 0)
+    {
+        <div class="empty">
+            <strong>No matching audit records.</strong>
+            <span>Operator mutations will appear here after the audit migration is applied.</span>
+        </div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table class="audit-table">
+                <thead>
+                    <tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Change</th></tr>
+                </thead>
+                <tbody>
+                @foreach (var row in Model.Rows)
+                {
+                    var actorClass = row.ActorType.ToString().ToLowerInvariant();
+                    <tr>
+                        <td class="audit-time">@row.OccurredAt.ToString("u")</td>
+                        <td>
+                            <span class="audit-actor @actorClass">@row.ActorType</span>
+                            <strong>@(row.ActorName ?? "—")</strong>
+                            @if (!string.IsNullOrWhiteSpace(row.ActorId))
+                            {
+                                <small>@row.ActorId</small>
+                            }
+                        </td>
+                        <td><code class="audit-action">@row.Action</code></td>
+                        <td>
+                            <strong>@(row.TargetName ?? row.TargetType)</strong>
+                            <small>@row.TargetType</small>
+                            @if (!string.IsNullOrWhiteSpace(row.TargetId))
+                            {
+                                <code>@row.TargetId</code>
+                            }
+                        </td>
+                        <td>
+                            @if (row.HasDetails)
+                            {
+                                <details class="audit-details">
+                                    <summary>Inspect change</summary>
+                                    @if (!string.IsNullOrWhiteSpace(row.BeforeJson))
+                                    {
+                                        <div class="audit-json-block">
+                                            <span>Before</span>
+                                            <pre>@AuditModel.FormatJson(row.BeforeJson)</pre>
+                                        </div>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(row.AfterJson))
+                                    {
+                                        <div class="audit-json-block">
+                                            <span>After</span>
+                                            <pre>@AuditModel.FormatJson(row.AfterJson)</pre>
+                                        </div>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(row.MetadataJson))
+                                    {
+                                        <div class="audit-json-block">
+                                            <span>Metadata</span>
+                                            <pre>@AuditModel.FormatJson(row.MetadataJson)</pre>
+                                        </div>
+                                    }
+                                </details>
+                            }
+                            else
+                            {
+                                <span class="muted">No snapshot</span>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>

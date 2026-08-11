@@ -13,7 +13,8 @@ This roadmap is the current product sequence for turning Monitor from an observa
 - Failure fingerprint/category grouping and failure drill-down.
 - Threshold/window/cooldown failure alerting with duplicate-evidence suppression.
 - Durable alert-delivery outbox with HMAC-signed webhook delivery, retry, and dead-letter handling.
-- Server-side filters on Runs, Logs, Usage, and Alerts.
+- Durable append-only operator audit trail with safe before/after snapshots and searchable history.
+- Server-side filters on Runs, Logs, Usage, Alerts, and Audit.
 
 ## Next
 
@@ -55,14 +56,20 @@ Status: **complete**
 - Merge spans and structured events into a timestamp-ordered timeline on run drill-down.
 - Cascade run-linked logs with successful raw-run retention; retain failed/cancelled run-linked log evidence with the forensic run, and expire unlinked/component-only logs on their own bounded retention window.
 
-## Then
-
 ### 4. Audit trail
 
-- Durable actor/action/target records for operator and system changes.
-- Acknowledge, rule edits, destination edits, credential rotation, control commands, and security-sensitive configuration changes.
-- Before/after metadata where appropriate.
-- Searchable audit UI.
+Status: **complete**
+
+- Persist append-only `AuditEvent` records with occurred time, actor type/id/name, action, target type/id/name, and optional before/after/metadata JSON.
+- Stage the audit row in the same EF Core `SaveChanges` boundary as the operator mutation so a change cannot commit without its corresponding audit evidence.
+- Audit alert acknowledgement, alert-rule create/edit/toggle/delete, webhook destination create/toggle/test, alert-delivery requeue, and component credential issue/rotate/revoke.
+- Keep snapshots deliberately secret-safe: component credential plaintext/hash and protected webhook signing secrets are never copied into audit JSON.
+- Keep audit evidence independent of mutable targets: `AuditEvents` has no foreign keys to operational tables, so later deletion or retention cannot cascade away history.
+- Support operator/system/component actor types and provide a system-writer path for future automated control-plane changes.
+- Search/filter `/audit` by time window, actor, action, target, target id, and free text, with expandable before/after/metadata snapshots.
+- Retain audit history independently of telemetry retention; the current retention worker does not purge audit records.
+
+## Then
 
 ### 5. Budgets and usage policy
 
@@ -82,9 +89,9 @@ Status: **complete**
 
 ### 7. Saved views
 
-- Save named filter combinations for Runs, Usage, Alerts, and logs.
+- Save named filter combinations for Runs, Usage, Alerts, logs, and Audit.
 - Personal views first; shared/team views later if Monitor becomes multi-user.
-- Fast links for common operational slices such as production failures, expensive model runs, rate limits, and dead letters.
+- Fast links for common operational slices such as production failures, expensive model runs, rate limits, dead letters, and security-sensitive changes.
 
 ### 8. Richer live experience
 

@@ -3,10 +3,11 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
+using Monitor.Infrastructure.Auditing;
 
 namespace Monitor.Web.Pages;
 
-public sealed class FailureModel(MonitorDbContext db) : PageModel
+public sealed class FailureModel(MonitorDbContext db, AuditTrailWriter audit) : PageModel
 {
     public FailureSummary? Failure { get; private set; }
     public IReadOnlyList<TrendBucket> Trend { get; private set; } = [];
@@ -41,7 +42,20 @@ public sealed class FailureModel(MonitorDbContext db) : PageModel
             return NotFound();
         }
 
-        rule.SetEnabled(!rule.Enabled, DateTimeOffset.UtcNow);
+        var beforeEnabled = rule.Enabled;
+        var now = DateTimeOffset.UtcNow;
+        rule.SetEnabled(!rule.Enabled, now);
+        audit.RecordOperator(
+            User,
+            rule.Enabled ? AuditActions.AlertRuleEnabled : AuditActions.AlertRuleDisabled,
+            AuditTargetTypes.AlertRule,
+            rule.Id.ToString("D"),
+            rule.Name,
+            new { enabled = beforeEnabled },
+            new { rule.Enabled },
+            new { failureGroupId = id },
+            now);
+
         await db.SaveChangesAsync(cancellationToken);
         TempData["StatusMessage"] = rule.Enabled ? "Alert rule enabled." : "Alert rule disabled.";
         return RedirectToPage(new { id });
@@ -57,8 +71,23 @@ public sealed class FailureModel(MonitorDbContext db) : PageModel
             return NotFound();
         }
 
-        alertEvent.Acknowledge(User.Identity?.Name, DateTimeOffset.UtcNow);
-        await db.SaveChangesAsync(cancellationToken);
+        if (alertEvent.AcknowledgedAt is null)
+        {
+            var now = DateTimeOffset.UtcNow;
+            alertEvent.Acknowledge(User.Identity?.Name, now);
+            audit.RecordOperator(
+                User,
+                AuditActions.AlertAcknowledged,
+                AuditTargetTypes.Alert,
+                alertEvent.Id.ToString("D"),
+                before: new { acknowledgedAt = (DateTimeOffset?)null, acknowledgedBy = (string?)null },
+                after: new { alertEvent.AcknowledgedAt, alertEvent.AcknowledgedBy },
+                metadata: new { failureGroupId = id, alertEvent.AlertRuleId },
+                occurredAt: now);
+
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
         TempData["StatusMessage"] = "Alert acknowledged.";
         return RedirectToPage(new { id });
     }

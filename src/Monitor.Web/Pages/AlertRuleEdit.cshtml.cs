@@ -4,10 +4,11 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
+using Monitor.Infrastructure.Auditing;
 
 namespace Monitor.Web.Pages;
 
-public sealed class AlertRuleEditModel(MonitorDbContext db) : PageModel
+public sealed class AlertRuleEditModel(MonitorDbContext db, AuditTrailWriter audit) : PageModel
 {
     public Guid? RuleId { get; private set; }
     public bool IsEdit => RuleId is not null;
@@ -75,6 +76,7 @@ public sealed class AlertRuleEditModel(MonitorDbContext db) : PageModel
         }
 
         FailureAlertRule? existingRule = null;
+        object? before = null;
         if (id is not null)
         {
             existingRule = await db.FailureAlertRules
@@ -85,6 +87,8 @@ public sealed class AlertRuleEditModel(MonitorDbContext db) : PageModel
             {
                 return NotFound();
             }
+
+            before = SnapshotRule(existingRule);
 
             // A rule's failure fingerprint is immutable once created. Historical alert events
             // and evidence remain semantically tied to that fingerprint.
@@ -153,6 +157,27 @@ public sealed class AlertRuleEditModel(MonitorDbContext db) : PageModel
             }
 
             await SyncDestinationAssignmentsAsync(rule, cancellationToken);
+
+            var after = SnapshotRule(
+                rule,
+                rule.DeliverToAllEnabledDestinations ? [] : Input.SelectedDestinationIds);
+            audit.RecordOperator(
+                User,
+                existingRule is null ? AuditActions.AlertRuleCreated : AuditActions.AlertRuleUpdated,
+                AuditTargetTypes.AlertRule,
+                rule.Id.ToString("D"),
+                rule.Name,
+                before,
+                after,
+                new
+                {
+                    failureGroupId = failureGroup.Id,
+                    failureGroup.Fingerprint,
+                    failureGroup.Category,
+                    failureGroup.Operation
+                },
+                now);
+
             await db.SaveChangesAsync(cancellationToken);
 
             TempData["StatusMessage"] = existingRule is null
@@ -177,13 +202,27 @@ public sealed class AlertRuleEditModel(MonitorDbContext db) : PageModel
 
     public async Task<IActionResult> OnPostDeleteAsync(Guid id, CancellationToken cancellationToken)
     {
-        var rule = await db.FailureAlertRules.SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
+        var rule = await db.FailureAlertRules
+            .Include(x => x.DestinationAssignments)
+            .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (rule is null)
         {
             return NotFound();
         }
 
-        rule.Delete(DateTimeOffset.UtcNow);
+        var before = SnapshotRule(rule);
+        var now = DateTimeOffset.UtcNow;
+        rule.Delete(now);
+        audit.RecordOperator(
+            User,
+            AuditActions.AlertRuleDeleted,
+            AuditTargetTypes.AlertRule,
+            rule.Id.ToString("D"),
+            rule.Name,
+            before,
+            SnapshotRule(rule),
+            occurredAt: now);
+
         await db.SaveChangesAsync(cancellationToken);
         TempData["StatusMessage"] = "Alert rule deleted. Historical alert events remain available.";
         return RedirectToPage("/AlertRules");
@@ -273,6 +312,22 @@ public sealed class AlertRuleEditModel(MonitorDbContext db) : PageModel
         FailureGroups = groups;
         SelectedFailureGroup = groups.SingleOrDefault(x => x.Id == Input.FailureGroupId);
     }
+
+    private static object SnapshotRule(FailureAlertRule rule, IEnumerable<Guid>? destinationIds = null) => new
+    {
+        rule.FailureGroupId,
+        rule.Name,
+        rule.Threshold,
+        rule.WindowMinutes,
+        rule.CooldownMinutes,
+        rule.Enabled,
+        rule.DeliverToAllEnabledDestinations,
+        destinationIds = (destinationIds ?? rule.DestinationAssignments.Select(x => x.DestinationId))
+            .OrderBy(x => x)
+            .ToArray(),
+        rule.IsDeleted,
+        rule.DeletedAt
+    };
 
     public sealed class AlertRuleInput
     {

@@ -66,7 +66,7 @@ The condition is deliberately explicit: **N occurrences of this fingerprint insi
 
 ### FailureAlertEvent
 
-An immutable trigger record for a rule, except for acknowledgement metadata. It snapshots the trigger time, evaluated window, occurrence count, threshold, and latest run sequence that contributed to the trigger. `AcknowledgedAt` and `AcknowledgedBy` provide a minimal operator audit trail without deleting or resolving the underlying failure evidence.
+An immutable trigger record for a rule, except for acknowledgement metadata. It snapshots the trigger time, evaluated window, occurrence count, threshold, and latest run sequence that contributed to the trigger. `AcknowledgedAt` and `AcknowledgedBy` represent operational acknowledgement state; the control-plane audit trail records the acknowledgement mutation separately.
 
 Alert events are operational state, not notification-delivery receipts. Email, Slack, webhook, or other delivery adapters can consume these events later without changing the detection model.
 
@@ -75,6 +75,28 @@ Alert events are operational state, not notification-delivery receipts. Email, S
 A durable hourly metric bucket keyed by hour, component, and model. It stores terminal-run counts by status, input/output tokens, cost, total/min/max duration, and the first/last run timestamps represented by that bucket.
 
 Component name and environment are snapshotted into the aggregate so historical reporting does not depend on later registration metadata changes. `ComponentId` remains the durable grouping identity.
+
+### AuditEvent
+
+A durable control-plane change record. Audit is intentionally separate from telemetry: it answers **who or what changed operational state, what changed, and what target was affected**, rather than what an autonomous workload executed.
+
+Each `AuditEvent` stores:
+
+- immutable event id and occurrence time;
+- actor type (`Operator`, `System`, or `Component`), optional actor id, and display name;
+- stable action name such as `alert-rule.updated` or `component-credential.rotated`;
+- target type, optional target id, and optional target display name;
+- optional `BeforeJson`, `AfterJson`, and `MetadataJson` snapshots.
+
+The application contract is append-only: `AuditEvent` exposes no mutation methods, there are no audit edit/delete endpoints, and audit records are not tied to operational targets with foreign keys. A later rule deletion, credential rotation, telemetry retention sweep, or future target cleanup therefore cannot cascade away its audit evidence.
+
+`AuditTrailWriter` stages an audit row in the same `MonitorDbContext` as the mutation being recorded and deliberately does not call `SaveChanges` itself. Operator handlers add both the domain mutation and its audit record, then call one `SaveChangesAsync`. SQL Server therefore commits or rolls back both together. The audit integration gate proves this by temporarily rejecting an audit insert at the database layer and verifying the corresponding operational mutation also rolls back.
+
+Snapshots are deliberately allow-listed rather than serializing arbitrary tracked entities. Credential plaintext, credential hashes, and protected webhook signing secrets are excluded. Credential audit snapshots contain safe identifiers such as the public key id; webhook destination snapshots contain safe endpoint/configuration state but not `ProtectedSecret`.
+
+Current operator coverage includes alert acknowledgement, alert-rule create/update/enable/disable/delete, webhook destination create/enable/disable/test, alert-delivery requeue, and component credential issue/rotate/revoke. The writer also supports system actors so future automated control-plane mutations and commands can use the same audit model; existing autonomous telemetry processing is not duplicated into audit merely because it is system-executed.
+
+The authenticated `/audit` page is a server-filtered projection over this record stream. It filters by time window, actor, action, target type/id, and free text, and exposes structured before/after/metadata snapshots for investigation.
 
 ## Transport
 
@@ -145,7 +167,7 @@ The default worker policy is:
 - startup delay: 10 seconds;
 - evaluation interval: 30 seconds.
 
-The `/alerts` page is the central operational queue for open/recent alert events and configured rule state. Acknowledgement is explicit operator state; it does not suppress future qualifying events and does not mutate the underlying failure group or runs.
+The `/alerts` page is the central operational queue for open/recent alert events and configured rule state. Acknowledgement is explicit operator state; it does not suppress future qualifying events and does not mutate the underlying failure group or runs. The acknowledgement itself is persisted as a separate `AuditEvent` in the same save boundary.
 
 ## Realtime UI
 
@@ -165,7 +187,9 @@ SQL Server is the current persistence provider, with `(localdb)\MSSQLLocalDB` as
 
 OTLP trace/span/log identity columns use ordinary lookup indexes rather than filtered unique indexes. Idempotent OTLP imports are enforced by SQL Server application locks and explicit identity/dedupe lookup. This keeps ordinary SQL writers compatible without requiring filtered-index-specific session `SET` options.
 
-Failure alert rules and events are durable database entities. Foreign keys use restrictive deletion so an alert audit trail cannot disappear as an accidental cascade from a rule or failure group.
+Failure alert rules and events are durable database entities. Foreign keys use restrictive deletion so alert/failure history cannot disappear as an accidental cascade from a rule or failure group.
+
+`AuditEvents` is deliberately different: it has lookup indexes on time, actor, action, and target identity but **no foreign keys to mutable operational entities**. Target ids and names are evidence snapshots, not referential dependencies. This lets audit history outlive the target without introducing cascade or retention coupling.
 
 ## Retention and aggregation
 
@@ -184,17 +208,20 @@ Deleting a successful run cascades to its trace spans and run-linked log events,
 
 Logs that are not linked to a run cannot inherit a success/failure outcome. They therefore use a separate bounded `UnlinkedLogDetailDays` retention window rather than growing indefinitely. Logs that arrive before their trace get a chance to correlate through the background worker before normal age-based expiry.
 
+Audit records are outside telemetry retention. The current retention worker never aggregates or purges `AuditEvents`; audit history therefore remains available independently of run/span/log retention. A future explicit audit archival policy must preserve the same evidentiary semantics rather than piggybacking on telemetry cleanup.
+
 The worker uses a SQL Server application lock (`Monitor.RetentionAggregation`) so only one Monitor node can execute a retention sweep at a time. This prevents concurrent nodes from selecting and aggregating/purging the same data.
 
-The default policy is intentionally conservative:
+The default telemetry policy is intentionally conservative:
 
 - aggregation delay: 5 minutes;
 - successful raw-detail retention: 30 days;
 - unlinked/component-only log retention: 30 days;
 - sweep interval: 15 minutes;
-- failed/cancelled raw-detail retention: indefinite.
+- failed/cancelled raw-detail retention: indefinite;
+- audit-event retention: not managed by the telemetry retention worker.
 
-Changing a detail-retention window affects future purge eligibility only. Aggregate buckets are not rewritten. Disabling the worker leaves raw data untouched.
+Changing a detail-retention window affects future purge eligibility only. Aggregate buckets are not rewritten. Disabling the worker leaves raw telemetry data untouched.
 
 The `/usage` page combines durable aggregate totals with only terminal runs whose `AggregatedAt` is still null. This prevents double-counting during the period where aggregated successful runs are intentionally retained in raw form. It also surfaces recurring failure groups by occurrence count and links directly into their drill-down pages while preserving links back to raw failed/cancelled runs.
 
@@ -202,4 +229,4 @@ Longer-term archival tiers or aggregate rollups (hourly -> daily/monthly) can be
 
 ## Control plane
 
-Commands are intentionally absent from the current foundation. Observability and detection must be trustworthy before Monitor is allowed to alter remote workloads. Future commands should be auditable entities with requested/accepted/completed states rather than fire-and-forget HTTP actions.
+Commands are intentionally absent from the current foundation. Observability and detection must be trustworthy before Monitor is allowed to alter remote workloads. Future commands should be durable auditable entities with requested/accepted/completed states rather than fire-and-forget HTTP actions, and operator/system command-state changes should emit `AuditEvent` records through the same audit contract.

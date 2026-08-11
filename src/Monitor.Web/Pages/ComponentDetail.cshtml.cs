@@ -4,13 +4,15 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
+using Monitor.Infrastructure.Auditing;
 using Monitor.Web.Auth;
 
 namespace Monitor.Web.Pages;
 
 public sealed class ComponentDetailModel(
     MonitorDbContext db,
-    ComponentCredentialIssuer credentialIssuer) : PageModel
+    ComponentCredentialIssuer credentialIssuer,
+    AuditTrailWriter audit) : PageModel
 {
     public ComponentSummary? Component { get; private set; }
     public IReadOnlyList<CredentialRow> Credentials { get; private set; } = [];
@@ -41,19 +43,42 @@ public sealed class ComponentDetailModel(
             return Page();
         }
 
-        if (!await db.Components.AnyAsync(x => x.Id == id, cancellationToken))
+        var component = await db.Components
+            .AsNoTracking()
+            .Where(x => x.Id == id)
+            .Select(x => new { x.Id, x.Name, x.Slug, x.Environment })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (component is null)
         {
             return NotFound();
         }
 
         try
         {
+            var now = DateTimeOffset.UtcNow;
             var issued = await credentialIssuer.IssueAsync(
                 id,
                 CredentialInput.Name,
                 User.Identity?.Name,
-                DateTimeOffset.UtcNow,
+                now,
                 cancellationToken);
+
+            audit.RecordOperator(
+                User,
+                AuditActions.ComponentCredentialIssued,
+                AuditTargetTypes.ComponentCredential,
+                issued.Credential.Id.ToString("D"),
+                issued.Credential.Name,
+                after: SnapshotCredential(issued.Credential),
+                metadata: new
+                {
+                    componentId = component.Id,
+                    component.Name,
+                    component.Slug,
+                    component.Environment
+                },
+                occurredAt: now);
+
             await db.SaveChangesAsync(cancellationToken);
 
             StoreIssuedCredential(issued);
@@ -88,6 +113,7 @@ public sealed class ComponentDetailModel(
             return RedirectToPage(new { id });
         }
 
+        var before = SnapshotCredential(credential);
         var now = DateTimeOffset.UtcNow;
         var actor = User.Identity?.Name;
         credential.Revoke(actor, now);
@@ -97,6 +123,27 @@ public sealed class ComponentDetailModel(
             actor,
             now,
             cancellationToken);
+
+        audit.RecordOperator(
+            User,
+            AuditActions.ComponentCredentialRotated,
+            AuditTargetTypes.ComponentCredential,
+            credential.Id.ToString("D"),
+            credential.Name,
+            before,
+            new
+            {
+                previous = SnapshotCredential(credential),
+                replacement = SnapshotCredential(replacement.Credential)
+            },
+            new
+            {
+                componentId = id,
+                replacementCredentialId = replacement.Credential.Id,
+                replacementKeyId = replacement.Credential.KeyId
+            },
+            now);
+
         await db.SaveChangesAsync(cancellationToken);
 
         StoreIssuedCredential(replacement);
@@ -118,8 +165,25 @@ public sealed class ComponentDetailModel(
             return NotFound();
         }
 
-        credential.Revoke(User.Identity?.Name, DateTimeOffset.UtcNow);
-        await db.SaveChangesAsync(cancellationToken);
+        if (!credential.IsRevoked)
+        {
+            var before = SnapshotCredential(credential);
+            var now = DateTimeOffset.UtcNow;
+            credential.Revoke(User.Identity?.Name, now);
+            audit.RecordOperator(
+                User,
+                AuditActions.ComponentCredentialRevoked,
+                AuditTargetTypes.ComponentCredential,
+                credential.Id.ToString("D"),
+                credential.Name,
+                before,
+                SnapshotCredential(credential),
+                new { componentId = id },
+                now);
+
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
         TempData["StatusMessage"] = "Component ingestion credential revoked.";
         return RedirectToPage(new { id });
     }
@@ -172,6 +236,18 @@ public sealed class ComponentDetailModel(
         TempData["IssuedComponentCredentialKey"] = issued.PlaintextKey;
         TempData["IssuedComponentCredentialName"] = issued.Credential.Name;
     }
+
+    private static object SnapshotCredential(ComponentIngestionCredential credential) => new
+    {
+        credential.ComponentId,
+        credential.Name,
+        credential.KeyId,
+        credential.CreatedAt,
+        credential.CreatedBy,
+        credential.LastUsedAt,
+        credential.RevokedAt,
+        credential.RevokedBy
+    };
 
     public sealed class CreateCredentialInput
     {
