@@ -255,7 +255,8 @@ grep -q 'command-live-filter-mismatch' /tmp/richer-live-commands.js
 grep -q 'Connection restored' /tmp/richer-live-commands.js
 
 # Persistence integration is model-wide: native + OTLP + workers share one post-save invalidation boundary.
-grep -q 'case AgentRun run:' src/Monitor.Web/Realtime/MonitorRealtimeSaveChangesInterceptor.cs
+grep -q 'case AgentRun run when IsVisibleRunChange(entry):' src/Monitor.Web/Realtime/MonitorRealtimeSaveChangesInterceptor.cs
+grep -q 'nameof(AgentRun.AggregatedAt)' src/Monitor.Web/Realtime/MonitorRealtimeSaveChangesInterceptor.cs
 grep -q 'case TraceSpan span:' src/Monitor.Web/Realtime/MonitorRealtimeSaveChangesInterceptor.cs
 grep -q 'case LogEvent logEvent' src/Monitor.Web/Realtime/MonitorRealtimeSaveChangesInterceptor.cs
 grep -q 'case ComponentCommand command:' src/Monitor.Web/Realtime/MonitorRealtimeSaveChangesInterceptor.cs
