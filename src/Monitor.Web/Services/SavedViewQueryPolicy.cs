@@ -62,7 +62,7 @@ public sealed class SavedViewQueryPolicy
         }
 
         var raw = rawQueryString.Trim();
-        if (!raw.StartsWith('?', StringComparison.Ordinal))
+        if (!raw.StartsWith("?", StringComparison.Ordinal))
         {
             raw = $"?{raw}";
         }
