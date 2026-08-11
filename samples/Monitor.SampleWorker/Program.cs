@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Options;
 using Monitor.Client;
 using Monitor.Domain;
@@ -28,25 +29,43 @@ builder.Services.AddSingleton(sp =>
     return new MonitorClient(sp.GetRequiredService<HttpClient>(), options.IngestionApiKey);
 });
 
+builder.Services.AddSingleton(sp =>
+{
+    var options = sp.GetRequiredService<IOptions<MonitorConnectionOptions>>().Value;
+    return new MonitorControlClient(sp.GetRequiredService<HttpClient>(), options.IngestionApiKey);
+});
+
 builder.Services.AddHostedService<SampleWorker>();
 
 await builder.Build().RunAsync();
 
 internal sealed class SampleWorker(
     MonitorClient monitor,
+    MonitorControlClient control,
     IOptions<SampleWorkerOptions> options,
     ILogger<SampleWorker> logger) : BackgroundService
 {
     private readonly SampleWorkerOptions _options = options.Value;
+    private readonly object _activeRunGate = new();
     private Guid _componentId;
     private int _runSequence;
+    private volatile bool _paused;
+    private volatile bool _disabled;
+    private string _targetUrl = string.Empty;
+    private int _runIntervalSeconds;
+    private Guid? _activeRunId;
+    private CancellationTokenSource? _activeRunCancellation;
+    private string? _activeRunCancellationReason;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _targetUrl = _options.TargetUrl;
+        _runIntervalSeconds = Math.Max(1, _options.RunIntervalSeconds);
         _componentId = await RegisterWithRetryAsync(stoppingToken);
         logger.LogInformation("Registered sample component {ComponentId}.", _componentId);
 
         var heartbeatTask = HeartbeatLoopAsync(stoppingToken);
+        var commandTask = CommandLoopAsync(stoppingToken);
 
         try
         {
@@ -54,13 +73,8 @@ internal sealed class SampleWorker(
         }
         finally
         {
-            try
-            {
-                await heartbeatTask;
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-            }
+            await AwaitBackgroundLoopAsync(heartbeatTask, stoppingToken);
+            await AwaitBackgroundLoopAsync(commandTask, stoppingToken);
         }
     }
 
@@ -117,14 +131,229 @@ internal sealed class SampleWorker(
         }
     }
 
-    private async Task RunLoopAsync(CancellationToken cancellationToken)
+    private async Task CommandLoopAsync(CancellationToken cancellationToken)
     {
-        var interval = TimeSpan.FromSeconds(Math.Max(1, _options.RunIntervalSeconds));
+        var interval = TimeSpan.FromSeconds(Math.Max(1, _options.CommandPollIntervalSeconds));
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            await ExecuteSyntheticAuditAsync(cancellationToken);
-            await Task.Delay(interval, cancellationToken);
+            try
+            {
+                var command = await control.ClaimNextAsync(_componentId, cancellationToken);
+                if (command is null)
+                {
+                    await Task.Delay(interval, cancellationToken);
+                    continue;
+                }
+
+                logger.LogInformation(
+                    "Claimed Monitor control command {CommandId} ({CommandType}), attempt {Attempt}.",
+                    command.Id,
+                    command.Type,
+                    command.DeliveryAttempt);
+
+                await ExecuteCommandAsync(command, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "Component command polling failed; the current lease will be retried if needed.");
+                await Task.Delay(interval, cancellationToken);
+            }
+        }
+    }
+
+    private async Task ExecuteCommandAsync(
+        ComponentControlCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            switch (command.Type)
+            {
+                case ComponentCommandType.Pause:
+                    _paused = true;
+                    await control.SucceedAsync(command, new { paused = true }, cancellationToken);
+                    return;
+
+                case ComponentCommandType.Resume:
+                    _paused = false;
+                    await control.SucceedAsync(command, new { paused = false }, cancellationToken);
+                    return;
+
+                case ComponentCommandType.Disable:
+                    _disabled = true;
+                    await control.SucceedAsync(command, new { disabled = true }, cancellationToken);
+                    return;
+
+                case ComponentCommandType.Enable:
+                    _disabled = false;
+                    _paused = false;
+                    await control.SucceedAsync(command, new { disabled = false, paused = false }, cancellationToken);
+                    return;
+
+                case ComponentCommandType.KillRun:
+                    await ExecuteKillRunAsync(command, cancellationToken);
+                    return;
+
+                case ComponentCommandType.RefreshConfiguration:
+                    await ExecuteConfigurationRefreshAsync(command, cancellationToken);
+                    return;
+
+                case ComponentCommandType.Restart:
+                    await control.RejectAsync(
+                        command,
+                        "Monitor.SampleWorker has no process supervisor. Wire Restart to systemd, Windows Service recovery, Kubernetes, or another host-specific restart mechanism.",
+                        cancellationToken: cancellationToken);
+                    return;
+
+                default:
+                    await control.RejectAsync(command, $"Unsupported command type {command.Type}.", cancellationToken: cancellationToken);
+                    return;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Control command {CommandId} failed locally.", command.Id);
+            try
+            {
+                await control.FailAsync(
+                    command,
+                    exception.Message,
+                    new { exceptionType = exception.GetType().FullName },
+                    CancellationToken.None);
+            }
+            catch (Exception acknowledgementException)
+            {
+                logger.LogWarning(
+                    acknowledgementException,
+                    "Could not report failure for control command {CommandId}; it may be redelivered after the lease expires.",
+                    command.Id);
+            }
+        }
+    }
+
+    private async Task ExecuteKillRunAsync(
+        ComponentControlCommand command,
+        CancellationToken cancellationToken)
+    {
+        CancellationTokenSource? cancellation = null;
+        lock (_activeRunGate)
+        {
+            if (command.TargetRunId is not null &&
+                _activeRunId == command.TargetRunId &&
+                _activeRunCancellation is not null)
+            {
+                _activeRunCancellationReason = $"Killed by Monitor control command {command.Id:D}.";
+                cancellation = _activeRunCancellation;
+            }
+        }
+
+        if (cancellation is null)
+        {
+            await control.RejectAsync(
+                command,
+                "The target run is not active in this worker instance.",
+                new { command.TargetRunId },
+                cancellationToken);
+            return;
+        }
+
+        cancellation.Cancel();
+        await control.SucceedAsync(
+            command,
+            new { command.TargetRunId, cancellationRequested = true },
+            cancellationToken);
+    }
+
+    private async Task ExecuteConfigurationRefreshAsync(
+        ComponentControlCommand command,
+        CancellationToken cancellationToken)
+    {
+        string? targetUrl = null;
+        int? runIntervalSeconds = null;
+
+        if (!string.IsNullOrWhiteSpace(command.PayloadJson))
+        {
+            using var document = JsonDocument.Parse(command.PayloadJson);
+            var root = document.RootElement;
+            if (root.TryGetProperty("targetUrl", out var targetUrlElement) && targetUrlElement.ValueKind == JsonValueKind.String)
+            {
+                targetUrl = targetUrlElement.GetString();
+            }
+
+            if (root.TryGetProperty("runIntervalSeconds", out var intervalElement) && intervalElement.TryGetInt32(out var parsedInterval))
+            {
+                runIntervalSeconds = Math.Clamp(parsedInterval, 1, 3600);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(targetUrl))
+        {
+            _targetUrl = targetUrl;
+        }
+
+        if (runIntervalSeconds is not null)
+        {
+            Volatile.Write(ref _runIntervalSeconds, runIntervalSeconds.Value);
+        }
+
+        await control.SucceedAsync(
+            command,
+            new
+            {
+                applied = true,
+                targetUrl = _targetUrl,
+                runIntervalSeconds = Volatile.Read(ref _runIntervalSeconds)
+            },
+            cancellationToken);
+    }
+
+    private async Task RunLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            if (_paused || _disabled)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+                continue;
+            }
+
+            using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            lock (_activeRunGate)
+            {
+                _activeRunCancellation = runCancellation;
+                _activeRunCancellationReason = null;
+            }
+
+            try
+            {
+                await ExecuteSyntheticAuditAsync(runCancellation.Token);
+            }
+            catch (OperationCanceledException) when (runCancellation.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                logger.LogInformation("Active synthetic run was cancelled by a control command.");
+            }
+            finally
+            {
+                lock (_activeRunGate)
+                {
+                    _activeRunId = null;
+                    _activeRunCancellation = null;
+                    _activeRunCancellationReason = null;
+                }
+            }
+
+            await Task.Delay(
+                TimeSpan.FromSeconds(Math.Max(1, Volatile.Read(ref _runIntervalSeconds))),
+                cancellationToken);
         }
     }
 
@@ -134,6 +363,7 @@ internal sealed class SampleWorker(
         var inputTokens = Random.Shared.Next(1_200, 2_400);
         var outputTokens = 0;
         var costUsd = 0d;
+        var targetUrl = _targetUrl;
 
         var run = await monitor.StartRunAsync(
             new StartRunOptions(
@@ -144,17 +374,22 @@ internal sealed class SampleWorker(
                 Model: "sample-model",
                 Input: new
                 {
-                    target = _options.TargetUrl,
+                    target = targetUrl,
                     sequence,
                     synthetic = true
                 }),
             cancellationToken);
 
+        lock (_activeRunGate)
+        {
+            _activeRunId = run.Id;
+        }
+
         logger.LogInformation("Started sample run {RunId} (sequence {Sequence}).", run.Id, sequence);
         await run.LogAsync(
             LogEventLevel.Information,
-            $"Synthetic audit started for {_options.TargetUrl}.",
-            new { target = _options.TargetUrl, sequence, synthetic = true },
+            $"Synthetic audit started for {targetUrl}.",
+            new { target = targetUrl, sequence, synthetic = true },
             source: "Monitor.SampleWorker",
             messageTemplate: "Synthetic audit started for {Target}.",
             cancellationToken: cancellationToken);
@@ -165,13 +400,13 @@ internal sealed class SampleWorker(
                 "Fetch homepage",
                 SpanKind.Http,
                 ct => SyntheticDelayAsync(140, 360, ct),
-                new { method = "GET", url = _options.TargetUrl, statusCode = 200, synthetic = true },
+                new { method = "GET", url = targetUrl, statusCode = 200, synthetic = true },
                 cancellationToken: cancellationToken);
 
             await run.LogAsync(
                 LogEventLevel.Debug,
                 "Homepage fetched successfully.",
-                new { target = _options.TargetUrl, statusCode = 200, synthetic = true },
+                new { target = targetUrl, statusCode = 200, synthetic = true },
                 source: "Monitor.SampleWorker",
                 cancellationToken: cancellationToken);
 
@@ -222,7 +457,7 @@ internal sealed class SampleWorker(
                     costUsd,
                     Output: new
                     {
-                        target = _options.TargetUrl,
+                        target = targetUrl,
                         verdict = "Sample audit completed",
                         score = Random.Shared.Next(62, 96),
                         synthetic = true
@@ -238,7 +473,13 @@ internal sealed class SampleWorker(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await TryCancelRunAsync(run);
+            string reason;
+            lock (_activeRunGate)
+            {
+                reason = _activeRunCancellationReason ?? "Sample worker is shutting down.";
+            }
+
+            await TryCancelRunAsync(run, reason);
             throw;
         }
         catch (Exception exception)
@@ -278,7 +519,7 @@ internal sealed class SampleWorker(
         }
     }
 
-    private async Task TryCancelRunAsync(MonitorRun run)
+    private async Task TryCancelRunAsync(MonitorRun run, string reason)
     {
         if (run.IsCompleted)
         {
@@ -287,11 +528,22 @@ internal sealed class SampleWorker(
 
         try
         {
-            await run.CancelAsync("Sample worker is shutting down.", CancellationToken.None);
+            await run.CancelAsync(reason, CancellationToken.None);
         }
         catch (Exception exception)
         {
-            logger.LogDebug(exception, "Could not mark run {RunId} as cancelled during shutdown.", run.Id);
+            logger.LogDebug(exception, "Could not mark run {RunId} as cancelled.", run.Id);
+        }
+    }
+
+    private static async Task AwaitBackgroundLoopAsync(Task task, CancellationToken stoppingToken)
+    {
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
         }
     }
 
@@ -316,5 +568,6 @@ internal sealed class SampleWorkerOptions
     public string TargetUrl { get; set; } = "https://example.com";
     public int HeartbeatIntervalSeconds { get; set; } = 15;
     public int RunIntervalSeconds { get; set; } = 30;
+    public int CommandPollIntervalSeconds { get; set; } = 2;
     public int FailureEvery { get; set; } = 5;
 }
