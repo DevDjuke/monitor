@@ -53,59 +53,63 @@ public sealed class AlertDeliveryWorker(
         try
         {
             var connection = db.Database.GetDbConnection();
-            if (!await TryAcquireLockAsync(connection, cancellationToken))
-            {
-                return;
-            }
+            if (!await TryAcquireLockAsync(connection, cancellationToken)) return;
 
             try
             {
                 var now = DateTimeOffset.UtcNow;
                 var batchSize = Math.Clamp(_options.BatchSize, 1, 1000);
-                var deliveries = await db.AlertDeliveries
+
+                var failureDeliveries = await db.AlertDeliveries
                     .Where(x =>
                         x.Destination.Enabled &&
                         (x.Status == AlertDeliveryStatus.Pending || x.Status == AlertDeliveryStatus.RetryScheduled) &&
                         x.NextAttemptAt <= now)
                     .Include(x => x.Destination)
-                    .Include(x => x.AlertEvent)
-                        .ThenInclude(x => x.AlertRule)
-                    .Include(x => x.AlertEvent)
-                        .ThenInclude(x => x.FailureGroup)
+                    .Include(x => x.AlertEvent).ThenInclude(x => x.AlertRule)
+                    .Include(x => x.AlertEvent).ThenInclude(x => x.FailureGroup)
                     .OrderBy(x => x.NextAttemptAt)
                     .ThenBy(x => x.CreatedAt)
                     .Take(batchSize)
                     .ToListAsync(cancellationToken);
 
-                foreach (var delivery in deliveries)
+                foreach (var delivery in failureDeliveries)
                 {
                     var attemptedAt = DateTimeOffset.UtcNow;
                     var result = await sender.SendAlertAsync(delivery, cancellationToken);
-
-                    if (result.Succeeded)
-                    {
-                        delivery.MarkDelivered(result.StatusCode, attemptedAt);
-                        delivery.Destination.RecordSuccess(attemptedAt);
-                    }
-                    else
-                    {
-                        var nextAttemptAt = GetNextAttemptAt(delivery, result.Retryable, attemptedAt);
-                        delivery.MarkFailed(
-                            result.Error ?? "Webhook delivery failed.",
-                            result.StatusCode,
-                            attemptedAt,
-                            nextAttemptAt);
-                        delivery.Destination.RecordFailure(
-                            result.Error ?? "Webhook delivery failed.",
-                            attemptedAt);
-                    }
-
+                    ApplyResult(delivery, result, attemptedAt);
+                    delivery.Destination.RecordSuccessOrFailure(result, attemptedAt);
                     await db.SaveChangesAsync(cancellationToken);
                 }
 
-                if (deliveries.Count > 0)
+                var remaining = Math.Max(0, batchSize - failureDeliveries.Count);
+                var budgetDeliveries = remaining == 0
+                    ? []
+                    : await db.UsageBudgetAlertDeliveries
+                        .Where(x =>
+                            x.Destination.Enabled &&
+                            (x.Status == AlertDeliveryStatus.Pending || x.Status == AlertDeliveryStatus.RetryScheduled) &&
+                            x.NextAttemptAt <= now)
+                        .Include(x => x.Destination)
+                        .Include(x => x.BudgetAlertEvent).ThenInclude(x => x.UsageBudget)
+                        .OrderBy(x => x.NextAttemptAt)
+                        .ThenBy(x => x.CreatedAt)
+                        .Take(remaining)
+                        .ToListAsync(cancellationToken);
+
+                foreach (var delivery in budgetDeliveries)
                 {
-                    logger.LogInformation("Processed {DeliveryCount} alert delivery outbox item(s).", deliveries.Count);
+                    var attemptedAt = DateTimeOffset.UtcNow;
+                    var result = await sender.SendBudgetAlertAsync(delivery, cancellationToken);
+                    ApplyResult(delivery, result, attemptedAt);
+                    delivery.Destination.RecordSuccessOrFailure(result, attemptedAt);
+                    await db.SaveChangesAsync(cancellationToken);
+                }
+
+                var processed = failureDeliveries.Count + budgetDeliveries.Count;
+                if (processed > 0)
+                {
+                    logger.LogInformation("Processed {DeliveryCount} alert delivery outbox item(s).", processed);
                 }
             }
             finally
@@ -119,19 +123,43 @@ public sealed class AlertDeliveryWorker(
         }
     }
 
-    private DateTimeOffset? GetNextAttemptAt(
-        AlertDelivery delivery,
-        bool retryable,
-        DateTimeOffset attemptedAt)
+    private void ApplyResult(AlertDelivery delivery, WebhookSendResult result, DateTimeOffset attemptedAt)
     {
-        var nextAttemptNumber = delivery.AttemptCount + 1;
-        var maxAttempts = Math.Clamp(_options.MaxAttempts, 1, 100);
-        if (!retryable || nextAttemptNumber >= maxAttempts)
+        if (result.Succeeded)
         {
-            return null;
+            delivery.MarkDelivered(result.StatusCode, attemptedAt);
+            return;
         }
 
-        var exponent = Math.Min(delivery.AttemptCount, 20);
+        delivery.MarkFailed(
+            result.Error ?? "Webhook delivery failed.",
+            result.StatusCode,
+            attemptedAt,
+            GetNextAttemptAt(delivery.AttemptCount, result.Retryable, attemptedAt));
+    }
+
+    private void ApplyResult(UsageBudgetAlertDelivery delivery, WebhookSendResult result, DateTimeOffset attemptedAt)
+    {
+        if (result.Succeeded)
+        {
+            delivery.MarkDelivered(result.StatusCode, attemptedAt);
+            return;
+        }
+
+        delivery.MarkFailed(
+            result.Error ?? "Webhook delivery failed.",
+            result.StatusCode,
+            attemptedAt,
+            GetNextAttemptAt(delivery.AttemptCount, result.Retryable, attemptedAt));
+    }
+
+    private DateTimeOffset? GetNextAttemptAt(int attemptCount, bool retryable, DateTimeOffset attemptedAt)
+    {
+        var nextAttemptNumber = attemptCount + 1;
+        var maxAttempts = Math.Clamp(_options.MaxAttempts, 1, 100);
+        if (!retryable || nextAttemptNumber >= maxAttempts) return null;
+
+        var exponent = Math.Min(attemptCount, 20);
         var baseSeconds = Math.Clamp(_options.BaseRetrySeconds, 1, 3600);
         var maxSeconds = Math.Clamp(_options.MaxRetryMinutes, 1, 24 * 60) * 60d;
         var delaySeconds = Math.Min(baseSeconds * Math.Pow(2, exponent), maxSeconds);
@@ -155,21 +183,35 @@ public sealed class AlertDeliveryWorker(
         parameter.ParameterName = "@resource";
         parameter.Value = LockResource;
         command.Parameters.Add(parameter);
-
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return Convert.ToInt32(result) >= 0;
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) >= 0;
     }
 
     private static async Task ReleaseLockAsync(DbConnection connection, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
         command.CommandText = "EXEC sys.sp_releaseapplock @Resource = @resource, @LockOwner = 'Session';";
-
         var parameter = command.CreateParameter();
         parameter.ParameterName = "@resource";
         parameter.Value = LockResource;
         command.Parameters.Add(parameter);
-
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+}
+
+internal static class AlertDeliveryDestinationHealthExtensions
+{
+    public static void RecordSuccessOrFailure(
+        this AlertDeliveryDestination destination,
+        WebhookSendResult result,
+        DateTimeOffset attemptedAt)
+    {
+        if (result.Succeeded)
+        {
+            destination.RecordSuccess(attemptedAt);
+        }
+        else
+        {
+            destination.RecordFailure(result.Error ?? "Webhook delivery failed.", attemptedAt);
+        }
     }
 }
