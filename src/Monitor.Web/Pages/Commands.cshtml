@@ -1,0 +1,141 @@
+@page "/commands"
+@model CommandsModel
+@{
+    ViewData["Title"] = "Commands";
+}
+
+@section Head {
+    <link rel="stylesheet" href="~/css/filters.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/commands.css" asp-append-version="true" />
+}
+
+<header class="page-head compact">
+    <div>
+        <p class="eyebrow">CONTROL PLANE</p>
+        <h1>Commands</h1>
+        <p class="lede">Durable leased commands with explicit component acknowledgement and retry-safe delivery.</p>
+    </div>
+</header>
+
+@if (TempData["StatusMessage"] is string statusMessage)
+{
+    <div class="notice success-notice">@statusMessage</div>
+}
+
+<section class="metrics" aria-label="Command summary">
+    <article class="metric"><span>Pending</span><strong>@Model.PendingCount</strong><small>waiting to be claimed</small></article>
+    <article class="metric"><span>Leased</span><strong>@Model.LeasedCount</strong><small>currently executing</small></article>
+    <article class="metric"><span>Failed / rejected</span><strong>@Model.FailedCount</strong><small>including expired</small></article>
+    <article class="metric"><span>Succeeded</span><strong>@Model.CompletedCount</strong><small>acknowledged complete</small></article>
+</section>
+
+<section class="panel filter-panel" aria-label="Command filters">
+    <form method="get" class="filter-grid">
+        <label class="filter-field">
+            <span>Window</span>
+            <select asp-for="Window">
+                <option value="24h">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="all">All history</option>
+            </select>
+        </label>
+        <label class="filter-field">
+            <span>Component</span>
+            <select asp-for="ComponentId">
+                <option value="">All components</option>
+                @foreach (var component in Model.Components)
+                {
+                    <option value="@component.Id">@component.Name · @component.Environment</option>
+                }
+            </select>
+        </label>
+        <label class="filter-field">
+            <span>Type</span>
+            <select asp-for="Type">
+                <option value="">All commands</option>
+                @foreach (var type in Model.CommandTypes)
+                {
+                    <option value="@type">@type</option>
+                }
+            </select>
+        </label>
+        <label class="filter-field">
+            <span>Status</span>
+            <select asp-for="Status">
+                <option value="">All states</option>
+                @foreach (var status in Model.CommandStatuses)
+                {
+                    <option value="@status">@status</option>
+                }
+            </select>
+        </label>
+        <label class="filter-field wide">
+            <span>Search</span>
+            <input asp-for="Search" type="search" autocomplete="off" placeholder="component, operator, error, result…" />
+        </label>
+        <div class="filter-actions">
+            <button class="filter-apply" type="submit">Apply filters</button>
+            <a class="filter-clear" href="/commands">Clear</a>
+        </div>
+    </form>
+</section>
+
+<section class="panel table-panel command-history-panel">
+    <div class="panel-head">
+        <div><p class="eyebrow">HISTORY</p><h2>Component commands</h2></div>
+        <span>@Model.Commands.Count shown</span>
+    </div>
+
+    @if (Model.Commands.Count == 0)
+    {
+        <div class="empty"><strong>No commands match this view.</strong><span>Commands are issued from a component detail page.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table class="command-table">
+                <thead><tr><th>Component</th><th>Command</th><th>Status</th><th>Issued</th><th>Delivery</th><th>Result</th><th></th></tr></thead>
+                <tbody>
+                @foreach (var command in Model.Commands)
+                {
+                    <tr>
+                        <td><a class="table-link" href="/components/@command.ComponentId">@command.ComponentName</a><small>@command.Environment</small></td>
+                        <td><strong>@command.Type</strong>@if (command.TargetRunId is not null){<small>run @command.TargetRunId</small>}</td>
+                        <td><span class="command-state @command.Status.ToString().ToLowerInvariant()">@command.Status</span></td>
+                        <td>@command.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss") UTC<small>@(command.RequestedBy ?? "system") · expires @command.ExpiresAt.ToString("yyyy-MM-dd HH:mm:ss")</small></td>
+                        <td><strong>@command.DeliveryAttempts attempt(s)</strong>@if (command.LeaseExpiresAt is not null){<small>lease until @command.LeaseExpiresAt.Value.ToString("HH:mm:ss") UTC</small>}</td>
+                        <td>
+                            @if (!string.IsNullOrWhiteSpace(command.Error))
+                            {
+                                <span class="command-error">@command.Error</span>
+                            }
+                            else if (!string.IsNullOrWhiteSpace(command.ResultJson))
+                            {
+                                <details><summary>Result</summary><pre>@command.ResultJson</pre></details>
+                            }
+                            else if (command.CompletedAt is not null)
+                            {
+                                <span>@command.CompletedAt.Value.ToString("yyyy-MM-dd HH:mm:ss") UTC</span>
+                            }
+                            else
+                            {
+                                <span>—</span>
+                            }
+                        </td>
+                        <td>
+                            @if (command.CanCancel)
+                            {
+                                <form method="post" asp-page-handler="Cancel" asp-route-commandId="@command.Id">
+                                    <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
+                                    <button class="inline-button danger-button" type="submit">Cancel</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
