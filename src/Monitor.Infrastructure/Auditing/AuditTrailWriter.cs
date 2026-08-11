@@ -1,15 +1,13 @@
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Monitor.Domain;
 
 namespace Monitor.Infrastructure.Auditing;
 
 public sealed class AuditTrailWriter(MonitorDbContext db)
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        WriteIndented = false
-    };
+    private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
 
     public AuditEvent RecordOperator(
         ClaimsPrincipal user,
@@ -95,4 +93,14 @@ public sealed class AuditTrailWriter(MonitorDbContext db)
 
     private static string? Serialize(object? value) =>
         value is null ? null : JsonSerializer.Serialize(value, JsonOptions);
+
+    private static JsonSerializerOptions CreateJsonOptions()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            WriteIndented = false
+        };
+        options.Converters.Add(new JsonStringEnumConverter());
+        return options;
+    }
 }
