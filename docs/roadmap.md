@@ -16,6 +16,7 @@ This roadmap is the current product sequence for turning Monitor from an observa
 - Durable append-only operator audit trail with safe before/after snapshots and searchable history.
 - Daily/monthly cost and token budget policy with warning/critical alert delivery.
 - Durable leased component control commands with acknowledgement, redelivery, timeout/expiry, and audit history.
+- Personal saved operational views with canonical filter persistence and pinned sidebar shortcuts.
 - Server-side filters on Runs, Logs, Usage, Alerts, Budgets, Commands, and Audit.
 
 ## Next
@@ -107,9 +108,17 @@ Status: **complete**
 
 ### 7. Saved views
 
-- Save named filter combinations for Runs, Usage, Alerts, Budgets, Commands, Logs, and Audit.
-- Personal views first; shared/team views later if Monitor becomes multi-user.
-- Fast links for common operational slices such as production failures, expensive model runs, rate limits, dead letters, budget pressure, command failures, and security-sensitive changes.
+Status: **complete**
+
+- Save named filter combinations for Runs, Logs, Usage, Alerts, Budgets, Audit, and Commands.
+- Scope every view to the authenticated ASP.NET Core Identity user; another user's saved view cannot be listed or mutated even when its id is known.
+- Persist a canonical, per-surface allow-listed query string instead of duplicating each page's filter schema into preference tables.
+- Make Runs filter state URL-addressable while keeping keyset pagination cursor state transient and excluded from saved views.
+- Apply, rename, pin/unpin, and delete views from `/saved-views`; create views directly from supported operational pages through one reusable toolbar.
+- Allow up to 100 personal views and six pinned sidebar fast links per user.
+- Keep personal workspace preferences out of the immutable operational `AuditEvent` stream.
+- Shared/team views remain deferred until Monitor has an explicit multi-user role/permission model.
+- Detailed contract: `docs/saved-views.md`.
 
 ### 8. Richer live experience
 
