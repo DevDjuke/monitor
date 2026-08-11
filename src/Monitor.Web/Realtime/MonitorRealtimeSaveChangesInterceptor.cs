@@ -73,7 +73,7 @@ public sealed class MonitorRealtimeSaveChangesInterceptor(
 
             switch (entry.Entity)
             {
-                case AgentRun run:
+                case AgentRun run when IsVisibleRunChange(entry):
                     AddRunChange(run.Id, "Run", null);
                     break;
                 case TraceSpan span:
@@ -87,6 +87,21 @@ public sealed class MonitorRealtimeSaveChangesInterceptor(
                     break;
             }
         }
+    }
+
+    private static bool IsVisibleRunChange(Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry)
+    {
+        if (entry.State == EntityState.Added)
+        {
+            return true;
+        }
+
+        return entry.Properties.Any(property =>
+            property.IsModified &&
+            !string.Equals(
+                property.Metadata.Name,
+                nameof(AgentRun.AggregatedAt),
+                StringComparison.Ordinal));
     }
 
     private void CaptureCommand(ComponentCommand command)
