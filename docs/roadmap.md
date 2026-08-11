@@ -8,7 +8,7 @@ This roadmap is the current product sequence for turning Monitor from an observa
 - SQL Server persistence and versioned EF Core migrations.
 - Monitor-native ingestion plus OTLP/HTTP protobuf trace and log ingestion.
 - Structured component/run log events with trace/span correlation and filtered log search.
-- SignalR-backed live run updates.
+- SignalR-backed live run lists, run drill-down, log/span reconciliation, and command-state transitions with explicit frozen-history behavior.
 - Durable usage aggregation and success-only retention with failed/cancelled forensic preservation.
 - Failure fingerprint/category grouping and failure drill-down.
 - Threshold/window/cooldown failure alerting with duplicate-evidence suppression.
@@ -122,11 +122,20 @@ Status: **complete**
 
 ### 8. Richer live experience
 
-- Incremental live run/span tree rather than only list refreshes.
-- Live status and duration updates for active spans.
-- Streaming run events/logs now that the logs model exists.
-- Live command-state transitions now that the command model exists.
-- Clear latest-vs-historical behavior so realtime updates never destabilize forensic browsing.
+Status: **complete**
+
+- Subscribe run drill-down clients to authenticated per-run SignalR groups and reconcile persisted run/span/log changes against the authoritative `/api/runs/{id}` snapshot.
+- Reconcile the trace tree incrementally by stable span id and parent id instead of refreshing the whole page.
+- Update durations locally for running runs and spans while authoritative status/timing still comes from persisted telemetry.
+- Stream both Monitor-native and OTLP-backed run events/logs through one EF Core post-save invalidation boundary.
+- Publish detailed realtime invalidations only after a successful `SaveChanges`; failed transactions emit no phantom state and the interceptor never re-enters the same DbContext from the post-save callback.
+- Keep active runs in auto-follow mode, then freeze the view when the run becomes terminal.
+- Treat terminal runs as historical snapshots: late telemetry raises an explicit update banner instead of silently rewriting forensic evidence under the operator.
+- Reconcile active views after SignalR reconnect/visibility restore because realtime delivery is not treated as lossless.
+- Stream command transitions on both `/commands` and component detail history, updating visible rows in place without silently inserting/reordering/removing rows that would change a filtered view.
+- Treat `Window=all` command history as frozen and prompt for refresh on new activity or after reconnect.
+- Keep the existing coarse `RunChanged` event for the latest Runs list while P8 detailed events are group-scoped.
+- Detailed contract: `docs/richer-live-experience.md`.
 
 ## Later platform work
 
