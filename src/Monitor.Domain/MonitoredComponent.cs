@@ -11,6 +11,7 @@ public sealed class MonitoredComponent
     public string Environment { get; private set; } = string.Empty;
     public string? Version { get; private set; }
     public bool Enabled { get; private set; }
+    public ComponentControlState ControlState { get; private set; }
     public ComponentStatus Status { get; private set; }
     public DateTimeOffset? LastHeartbeatAt { get; private set; }
     public DateTimeOffset? LastRunAt { get; private set; }
@@ -20,6 +21,9 @@ public sealed class MonitoredComponent
     public ICollection<AgentRun> Runs { get; private set; } = new List<AgentRun>();
     public ICollection<LogEvent> LogEvents { get; private set; } = new List<LogEvent>();
     public ICollection<ComponentIngestionCredential> IngestionCredentials { get; private set; } = new List<ComponentIngestionCredential>();
+    public ICollection<ComponentCommand> Commands { get; private set; } = new List<ComponentCommand>();
+
+    public bool CanStartRuns => Enabled && ControlState == ComponentControlState.Active;
 
     public static MonitoredComponent Create(
         string name,
@@ -38,6 +42,7 @@ public sealed class MonitoredComponent
             Environment = environment,
             Version = version,
             Enabled = true,
+            ControlState = ComponentControlState.Active,
             Status = ComponentStatus.Unknown,
             CreatedAt = now,
             UpdatedAt = now
@@ -62,6 +67,29 @@ public sealed class MonitoredComponent
     public void MarkRunStarted(DateTimeOffset now)
     {
         LastRunAt = now;
+        UpdatedAt = now;
+    }
+
+    public void ApplySuccessfulControlCommand(ComponentCommandType type, DateTimeOffset now)
+    {
+        switch (type)
+        {
+            case ComponentCommandType.Pause when Enabled:
+                ControlState = ComponentControlState.Paused;
+                break;
+            case ComponentCommandType.Resume when Enabled:
+                ControlState = ComponentControlState.Active;
+                break;
+            case ComponentCommandType.Disable:
+                Enabled = false;
+                ControlState = ComponentControlState.Disabled;
+                break;
+            case ComponentCommandType.Enable:
+                Enabled = true;
+                ControlState = ComponentControlState.Active;
+                break;
+        }
+
         UpdatedAt = now;
     }
 
