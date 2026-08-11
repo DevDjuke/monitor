@@ -1,5 +1,16 @@
 namespace Monitor.Domain;
 
+public sealed class ComponentWorkBlockedException(
+    Guid componentId,
+    ComponentControlState controlState,
+    bool enabled)
+    : InvalidOperationException($"Component {componentId:D} cannot start new work while control state is {controlState} and enabled is {enabled}.")
+{
+    public Guid ComponentId { get; } = componentId;
+    public ComponentControlState ControlState { get; } = controlState;
+    public bool Enabled { get; } = enabled;
+}
+
 public sealed class MonitoredComponent
 {
     private MonitoredComponent() { }
@@ -66,6 +77,11 @@ public sealed class MonitoredComponent
 
     public void MarkRunStarted(DateTimeOffset now)
     {
+        if (!CanStartRuns)
+        {
+            throw new ComponentWorkBlockedException(Id, ControlState, Enabled);
+        }
+
         LastRunAt = now;
         UpdatedAt = now;
     }
@@ -80,12 +96,10 @@ public sealed class MonitoredComponent
             case ComponentCommandType.Resume when Enabled:
                 ControlState = ComponentControlState.Active;
                 break;
-            case ComponentCommandType.Disable:
-                Enabled = false;
+            case ComponentCommandType.Disable when Enabled:
                 ControlState = ComponentControlState.Disabled;
                 break;
-            case ComponentCommandType.Enable:
-                Enabled = true;
+            case ComponentCommandType.Enable when Enabled:
                 ControlState = ComponentControlState.Active;
                 break;
         }
