@@ -15,6 +15,7 @@ public sealed class BudgetsModel(MonitorDbContext db, AuditTrailWriter audit) : 
 
     public IReadOnlyList<BudgetRow> Budgets { get; private set; } = [];
     public IReadOnlyList<BudgetAlertRow> RecentAlerts { get; private set; } = [];
+    public IReadOnlyList<BudgetDeliveryRow> RecentDeliveries { get; private set; } = [];
     public long EnabledBudgets { get; private set; }
     public long WarningBudgets { get; private set; }
     public long CriticalBudgets { get; private set; }
@@ -178,6 +179,25 @@ public sealed class BudgetsModel(MonitorDbContext db, AuditTrailWriter audit) : 
                 x.Deliveries.LongCount(d => d.Status == AlertDeliveryStatus.Pending || d.Status == AlertDeliveryStatus.RetryScheduled),
                 x.Deliveries.LongCount(d => d.Status == AlertDeliveryStatus.DeadLetter)))
             .ToListAsync(cancellationToken);
+
+        RecentDeliveries = await db.UsageBudgetAlertDeliveries
+            .AsNoTracking()
+            .OrderByDescending(x => x.CreatedAt)
+            .Take(50)
+            .Select(x => new BudgetDeliveryRow(
+                x.Id,
+                x.BudgetAlertEvent.UsageBudget.Name,
+                x.BudgetAlertEvent.Level,
+                x.Destination.Name,
+                x.Status,
+                x.AttemptCount,
+                x.CreatedAt,
+                x.NextAttemptAt,
+                x.LastAttemptAt,
+                x.DeliveredAt,
+                x.ResponseStatusCode,
+                x.LastError))
+            .ToListAsync(cancellationToken);
     }
 
     private static object Snapshot(UsageBudget x) => new
@@ -203,4 +223,5 @@ public sealed class BudgetsModel(MonitorDbContext db, AuditTrailWriter audit) : 
 
     public sealed record BudgetRow(Guid Id, string Name, string? ComponentName, string? Environment, string? Model, UsageBudgetPeriod Period, double? CostLimitUsd, long? TokenLimit, int WarningPercent, int CriticalPercent, bool Enabled, bool IsDeleted, double ObservedCostUsd, long ObservedTokens, double UtilizationPercent, UsageBudgetAlertLevel? LastLevel, DateTimeOffset? LastEvaluatedAt);
     public sealed record BudgetAlertRow(Guid Id, Guid UsageBudgetId, string BudgetName, UsageBudgetAlertLevel Level, DateTimeOffset TriggeredAt, DateTimeOffset PeriodStart, DateTimeOffset PeriodEnd, double ObservedCostUsd, long ObservedTokens, double UtilizationPercent, DateTimeOffset? AcknowledgedAt, string? AcknowledgedBy, long Delivered, long Pending, long DeadLetter);
+    public sealed record BudgetDeliveryRow(Guid Id, string BudgetName, UsageBudgetAlertLevel Level, string DestinationName, AlertDeliveryStatus Status, int AttemptCount, DateTimeOffset CreatedAt, DateTimeOffset NextAttemptAt, DateTimeOffset? LastAttemptAt, DateTimeOffset? DeliveredAt, int? ResponseStatusCode, string? LastError);
 }
