@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -24,7 +25,6 @@ public sealed class ComponentCommandService(
     IOptions<ComponentCommandOptions> options,
     ILogger<ComponentCommandService> logger)
 {
-    private const string ExpiryLockResource = "Monitor.ComponentCommands.Expiry";
     private readonly ComponentCommandOptions _options = options.Value;
 
     public async Task<ClaimedComponentCommand?> ClaimNextAsync(
@@ -40,7 +40,7 @@ public sealed class ComponentCommandService(
         try
         {
             var connection = db.Database.GetDbConnection();
-            var resource = $"Monitor.ComponentCommands.{componentId:N}";
+            var resource = LockResource(componentId);
             if (!await TryAcquireLockAsync(connection, resource, cancellationToken))
             {
                 return null;
@@ -49,13 +49,12 @@ public sealed class ComponentCommandService(
             try
             {
                 var now = DateTimeOffset.UtcNow;
-                var maxAttempts = Math.Clamp(_options.MaxDeliveryAttempts, 1, 100);
-                var leaseDuration = TimeSpan.FromSeconds(Math.Clamp(_options.LeaseSeconds, 5, 3600));
+                var maxAttempts = MaxDeliveryAttempts();
+                var leaseDuration = LeaseDuration();
 
                 await ExpireDueCommandsAsync(componentId, now, maxAttempts, cancellationToken);
 
                 var command = await db.ComponentCommands
-                    .Include(x => x.Component)
                     .Where(x =>
                         x.ComponentId == componentId &&
                         x.AvailableAt <= now &&
@@ -115,56 +114,142 @@ public sealed class ComponentCommandService(
         string? error,
         CancellationToken cancellationToken = default)
     {
-        var command = await db.ComponentCommands
-            .Include(x => x.Component)
-            .SingleOrDefaultAsync(
-                x => x.Id == commandId && x.ComponentId == componentId,
-                cancellationToken);
-
-        if (command is null)
+        await db.Database.OpenConnectionAsync(cancellationToken);
+        try
         {
-            return ComponentCommandCompletionResult.NotFound;
-        }
-
-        if (command.IsTerminal)
-        {
-            return new ComponentCommandCompletionResult(true, true, false, command.Status);
-        }
-
-        if (command.Status != ComponentCommandStatus.Leased || command.LeaseToken != leaseToken)
-        {
-            return new ComponentCommandCompletionResult(true, false, true, command.Status);
-        }
-
-        var before = Snapshot(command);
-        var now = DateTimeOffset.UtcNow;
-        command.Complete(leaseToken, outcome, resultJson, error, now);
-
-        if (outcome == ComponentCommandOutcome.Succeeded)
-        {
-            command.Component.ApplySuccessfulControlCommand(command.Type, now);
-        }
-
-        audit.RecordComponent(
-            command.ComponentId,
-            command.Component.Name,
-            ActionFor(command.Status),
-            AuditTargetTypes.ComponentCommand,
-            command.Id.ToString("D"),
-            command.Type.ToString(),
-            before,
-            Snapshot(command),
-            new
+            var connection = db.Database.GetDbConnection();
+            var resource = LockResource(componentId);
+            if (!await TryAcquireLockAsync(connection, resource, cancellationToken))
             {
-                command.TargetRunId,
-                command.DeliveryAttempts,
-                componentControlState = command.Component.ControlState,
-                componentEnabled = command.Component.Enabled
-            },
-            now);
+                return new ComponentCommandCompletionResult(true, false, true, null);
+            }
 
-        await db.SaveChangesAsync(cancellationToken);
-        return new ComponentCommandCompletionResult(true, false, false, command.Status);
+            try
+            {
+                var command = await db.ComponentCommands
+                    .Include(x => x.Component)
+                    .SingleOrDefaultAsync(
+                        x => x.Id == commandId && x.ComponentId == componentId,
+                        cancellationToken);
+
+                if (command is null)
+                {
+                    return ComponentCommandCompletionResult.NotFound;
+                }
+
+                if (command.IsTerminal)
+                {
+                    return new ComponentCommandCompletionResult(true, true, false, command.Status);
+                }
+
+                if (command.Status != ComponentCommandStatus.Leased || command.LeaseToken != leaseToken)
+                {
+                    return new ComponentCommandCompletionResult(true, false, true, command.Status);
+                }
+
+                var before = Snapshot(command);
+                var now = DateTimeOffset.UtcNow;
+                command.Complete(leaseToken, outcome, resultJson, error, now);
+
+                if (outcome == ComponentCommandOutcome.Succeeded)
+                {
+                    command.Component.ApplySuccessfulControlCommand(command.Type, now);
+                }
+
+                audit.RecordComponent(
+                    command.ComponentId,
+                    command.Component.Name,
+                    ActionFor(command.Status),
+                    AuditTargetTypes.ComponentCommand,
+                    command.Id.ToString("D"),
+                    command.Type.ToString(),
+                    before,
+                    Snapshot(command),
+                    new
+                    {
+                        command.TargetRunId,
+                        command.DeliveryAttempts,
+                        componentControlState = command.Component.ControlState,
+                        componentEnabled = command.Component.Enabled
+                    },
+                    now);
+
+                await db.SaveChangesAsync(cancellationToken);
+                return new ComponentCommandCompletionResult(true, false, false, command.Status);
+            }
+            finally
+            {
+                await ReleaseLockAsync(connection, resource, cancellationToken);
+            }
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
+
+    public async Task<ComponentCommandCancelResult> CancelAsync(
+        Guid componentId,
+        Guid commandId,
+        ClaimsPrincipal user,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+
+        await db.Database.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            var connection = db.Database.GetDbConnection();
+            var resource = LockResource(componentId);
+            if (!await TryAcquireLockAsync(connection, resource, cancellationToken))
+            {
+                return new ComponentCommandCancelResult(true, false, true, null);
+            }
+
+            try
+            {
+                var command = await db.ComponentCommands
+                    .Include(x => x.Component)
+                    .SingleOrDefaultAsync(
+                        x => x.Id == commandId && x.ComponentId == componentId,
+                        cancellationToken);
+
+                if (command is null)
+                {
+                    return ComponentCommandCancelResult.NotFound;
+                }
+
+                if (command.IsTerminal)
+                {
+                    return new ComponentCommandCancelResult(true, true, false, command.Status);
+                }
+
+                var before = Snapshot(command);
+                var now = DateTimeOffset.UtcNow;
+                command.Cancel(user.Identity?.Name, now);
+                audit.RecordOperator(
+                    user,
+                    AuditActions.ComponentCommandCancelled,
+                    AuditTargetTypes.ComponentCommand,
+                    command.Id.ToString("D"),
+                    command.Type.ToString(),
+                    before,
+                    Snapshot(command),
+                    new { command.ComponentId, command.TargetRunId },
+                    now);
+
+                await db.SaveChangesAsync(cancellationToken);
+                return new ComponentCommandCancelResult(true, false, false, command.Status);
+            }
+            finally
+            {
+                await ReleaseLockAsync(connection, resource, cancellationToken);
+            }
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
     }
 
     public async Task<int> ExpireOutstandingAsync(CancellationToken cancellationToken = default)
@@ -174,53 +259,59 @@ public sealed class ComponentCommandService(
             return 0;
         }
 
-        await db.Database.OpenConnectionAsync(cancellationToken);
-        try
-        {
-            var connection = db.Database.GetDbConnection();
-            if (!await TryAcquireLockAsync(connection, ExpiryLockResource, cancellationToken))
-            {
-                return 0;
-            }
+        var now = DateTimeOffset.UtcNow;
+        var maxAttempts = MaxDeliveryAttempts();
+        var componentIds = await db.ComponentCommands
+            .AsNoTracking()
+            .Where(x => IsDueForExpiry(x, now, maxAttempts))
+            .Select(x => x.ComponentId)
+            .Distinct()
+            .Take(100)
+            .ToListAsync(cancellationToken);
 
+        var expired = 0;
+        foreach (var componentId in componentIds)
+        {
+            db.ChangeTracker.Clear();
+            await db.Database.OpenConnectionAsync(cancellationToken);
             try
             {
-                var now = DateTimeOffset.UtcNow;
-                var maxAttempts = Math.Clamp(_options.MaxDeliveryAttempts, 1, 100);
-                var commands = await db.ComponentCommands
-                    .Include(x => x.Component)
-                    .Where(x =>
-                        (x.Status == ComponentCommandStatus.Pending || x.Status == ComponentCommandStatus.Leased) &&
-                        (x.ExpiresAt <= now ||
-                         (x.Status == ComponentCommandStatus.Leased &&
-                          x.LeaseExpiresAt <= now &&
-                          x.DeliveryAttempts >= maxAttempts)))
-                    .OrderBy(x => x.CreatedAt)
-                    .Take(500)
-                    .ToListAsync(cancellationToken);
-
-                foreach (var command in commands)
+                var connection = db.Database.GetDbConnection();
+                var resource = LockResource(componentId);
+                if (!await TryAcquireLockAsync(connection, resource, cancellationToken))
                 {
-                    Expire(command, now, maxAttempts);
+                    continue;
                 }
 
-                if (commands.Count > 0)
+                try
                 {
-                    await db.SaveChangesAsync(cancellationToken);
-                    logger.LogInformation("Expired {CommandCount} component command(s).", commands.Count);
+                    var beforeCount = db.ChangeTracker.Entries<ComponentCommand>().Count();
+                    await ExpireDueCommandsAsync(componentId, DateTimeOffset.UtcNow, maxAttempts, cancellationToken);
+                    var changed = db.ChangeTracker.Entries<ComponentCommand>()
+                        .Count(x => x.State == EntityState.Modified);
+                    if (changed > 0)
+                    {
+                        await db.SaveChangesAsync(cancellationToken);
+                        expired += changed;
+                    }
                 }
-
-                return commands.Count;
+                finally
+                {
+                    await ReleaseLockAsync(connection, resource, cancellationToken);
+                }
             }
             finally
             {
-                await ReleaseLockAsync(connection, ExpiryLockResource, cancellationToken);
+                await db.Database.CloseConnectionAsync();
             }
         }
-        finally
+
+        if (expired > 0)
         {
-            await db.Database.CloseConnectionAsync();
+            logger.LogInformation("Expired {CommandCount} component command(s).", expired);
         }
+
+        return expired;
     }
 
     private async Task ExpireDueCommandsAsync(
@@ -231,19 +322,25 @@ public sealed class ComponentCommandService(
     {
         var commands = await db.ComponentCommands
             .Include(x => x.Component)
-            .Where(x =>
-                x.ComponentId == componentId &&
-                (x.Status == ComponentCommandStatus.Pending || x.Status == ComponentCommandStatus.Leased) &&
-                (x.ExpiresAt <= now ||
-                 (x.Status == ComponentCommandStatus.Leased &&
-                  x.LeaseExpiresAt <= now &&
-                  x.DeliveryAttempts >= maxAttempts)))
+            .Where(x => x.ComponentId == componentId && IsDueForExpiry(x, now, maxAttempts))
             .ToListAsync(cancellationToken);
 
         foreach (var command in commands)
         {
             Expire(command, now, maxAttempts);
         }
+    }
+
+    private static bool IsDueForExpiry(
+        ComponentCommand command,
+        DateTimeOffset now,
+        int maxAttempts)
+    {
+        return
+            (command.Status == ComponentCommandStatus.Pending && command.ExpiresAt <= now) ||
+            (command.Status == ComponentCommandStatus.Leased &&
+             command.LeaseExpiresAt <= now &&
+             (command.ExpiresAt <= now || command.DeliveryAttempts >= maxAttempts));
     }
 
     private void Expire(ComponentCommand command, DateTimeOffset now, int maxAttempts)
@@ -265,6 +362,10 @@ public sealed class ComponentCommandService(
             new { command.ComponentId, command.TargetRunId, command.DeliveryAttempts },
             now);
     }
+
+    private int MaxDeliveryAttempts() => Math.Clamp(_options.MaxDeliveryAttempts, 1, 100);
+    private TimeSpan LeaseDuration() => TimeSpan.FromSeconds(Math.Clamp(_options.LeaseSeconds, 5, 3600));
+    private static string LockResource(Guid componentId) => $"Monitor.ComponentCommands.{componentId:N}";
 
     private static string ActionFor(ComponentCommandStatus status) => status switch
     {
@@ -352,4 +453,13 @@ public sealed record ComponentCommandCompletionResult(
     ComponentCommandStatus? Status)
 {
     public static ComponentCommandCompletionResult NotFound { get; } = new(false, false, false, null);
+}
+
+public sealed record ComponentCommandCancelResult(
+    bool Found,
+    bool AlreadyTerminal,
+    bool LockUnavailable,
+    ComponentCommandStatus? Status)
+{
+    public static ComponentCommandCancelResult NotFound { get; } = new(false, false, false, null);
 }
