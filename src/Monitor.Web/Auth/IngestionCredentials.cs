@@ -115,8 +115,7 @@ public sealed class IngestionCredentialAuthenticator(
             .AsNoTracking()
             .Where(x =>
                 x.KeyId == keyId &&
-                x.RevokedAt == null &&
-                x.Component.Enabled)
+                x.RevokedAt == null)
             .Select(x => new CredentialLookup(
                 x.Id,
                 x.ComponentId,
