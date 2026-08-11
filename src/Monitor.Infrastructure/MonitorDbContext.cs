@@ -10,6 +10,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
 {
     public DbSet<MonitoredComponent> Components => Set<MonitoredComponent>();
     public DbSet<ComponentIngestionCredential> ComponentIngestionCredentials => Set<ComponentIngestionCredential>();
+    public DbSet<ComponentCommand> ComponentCommands => Set<ComponentCommand>();
     public DbSet<AgentRun> Runs => Set<AgentRun>();
     public DbSet<TraceSpan> Spans => Set<TraceSpan>();
     public DbSet<LogEvent> LogEvents => Set<LogEvent>();
@@ -39,7 +40,23 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         component.Property(x => x.Slug).HasMaxLength(120);
         component.Property(x => x.Environment).HasMaxLength(80);
         component.Property(x => x.Version).HasMaxLength(80);
+        component.Property(x => x.ControlState).HasDefaultValue(ComponentControlState.Active);
         component.HasIndex(x => new { x.Slug, x.Environment }).IsUnique();
+
+        var componentCommand = modelBuilder.Entity<ComponentCommand>();
+        componentCommand.ToTable("ComponentCommands");
+        componentCommand.HasKey(x => x.Id);
+        componentCommand.Property(x => x.RequestedBy).HasMaxLength(256);
+        componentCommand.Property(x => x.Error).HasMaxLength(4000);
+        componentCommand.HasIndex(x => new { x.ComponentId, x.Status, x.AvailableAt, x.CreatedAt });
+        componentCommand.HasIndex(x => x.LeaseExpiresAt);
+        componentCommand.HasIndex(x => new { x.Status, x.ExpiresAt });
+        componentCommand.HasIndex(x => x.TargetRunId);
+        componentCommand.HasIndex(x => x.CreatedAt).IsDescending();
+        componentCommand.HasOne(x => x.Component)
+            .WithMany(x => x.Commands)
+            .HasForeignKey(x => x.ComponentId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         var ingestionCredential = modelBuilder.Entity<ComponentIngestionCredential>();
         ingestionCredential.ToTable("ComponentIngestionCredentials");
