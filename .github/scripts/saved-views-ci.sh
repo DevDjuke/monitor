@@ -161,7 +161,7 @@ page = html.unescape(open('/tmp/saved-view-applied.html', encoding='utf-8').read
 options = re.findall(r'<option\b[^>]*>[^<]*</option>', page)
 selected = [option for option in options if re.search(r'\bselected(?:\s*=|\s|>)', option)]
 assert any('Production failures' in option for option in selected), selected
-assert re.search(r'<strong>\s*Applied\s*</strong>', page), 'Applied state missing'
+assert re.search(r'<strong\b[^>]*data-saved-view-applied[^>]*>\s*Applied\s*</strong>', page), 'Applied state missing'
 PY
 
 # A pin is visible globally as a fast link.
