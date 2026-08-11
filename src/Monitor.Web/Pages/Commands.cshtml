@@ -126,7 +126,7 @@
                         <td>
                             @if (command.CanCancel)
                             {
-                                <form method="post" asp-page-handler="Cancel" asp-route-commandId="@command.Id">
+                                <form method="post" asp-page-handler="Cancel" asp-route-componentId="@command.ComponentId" asp-route-commandId="@command.Id">
                                     <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
                                     <button class="inline-button danger-button" type="submit">Cancel</button>
                                 </form>
