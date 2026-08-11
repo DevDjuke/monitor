@@ -3,10 +3,16 @@
 
     function syncSavedViewControls() {
         const currentUrl = `${window.location.pathname}${window.location.search}`;
+        let hasAppliedView = false;
 
         for (const picker of document.querySelectorAll('[data-saved-view-picker]')) {
             const matching = [...picker.options].find(option => option.value === currentUrl);
             picker.value = matching?.value || '';
+            hasAppliedView ||= Boolean(matching?.value);
+        }
+
+        for (const badge of document.querySelectorAll('[data-saved-view-applied]')) {
+            badge.hidden = !hasAppliedView;
         }
 
         for (const input of document.querySelectorAll('[data-saved-view-current-query]')) {
