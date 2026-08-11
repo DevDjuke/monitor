@@ -29,6 +29,8 @@ The interceptor does not query the same `MonitorDbContext` from `SavedChanges`. 
 
 Realtime publication after a successful SQL commit is deliberately best-effort. If SignalR publication fails, Monitor logs the failure but does not turn an already committed mutation into an HTTP/application failure. Connected clients recover through the same authoritative snapshot/reconnect path used for missed events.
 
+Retention bookkeeping is not user-visible realtime state. An `AgentRun` update that only changes `AggregatedAt` is therefore excluded from run-detail invalidation; actual status, timing, usage, failure linkage, payload, span, and log changes still invalidate normally.
+
 The older coarse `RunChanged` event remains for the `/runs` list. It is intentionally separate from P8's run-detail invalidations.
 
 ## SignalR groups
@@ -111,6 +113,23 @@ This mirrors the existing `/runs` latest-vs-older-page contract.
 - ordered structured logs with run/span correlation, severity, message/template, properties, exception details, source, and OTLP ids.
 
 The endpoint keeps the existing ingestion-credential/operator authorization boundary. Because it loads both span and log collections repeatedly while a run is live, EF Core uses split-query loading for this snapshot to avoid multiplying the two child collections into a large Cartesian result set.
+
+## Verification
+
+The permanent `richer-live-integration` GitHub Actions gate runs Monitor against SQL Server and exercises the feature as a real authenticated workflow. It verifies:
+
+- anonymous SignalR negotiation is rejected and operator negotiation succeeds;
+- a running native run, active span, and structured log appear in the authoritative snapshot;
+- terminal run pages expose the frozen-history update contract;
+- late forensic telemetry remains persisted and discoverable without changing that contract;
+- an operator-issued component command moves through durable Pending -> Leased -> Succeeded state;
+- both command surfaces expose the live client contract;
+- run and command clients subscribe to the intended SignalR groups and preserve historical/filter stability;
+- native, OTLP, and worker persistence paths share the post-save interceptor;
+- retention-only `AggregatedAt` updates are deliberately excluded from visible run invalidation;
+- the interceptor does not query the same DbContext from `SavedChanges`.
+
+The P8 gate runs alongside the existing build, OTLP, logs, alert-rule, credentials, audit, budgets, component-command, and saved-view regression suites.
 
 ## Deliberate non-goals
 
