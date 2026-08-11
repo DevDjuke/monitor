@@ -6,7 +6,8 @@ using Monitor.Domain;
 namespace Monitor.Web.Realtime;
 
 public sealed class MonitorRealtimeSaveChangesInterceptor(
-    IHubContext<MonitorHub> hub) : SaveChangesInterceptor
+    IHubContext<MonitorHub> hub,
+    ILogger<MonitorRealtimeSaveChangesInterceptor> logger) : SaveChangesInterceptor
 {
     private readonly List<RunDetailRealtimeEvent> _runChanges = [];
     private readonly Dictionary<Guid, CommandRealtimeEvent> _commandChanges = [];
@@ -33,7 +34,7 @@ public sealed class MonitorRealtimeSaveChangesInterceptor(
         int result,
         CancellationToken cancellationToken = default)
     {
-        await PublishAsync(cancellationToken);
+        await PublishBestEffortAsync();
         return result;
     }
 
@@ -41,7 +42,7 @@ public sealed class MonitorRealtimeSaveChangesInterceptor(
         SaveChangesCompletedEventData eventData,
         int result)
     {
-        PublishAsync(CancellationToken.None).GetAwaiter().GetResult();
+        PublishBestEffortAsync().GetAwaiter().GetResult();
         return result;
     }
 
@@ -132,26 +133,35 @@ public sealed class MonitorRealtimeSaveChangesInterceptor(
             DateTimeOffset.UtcNow));
     }
 
-    private async Task PublishAsync(CancellationToken cancellationToken)
+    private async Task PublishBestEffortAsync()
     {
         var runChanges = _runChanges.ToArray();
         var commandChanges = _commandChanges.Values.ToArray();
         Clear();
 
-        foreach (var change in runChanges)
+        try
         {
-            await hub.Clients.Group(MonitorHub.RunGroup(change.RunId)).SendAsync(
-                "RunDetailChanged",
-                change,
-                cancellationToken);
-        }
+            foreach (var change in runChanges)
+            {
+                await hub.Clients.Group(MonitorHub.RunGroup(change.RunId)).SendAsync(
+                    "RunDetailChanged",
+                    change,
+                    CancellationToken.None);
+            }
 
-        foreach (var command in commandChanges)
+            foreach (var command in commandChanges)
+            {
+                await hub.Clients.Group(MonitorHub.CommandsGroup).SendAsync(
+                    "CommandChanged",
+                    command,
+                    CancellationToken.None);
+            }
+        }
+        catch (Exception exception)
         {
-            await hub.Clients.Group(MonitorHub.CommandsGroup).SendAsync(
-                "CommandChanged",
-                command,
-                cancellationToken);
+            logger.LogWarning(
+                exception,
+                "Persisted Monitor state successfully, but realtime publication failed. Clients will reconcile from authoritative persisted state.");
         }
     }
 
