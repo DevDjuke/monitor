@@ -7,6 +7,7 @@
 
 @section Head {
     <link rel="stylesheet" href="~/css/component-credentials.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/commands.css" asp-append-version="true" />
 }
 
 <header class="page-head compact run-head">
@@ -42,11 +43,161 @@
 
 <section class="run-facts component-facts" aria-label="Component facts">
     <div><span>Status</span><strong>@component.Status</strong></div>
+    <div><span>Control</span><strong class="control-state @component.ControlState.ToString().ToLowerInvariant()">@component.ControlState</strong></div>
     <div><span>Environment</span><strong>@component.Environment</strong></div>
     <div><span>Version</span><strong>@(component.Version ?? "—")</strong></div>
     <div><span>Heartbeat</span><strong>@(component.LastHeartbeatAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—") UTC</strong></div>
     <div><span>Last run</span><strong>@(component.LastRunAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—") UTC</strong></div>
     <div><span>Registered</span><strong>@component.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</strong></div>
+</section>
+
+<div class="command-grid">
+    <section class="panel command-create-panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">CONTROL PLANE</p>
+                <h2>Issue command</h2>
+            </div>
+            <span>@Model.ActiveRuns.Count active run(s)</span>
+        </div>
+
+        <form method="post" asp-page-handler="IssueCommand" asp-route-id="@component.Id" class="command-form">
+            <label>
+                <span>Command</span>
+                <select asp-for="CommandInput.Type" id="command-type">
+                    <option value="Pause">Pause new work</option>
+                    <option value="Resume">Resume work</option>
+                    <option value="Disable">Disable component</option>
+                    <option value="Enable">Enable component</option>
+                    <option value="Restart">Restart</option>
+                    <option value="KillRun">Kill active run</option>
+                    <option value="RefreshConfiguration">Refresh configuration</option>
+                </select>
+            </label>
+
+            <label id="command-target-run-field">
+                <span>Target run</span>
+                <select asp-for="CommandInput.TargetRunId">
+                    <option value="">Select an active run</option>
+                    @foreach (var run in Model.ActiveRuns)
+                    {
+                        <option value="@run.Id">#@run.Sequence · @run.Name · @run.StartedAt.ToString("HH:mm:ss") UTC</option>
+                    }
+                </select>
+                <small>Required only for KillRun.</small>
+            </label>
+
+            <label id="command-payload-field">
+                <span>Configuration JSON</span>
+                <textarea asp-for="CommandInput.PayloadJson" rows="5" spellcheck="false" placeholder='{"featureFlag":true}'></textarea>
+                <small>Optional and accepted only for RefreshConfiguration. Do not put secrets in command payloads.</small>
+            </label>
+
+            <label>
+                <span>Expires after</span>
+                <div class="command-expiry-row">
+                    <input asp-for="CommandInput.ExpiryMinutes" type="number" min="1" max="1440" />
+                    <span>minutes</span>
+                </div>
+            </label>
+
+            <button class="primary-action" type="submit">Queue command</button>
+            <p class="form-hint">The component must claim and explicitly acknowledge the command. Restart requires integration with that component's host or process supervisor; Monitor does not pretend it can restart an arbitrary process by itself.</p>
+        </form>
+    </section>
+
+    <section class="panel command-protocol-panel">
+        <div class="panel-head">
+            <div>
+                <p class="eyebrow">DELIVERY</p>
+                <h2>Leased execution</h2>
+            </div>
+        </div>
+        <div class="command-protocol">
+            <div><strong>1</strong><span>Operator queues a durable command.</span></div>
+            <div><strong>2</strong><span>Component claims it with a short lease.</span></div>
+            <div><strong>3</strong><span>Component executes locally and reports Succeeded, Failed, or Rejected.</span></div>
+            <div><strong>4</strong><span>If the lease expires before acknowledgement, the same command id can be delivered again with a new lease token.</span></div>
+        </div>
+        <p class="form-hint">Handlers must be idempotent by command id. Stale lease acknowledgements are rejected by Monitor.</p>
+    </section>
+</div>
+
+<section class="panel table-panel command-history-panel">
+    <div class="panel-head">
+        <div>
+            <p class="eyebrow">COMMAND HISTORY</p>
+            <h2>Recent control operations</h2>
+        </div>
+        <span>@Model.Commands.Count shown · <a href="/commands?componentId=@component.Id">all commands</a></span>
+    </div>
+
+    @if (Model.Commands.Count == 0)
+    {
+        <div class="empty compact-empty"><strong>No commands issued yet.</strong><span>Queue a control command above to start the component command history.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table class="command-table">
+                <thead>
+                    <tr><th>Command</th><th>Status</th><th>Issued</th><th>Delivery</th><th>Result</th><th></th></tr>
+                </thead>
+                <tbody>
+                @foreach (var command in Model.Commands)
+                {
+                    <tr>
+                        <td>
+                            <strong>@command.Type</strong>
+                            @if (command.TargetRunId is not null)
+                            {
+                                <small>run @command.TargetRunId</small>
+                            }
+                        </td>
+                        <td><span class="command-state @command.Status.ToString().ToLowerInvariant()">@command.Status</span></td>
+                        <td>
+                            @command.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss") UTC
+                            <small>@(command.RequestedBy ?? "system") · expires @command.ExpiresAt.ToString("HH:mm:ss")</small>
+                        </td>
+                        <td>
+                            <strong>@command.DeliveryAttempts attempt(s)</strong>
+                            @if (command.LeaseExpiresAt is not null)
+                            {
+                                <small>lease until @command.LeaseExpiresAt.Value.ToString("HH:mm:ss") UTC</small>
+                            }
+                        </td>
+                        <td>
+                            @if (!string.IsNullOrWhiteSpace(command.Error))
+                            {
+                                <span class="command-error">@command.Error</span>
+                            }
+                            else if (!string.IsNullOrWhiteSpace(command.ResultJson))
+                            {
+                                <details><summary>Result</summary><pre>@command.ResultJson</pre></details>
+                            }
+                            else if (command.CompletedAt is not null)
+                            {
+                                <span>@command.CompletedAt.Value.ToString("yyyy-MM-dd HH:mm:ss") UTC</span>
+                            }
+                            else
+                            {
+                                <span>—</span>
+                            }
+                        </td>
+                        <td>
+                            @if (command.CanCancel)
+                            {
+                                <form method="post" asp-page-handler="CancelCommand" asp-route-id="@component.Id" asp-route-commandId="@command.Id">
+                                    <button class="inline-button danger-button" type="submit">Cancel</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
 </section>
 
 <div class="component-credential-grid">
@@ -137,7 +288,7 @@
                 <small>Use a label that identifies the exporter, deployment, or machine using the key.</small>
             </label>
             <button class="primary-action" type="submit">Issue ingestion key</button>
-            <p class="form-hint">Component keys can only submit or read telemetry belonging to <strong>@component.Name</strong> in <strong>@component.Environment</strong>. The shared bootstrap key remains available temporarily for setup and migration.</p>
+            <p class="form-hint">Component keys can only submit or read telemetry belonging to <strong>@component.Name</strong> in <strong>@component.Environment</strong>. A disabled component cannot use the key for normal telemetry, but it may still poll the control endpoint so it can receive Enable.</p>
         </form>
     </section>
 </div>
@@ -145,15 +296,28 @@
 @section Scripts {
 <script>
 (() => {
-    const button = document.getElementById('copy-issued-credential');
-    const value = document.getElementById('issued-credential-key');
-    if (!button || !value || !navigator.clipboard) return;
+    const copyButton = document.getElementById('copy-issued-credential');
+    const copyValue = document.getElementById('issued-credential-key');
+    if (copyButton && copyValue && navigator.clipboard) {
+        copyButton.addEventListener('click', async () => {
+            await navigator.clipboard.writeText(copyValue.textContent.trim());
+            copyButton.textContent = 'Copied';
+            window.setTimeout(() => copyButton.textContent = 'Copy key', 1600);
+        });
+    }
 
-    button.addEventListener('click', async () => {
-        await navigator.clipboard.writeText(value.textContent.trim());
-        button.textContent = 'Copied';
-        window.setTimeout(() => button.textContent = 'Copy key', 1600);
-    });
+    const type = document.getElementById('command-type');
+    const target = document.getElementById('command-target-run-field');
+    const payload = document.getElementById('command-payload-field');
+    if (!type || !target || !payload) return;
+
+    const syncFields = () => {
+        target.hidden = type.value !== 'KillRun';
+        payload.hidden = type.value !== 'RefreshConfiguration';
+    };
+
+    type.addEventListener('change', syncFields);
+    syncFields();
 })();
 </script>
 }
