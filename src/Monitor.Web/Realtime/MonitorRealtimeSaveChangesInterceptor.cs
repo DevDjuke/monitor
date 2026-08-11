@@ -9,7 +9,7 @@ public sealed class MonitorRealtimeSaveChangesInterceptor(
     IHubContext<MonitorHub> hub) : SaveChangesInterceptor
 {
     private readonly List<RunDetailRealtimeEvent> _runChanges = [];
-    private readonly HashSet<Guid> _commandIds = [];
+    private readonly Dictionary<Guid, CommandRealtimeEvent> _commandChanges = [];
 
     public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
         DbContextEventData eventData,
@@ -33,7 +33,7 @@ public sealed class MonitorRealtimeSaveChangesInterceptor(
         int result,
         CancellationToken cancellationToken = default)
     {
-        await PublishAsync(eventData.Context, cancellationToken);
+        await PublishAsync(cancellationToken);
         return result;
     }
 
@@ -41,7 +41,7 @@ public sealed class MonitorRealtimeSaveChangesInterceptor(
         SaveChangesCompletedEventData eventData,
         int result)
     {
-        PublishAsync(eventData.Context, CancellationToken.None).GetAwaiter().GetResult();
+        PublishAsync(CancellationToken.None).GetAwaiter().GetResult();
         return result;
     }
 
@@ -82,10 +82,32 @@ public sealed class MonitorRealtimeSaveChangesInterceptor(
                     AddRunChange(runId, "Log", logEvent.Id);
                     break;
                 case ComponentCommand command:
-                    _commandIds.Add(command.Id);
+                    CaptureCommand(command);
                     break;
             }
         }
+    }
+
+    private void CaptureCommand(ComponentCommand command)
+    {
+        var component = command.Component;
+        _commandChanges[command.Id] = new CommandRealtimeEvent(
+            command.Id,
+            command.ComponentId,
+            component?.Name ?? string.Empty,
+            component?.Environment ?? string.Empty,
+            command.Type.ToString(),
+            command.Status.ToString(),
+            command.TargetRunId,
+            command.RequestedBy,
+            command.CreatedAt,
+            command.ExpiresAt,
+            command.LeasedAt,
+            command.LeaseExpiresAt,
+            command.DeliveryAttempts,
+            command.CompletedAt,
+            command.ResultJson,
+            command.Error);
     }
 
     private void AddRunChange(Guid runId, string kind, Guid? entityId)
@@ -110,18 +132,10 @@ public sealed class MonitorRealtimeSaveChangesInterceptor(
             DateTimeOffset.UtcNow));
     }
 
-    private async Task PublishAsync(
-        DbContext? context,
-        CancellationToken cancellationToken)
+    private async Task PublishAsync(CancellationToken cancellationToken)
     {
-        if (context is null)
-        {
-            Clear();
-            return;
-        }
-
         var runChanges = _runChanges.ToArray();
-        var commandIds = _commandIds.ToArray();
+        var commandChanges = _commandChanges.Values.ToArray();
         Clear();
 
         foreach (var change in runChanges)
@@ -132,34 +146,7 @@ public sealed class MonitorRealtimeSaveChangesInterceptor(
                 cancellationToken);
         }
 
-        if (commandIds.Length == 0)
-        {
-            return;
-        }
-
-        var commands = await context.Set<ComponentCommand>()
-            .AsNoTracking()
-            .Where(x => commandIds.Contains(x.Id))
-            .Select(x => new CommandRealtimeEvent(
-                x.Id,
-                x.ComponentId,
-                x.Component.Name,
-                x.Component.Environment,
-                x.Type.ToString(),
-                x.Status.ToString(),
-                x.TargetRunId,
-                x.RequestedBy,
-                x.CreatedAt,
-                x.ExpiresAt,
-                x.LeasedAt,
-                x.LeaseExpiresAt,
-                x.DeliveryAttempts,
-                x.CompletedAt,
-                x.ResultJson,
-                x.Error))
-            .ToListAsync(cancellationToken);
-
-        foreach (var command in commands)
+        foreach (var command in commandChanges)
         {
             await hub.Clients.Group(MonitorHub.CommandsGroup).SendAsync(
                 "CommandChanged",
@@ -171,6 +158,6 @@ public sealed class MonitorRealtimeSaveChangesInterceptor(
     private void Clear()
     {
         _runChanges.Clear();
-        _commandIds.Clear();
+        _commandChanges.Clear();
     }
 }
