@@ -1,0 +1,51 @@
+name: saved-views-integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  saved-views:
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: MonitorSavedViewCi!2026Password
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorSavedViewCi!2026Password' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore Monitor.sln
+      - run: dotnet build Monitor.sln --configuration Release --no-restore
+      - name: Exercise personal saved views, canonical filters, pinning and ownership isolation
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          ASPNETCORE_URLS: http://127.0.0.1:5092
+          ConnectionStrings__Monitor: Server=127.0.0.1,1433;Database=MonitorSavedViewCi;User Id=sa;Password=MonitorSavedViewCi!2026Password;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
+          Monitor__IngestionApiKey: saved-view-ci-ingestion-key
+          Monitor__BootstrapAdmin__Email: saved-view-ci@monitor.local
+          Monitor__BootstrapAdmin__Password: MonitorSavedViewAdmin2026
+          Retention__Enabled: false
+          FailureAlerting__Enabled: false
+          UsageBudgets__Enabled: false
+          AlertDelivery__Enabled: false
+          ComponentCommands__Enabled: false
+          BASE_URL: http://127.0.0.1:5092
+          DB_NAME: MonitorSavedViewCi
+          SQL_PASSWORD: MonitorSavedViewCi!2026Password
+        run: bash .github/scripts/saved-views-ci.sh

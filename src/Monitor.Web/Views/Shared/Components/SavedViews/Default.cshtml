@@ -1,0 +1,57 @@
+@model SavedViewToolbarModel
+
+<section class="saved-view-bar" aria-label="Saved views">
+    <div class="saved-view-picker-wrap">
+        <div class="saved-view-label">
+            <span>Saved view</span>
+            <strong data-saved-view-applied @(Model.ActiveViewId is null ? "hidden" : null)>Applied</strong>
+        </div>
+        <select class="saved-view-picker" data-saved-view-picker aria-label="Apply saved @Model.SurfaceName view">
+            @if (Model.ActiveViewId is null)
+            {
+                <option value="" selected>Current filters · unsaved</option>
+            }
+            else
+            {
+                <option value="">Current filters</option>
+            }
+            @foreach (var view in Model.Views)
+            {
+                if (view.IsActive)
+                {
+                    <option value="@view.Url" selected>@(view.IsPinned ? "★ " : "")@view.Name</option>
+                }
+                else
+                {
+                    <option value="@view.Url">@(view.IsPinned ? "★ " : "")@view.Name</option>
+                }
+            }
+        </select>
+        <a class="saved-view-manage" asp-page="/SavedViews" asp-route-surface="@Model.Surface">Manage</a>
+    </div>
+
+    <details class="saved-view-create">
+        <summary>Save current view</summary>
+        <form method="post" asp-page="/SavedViews" asp-page-handler="Create" class="saved-view-create-form">
+            <input type="hidden" name="surface" value="@Model.Surface" />
+            <input type="hidden" name="queryString" value="@Model.CurrentQueryString" data-saved-view-current-query />
+            <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" data-saved-view-return-url />
+            <label>
+                <span>Name</span>
+                <input name="name" maxlength="120" autocomplete="off" required placeholder="Production failures" />
+            </label>
+            <label class="saved-view-pin-choice">
+                <input type="checkbox" name="isPinned" value="true" />
+                <span>Pin to sidebar</span>
+            </label>
+            <button class="primary-action" type="submit">Save view</button>
+        </form>
+    </details>
+
+    @if (!string.IsNullOrWhiteSpace(Model.StatusMessage))
+    {
+        <div class="saved-view-status @(Model.StatusIsError ? "error" : "success")" role="status">
+            @Model.StatusMessage
+        </div>
+    }
+</section>

@@ -1,0 +1,15 @@
+@model IReadOnlyList<PinnedSavedViewRow>
+
+@if (Model.Count > 0)
+{
+    <div class="sidebar-saved-views" aria-label="Pinned saved views">
+        <span class="sidebar-section-label">PINNED VIEWS</span>
+        @foreach (var view in Model)
+        {
+            <a class="sidebar-saved-view" href="@view.Url" title="@view.SurfaceName · @view.Name">
+                <span>@view.Name</span>
+                <small>@view.SurfaceName</small>
+            </a>
+        }
+    </div>
+}

@@ -58,6 +58,8 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - Durable leased component commands with Pause/Resume, Disable/Enable, Restart, KillRun, and RefreshConfiguration semantics.
 - `/commands` cross-component command history plus component-scoped issuance and cancellation.
 - Server-side run admission enforcement for Paused/Disabled workload control state.
+- Personal saved operational views across Runs, Logs, Usage, Alerts, Budgets, Audit, and Commands.
+- Canonical per-user filter presets with up to six pinned sidebar fast links; Runs filter state is bookmarkable while keyset cursors remain transient.
 - Private Razor control plane protected by ASP.NET Core Identity/cookie authentication.
 - Bootstrap ingestion key plus scoped API-key authentication for autonomous components and OTLP exporters.
 - One-time local owner setup and production bootstrap administrator support.
@@ -67,7 +69,7 @@ The goal is to make every autonomous component answer the same questions: Is it 
 - `Monitor.OtlpSampleWorker` dogfoods the standard OpenTelemetry .NET trace and logging exporters without referencing `Monitor.Client`.
 - Versioned EF Core migrations.
 - SQL Server persistence with LocalDB as the default development instance.
-- GitHub Actions SQL Server-backed integration tests for telemetry, traces, logs, migration upgrades, keyset pagination, credentials, failure grouping, alert evaluation, signed webhook delivery, budgets, leased component commands, retention safety, and audit atomicity/secret exclusion.
+- GitHub Actions SQL Server-backed integration tests for telemetry, traces, logs, migration upgrades, keyset pagination, credentials, failure grouping, alert evaluation, signed webhook delivery, budgets, leased component commands, personal saved-view ownership/canonicalization, retention safety, and audit atomicity/secret exclusion.
 
 The Monitor-native HTTP API and OTLP are complementary. The custom API carries Monitor-specific lifecycle semantics; OTLP provides vendor-neutral observability ingestion.
 
@@ -547,6 +549,7 @@ docs/
   audit-trail.md
   component-ingestion-credentials.md
   component-control-commands.md
+  saved-views.md
   budgets-and-usage-policy.md
   logs-and-run-events.md
   roadmap.md
@@ -554,4 +557,4 @@ docs/
 
 ## Roadmap
 
-The maintained implementation sequence is in `docs/roadmap.md`. Alert-rule management, component credentials, logs/run events, audit, budgets, and durable component control commands are complete. The next planned slice is **saved views**, followed by the richer live experience.
+The maintained implementation sequence is in `docs/roadmap.md`. Saved views are now complete alongside the core observability, policy, audit, credential, and command-control slices. We intentionally reevaluate the next product priority before starting the richer live-experience work.

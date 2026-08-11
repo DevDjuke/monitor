@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <title>@ViewData["Title"] · Monitor</title>
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+    <link rel="stylesheet" href="~/css/saved-views.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/css/failure-alerts.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/css/alert-delivery.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/css/alert-rules.css" asp-append-version="true" />
@@ -26,6 +27,7 @@
                 <a href="/">Overview</a>
                 <a href="/components">Components</a>
                 <a href="/commands">Commands</a>
+                <a href="/saved-views">Saved views</a>
                 <a href="/runs">Runs</a>
                 <a href="/logs">Logs</a>
                 <a href="/usage">Usage</a>
@@ -34,6 +36,7 @@
                 <a href="/alerts/rules">Alert rules</a>
                 <a href="/audit">Audit</a>
             </nav>
+            @await Component.InvokeAsync("PinnedSavedViews")
             <div class="sidebar-account">
                 <span class="account-email">@User.Identity?.Name</span>
                 <form method="post" asp-page="/Account/Logout">
@@ -49,6 +52,7 @@
             @RenderBody()
         </main>
     </div>
+    <script src="~/js/saved-views.js" asp-append-version="true"></script>
     @await RenderSectionAsync("Scripts", required: false)
 </body>
 </html>

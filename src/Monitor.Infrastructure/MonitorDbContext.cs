@@ -26,6 +26,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     public DbSet<UsageBudgetAlertEvent> UsageBudgetAlertEvents => Set<UsageBudgetAlertEvent>();
     public DbSet<UsageBudgetAlertDelivery> UsageBudgetAlertDeliveries => Set<UsageBudgetAlertDelivery>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+    public DbSet<SavedView> SavedViews => Set<SavedView>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -224,6 +225,20 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
         auditEvent.HasIndex(x => new { x.Action, x.OccurredAt }).IsDescending(false, true);
         auditEvent.HasIndex(x => new { x.TargetType, x.OccurredAt }).IsDescending(false, true);
         auditEvent.HasIndex(x => new { x.TargetType, x.TargetId, x.OccurredAt }).IsDescending(false, false, true);
+
+        var savedView = modelBuilder.Entity<SavedView>();
+        savedView.ToTable("SavedViews");
+        savedView.HasKey(x => x.Id);
+        savedView.Property(x => x.UserId).HasMaxLength(450);
+        savedView.Property(x => x.Name).HasMaxLength(120);
+        savedView.Property(x => x.NameKey).HasMaxLength(120);
+        savedView.Property(x => x.QueryString).HasMaxLength(4000);
+        savedView.HasIndex(x => new { x.UserId, x.Surface, x.NameKey }).IsUnique();
+        savedView.HasIndex(x => new { x.UserId, x.IsPinned, x.UpdatedAt }).IsDescending(false, false, true);
+        savedView.HasOne<MonitorUser>()
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         var run = modelBuilder.Entity<AgentRun>();
         run.ToTable("Runs");

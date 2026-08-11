@@ -38,6 +38,7 @@ builder.Services.AddDbContext<MonitorDbContext>(options =>
     options.UseSqlServer(connectionString));
 
 builder.Services.AddScoped<AuditTrailWriter>();
+builder.Services.AddSingleton<SavedViewQueryPolicy>();
 builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection(RetentionOptions.SectionName));
 builder.Services.AddScoped<RetentionAggregationService>();
 builder.Services.AddHostedService<RetentionWorker>();
