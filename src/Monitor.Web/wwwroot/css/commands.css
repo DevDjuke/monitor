@@ -1,0 +1,153 @@
+.command-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(280px, .55fr);
+    gap: 1rem;
+    margin: 1rem 0;
+}
+
+.command-create-panel,
+.command-protocol-panel,
+.command-history-panel {
+    min-width: 0;
+}
+
+.command-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .9rem;
+}
+
+.command-form label {
+    display: grid;
+    gap: .35rem;
+}
+
+.command-form label > span {
+    font-size: .74rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.command-form input,
+.command-form select,
+.command-form textarea {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.command-form textarea {
+    resize: vertical;
+    min-height: 7rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.command-form label:nth-of-type(2),
+.command-form label:nth-of-type(3),
+.command-form .form-hint {
+    grid-column: 1 / -1;
+}
+
+.command-form [hidden] {
+    display: none !important;
+}
+
+.command-expiry-row {
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+}
+
+.command-expiry-row input {
+    max-width: 8rem;
+}
+
+.command-protocol {
+    display: grid;
+    gap: .65rem;
+}
+
+.command-protocol > div {
+    display: grid;
+    grid-template-columns: 2rem 1fr;
+    gap: .65rem;
+    align-items: start;
+}
+
+.command-protocol strong {
+    width: 1.7rem;
+    height: 1.7rem;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: .75rem;
+}
+
+.control-state,
+.command-state {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    padding: .2rem .5rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: .72rem;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+}
+
+.control-state.active,
+.command-state.succeeded {
+    border-color: rgba(87, 204, 153, .45);
+}
+
+.control-state.paused,
+.command-state.pending,
+.command-state.leased {
+    border-color: rgba(255, 196, 92, .5);
+}
+
+.control-state.disabled,
+.command-state.failed,
+.command-state.rejected,
+.command-state.cancelled,
+.command-state.expired {
+    border-color: rgba(255, 105, 105, .5);
+}
+
+.command-table small,
+.command-table details,
+.command-table pre {
+    display: block;
+    margin-top: .25rem;
+}
+
+.command-table pre {
+    max-width: 34rem;
+    max-height: 12rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: .75rem;
+}
+
+.command-error {
+    display: block;
+    max-width: 34rem;
+    color: var(--danger, #ff8f8f);
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 980px) {
+    .command-grid,
+    .command-form {
+        grid-template-columns: 1fr;
+    }
+
+    .command-form label:nth-of-type(2),
+    .command-form label:nth-of-type(3),
+    .command-form .form-hint {
+        grid-column: auto;
+    }
+}
