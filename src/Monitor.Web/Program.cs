@@ -151,6 +151,8 @@ builder.Services
     .AddEntityFrameworkStores<MonitorDbContext>()
     .AddDefaultTokenProviders();
 
+builder.Services.Configure<SecurityStampValidatorOptions>(options =>
+    options.ValidationInterval = TimeSpan.FromMinutes(1));
 builder.Services.AddAuthorization(MonitorPolicies.Configure);
 
 builder.Services.ConfigureApplicationCookie(options =>
