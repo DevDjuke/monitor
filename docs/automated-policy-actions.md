@@ -30,7 +30,7 @@ Only active `Pause` or `Disable` choices have a row. `None` is represented by ab
 
 The table is a deliberately small policy sidecar accessed through `UsageBudgetEnforcementPolicyStore`. It is created by an EF Core migration but is not mapped into the main EF aggregate model. This keeps the existing `UsageBudget` aggregate and model snapshot unchanged while still making the policy configuration durable and transaction-capable.
 
-Deleting a budget cascades its enforcement-policy row at the database level.
+Budgets are currently soft-deleted, so their enforcement-policy row remains durable with the budget record. If a budget is physically removed in the future, the database foreign key cascades the sidecar row.
 
 ## Evaluation and exact-once policy intent
 
