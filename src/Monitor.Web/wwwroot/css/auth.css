@@ -100,6 +100,21 @@
     transform: translateY(-1px);
 }
 
+.auth-link-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
+    margin-top: 18px;
+    padding: 0 16px;
+    border-radius: 9px;
+    background: var(--accent);
+    color: white;
+    font-size: 12px;
+    font-weight: 800;
+    text-decoration: none;
+}
+
 .validation-summary,
 .field-error {
     color: var(--bad);
@@ -136,13 +151,26 @@
     background: rgba(17, 20, 27, .7);
 }
 
-.account-email {
+.account-email,
+.account-role {
     display: block;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.account-email {
     color: var(--muted);
     font-size: 10px;
-    white-space: nowrap;
+}
+
+.account-role {
+    margin-top: 4px;
+    color: #aaa1ff;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: .08em;
+    text-transform: uppercase;
 }
 
 .signout-button {
@@ -170,7 +198,8 @@
         text-align: center;
     }
 
-    .account-email {
+    .account-email,
+    .account-role {
         display: none;
     }
 
