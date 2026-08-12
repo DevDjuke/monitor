@@ -14,7 +14,7 @@ This roadmap is the current product sequence for turning Monitor from an observa
 - Threshold/window/cooldown failure alerting with duplicate-evidence suppression.
 - Durable multi-channel alert-delivery outbox with signed webhook, Slack, Teams, Discord, PagerDuty, and SMTP email adapters, retry, and dead-letter handling.
 - Durable append-only operator audit trail with safe before/after snapshots and searchable history.
-- Daily/monthly cost and token budget policy with warning/critical alert delivery.
+- Daily/monthly cost and token budget policy with warning/critical alert delivery and optional component-scoped Critical enforcement.
 - Durable leased component control commands with acknowledgement, redelivery, timeout/expiry, and audit history.
 - Personal saved operational views with canonical filter persistence and pinned sidebar shortcuts.
 - Server-side filters on Runs, Logs, Usage, Alerts, Budgets, Commands, and Audit.
@@ -85,7 +85,7 @@ Status: **complete**
 - Manage policies, threshold history, acknowledgement and budget delivery state from `/budgets`, including manual retry for non-delivered budget notifications.
 - Audit budget create/edit/enable/disable/delete, acknowledgement/requeue, plus system-originated warning/critical threshold crossings.
 - Detailed contract: `docs/budgets-and-usage-policy.md`.
-- Enforcement remains intentionally absent until component control commands exist; P5 is detection/notification policy only.
+- P5 originally stopped at detection/notification; P11 now layers opt-in enforcement on top of the completed component-command protocol without changing P5 accounting semantics.
 
 ### 6. Component control commands
 
@@ -180,14 +180,19 @@ Status: **complete**
 
 ### 11. Automated policy actions
 
-Status: **planned**
+Status: **complete**
 
-- Add opt-in budget enforcement actions such as Critical → Pause or Critical → Disable.
-- Enqueue ordinary durable `ComponentCommand` records; policy evaluators must not mutate workloads directly.
-- Preserve command leasing, acknowledgement, idempotency, audit evidence, and realtime transitions.
-- Deduplicate enforcement per policy/period/threshold.
-- Do not auto-resume or auto-enable in the first version; recovery remains an explicit operator decision.
-- Consider failure-rule actions only after the budget-enforcement path is proven.
+- Add opt-in budget Critical actions: no action, Pause component, or Disable component.
+- Require Pause/Disable policies to target one concrete component; global/environment/model-only budgets remain alert-only.
+- Persist active action configuration in a versioned one-to-one `UsageBudgetEnforcementPolicies` sidecar table.
+- Enqueue an ordinary durable `ComponentCommand` in the same evaluator transaction as the Critical alert event, delivery rows, audit evidence, and threshold state; policy evaluation never mutates workload state directly.
+- Reuse the existing command leasing, acknowledgement, redelivery, expiry, idempotency, realtime transition, and component-side completion semantics.
+- Carry budget id, alert event id, period, action and utilization provenance in the generated command payload and system audit metadata.
+- Reuse `LastTriggeredLevel` as the per-budget/per-period/threshold action deduplication boundary so repeated sweeps cannot create duplicate enforcement commands.
+- Do not auto-resume or auto-enable; recovery remains an explicit operator decision even after a policy-issued command succeeds.
+- Keep failure-rule actions deferred until this budget-enforcement path has proven useful in operation.
+- Add a permanent SQL Server-backed integration gate covering invalid broad policies, both Pause and Disable, exact-once enqueue, command claim/acknowledgement, resulting control state, audit provenance, and absence of automatic recovery.
+- Detailed contract: `docs/automated-policy-actions.md`.
 
 ### 12. Roles, permissions, and operator management
 
