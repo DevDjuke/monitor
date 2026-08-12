@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Infrastructure.Auth;
+using Monitor.Web.Auth;
 
 namespace Monitor.Web.Pages.Account;
 
@@ -58,16 +59,28 @@ public sealed class SetupModel(
         var result = await userManager.CreateAsync(user, Input.Password);
         if (!result.Succeeded)
         {
-            foreach (var error in result.Errors)
-            {
-                ModelState.AddModelError(string.Empty, error.Description);
-            }
+            AddErrors(result);
+            return Page();
+        }
 
+        var roleResult = await userManager.AddToRoleAsync(user, MonitorRoles.Owner);
+        if (!roleResult.Succeeded)
+        {
+            await userManager.DeleteAsync(user);
+            AddErrors(roleResult);
             return Page();
         }
 
         await signInManager.SignInAsync(user, isPersistent: false);
         return LocalRedirect("/");
+    }
+
+    private void AddErrors(IdentityResult result)
+    {
+        foreach (var error in result.Errors)
+        {
+            ModelState.AddModelError(string.Empty, error.Description);
+        }
     }
 
     public sealed class SetupInput
