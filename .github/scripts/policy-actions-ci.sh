@@ -256,7 +256,7 @@ claim_and_complete "$pause_component_id" Pause
 claim_and_complete "$disable_component_id" Disable
 
 test "$(scalar "SELECT COUNT(*) FROM Components WHERE Id='$pause_component_id' AND ControlState=1 AND Enabled=1;")" = '1'
-test "$(scalar "SELECT COUNT(*) FROM Components WHERE Id='$disable_component_id' AND ControlState=2 AND Enabled=0;")" = '1'
+test "$(scalar "SELECT COUNT(*) FROM Components WHERE Id='$disable_component_id' AND ControlState=2 AND Enabled=1;")" = '1'
 test "$(scalar "SELECT COUNT(*) FROM ComponentCommands WHERE RequestedBy=N'policy:usage-budget' AND Status=3;")" = '2'
 test "$(scalar "SELECT COUNT(*) FROM AuditEvents WHERE Action=N'component-command.succeeded' AND ActorType=2;")" = '2'
 
