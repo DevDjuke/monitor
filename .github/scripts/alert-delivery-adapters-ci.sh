@@ -148,7 +148,7 @@ SELECT CONCAT(
 test "$configured" = '6|1|1|1|1|1|1|6'
 
 # Secret-bearing provider endpoints/config must not appear in immutable audit JSON.
-audit_leaks=$(sql_scalar "SELECT COUNT(*) FROM AuditEvents WHERE TargetType = N'AlertDestination' AND (AfterJson LIKE N'%/slack%' OR AfterJson LIKE N'%/teams%' OR AfterJson LIKE N'%/discord%' OR AfterJson LIKE N'%p9-pagerduty-routing-key-2026%');")
+audit_leaks=$(sql_scalar "SELECT COUNT(*) FROM AuditEvents WHERE TargetType = N'alert-destination' AND (AfterJson LIKE N'%/slack%' OR AfterJson LIKE N'%/teams%' OR AfterJson LIKE N'%/discord%' OR AfterJson LIKE N'%p9-pagerduty-routing-key-2026%');")
 test "$audit_leaks" = '0'
 
 # Exercise provider-native test sending first, including SMTP.
