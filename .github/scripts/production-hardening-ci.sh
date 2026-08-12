@@ -68,7 +68,7 @@ start_monitor() {
     -v "$SECRETS_DIR:/run/secrets:ro" \
     -e ASPNETCORE_ENVIRONMENT=Production \
     -e ASPNETCORE_HTTP_PORTS=8080 \
-    -e AllowedHosts=monitor.local \
+    -e 'AllowedHosts=monitor.local;localhost;127.0.0.1' \
     -e Production__PublicUrl=https://monitor.local \
     -e Production__MigrateOnStartup=false \
     -e Production__UseHttpsRedirection=false \
