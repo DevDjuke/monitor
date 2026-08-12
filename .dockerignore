@@ -1,0 +1,16 @@
+**/bin/
+**/obj/
+.git/
+.github/
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.db
+*.db-shm
+*.db-wal
+deploy/single-node/.env
+deploy/single-node/secrets/*
+!deploy/single-node/secrets/README.md
+!deploy/single-node/secrets/*.example
