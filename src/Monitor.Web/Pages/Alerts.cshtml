@@ -12,7 +12,7 @@
     <div>
         <p class="eyebrow">FAILURE ALERTING</p>
         <h1>Alerts</h1>
-        <p class="lede">Operational alert events generated from recurring failure fingerprints, with durable signed webhook delivery, retries, and dead-letter inspection.</p>
+        <p class="lede">Operational alert events with durable multi-channel delivery, retries, dead-letter inspection, and provider-specific payloads.</p>
     </div>
 </header>
 
@@ -151,14 +151,14 @@
         <div class="panel-head">
             <div>
                 <p class="eyebrow">DELIVERY DESTINATIONS</p>
-                <h2>Signed webhooks</h2>
+                <h2>Notification channels</h2>
             </div>
             <span>@Model.Destinations.Count configured · global</span>
         </div>
 
         @if (Model.Destinations.Count == 0)
         {
-            <div class="empty compact-empty"><strong>No delivery destinations.</strong><span>Add a webhook and future alert events will enqueue one durable delivery for it.</span></div>
+            <div class="empty compact-empty"><strong>No delivery destinations.</strong><span>Add a webhook, chat, incident, or email channel and future alert events will enqueue durable deliveries for it.</span></div>
         }
         else
         {
@@ -173,8 +173,9 @@
                         <tr>
                             <td>
                                 <strong>@destination.Name</strong>
+                                <small>@AlertsModel.DisplayKind(destination.Kind)</small>
                                 <small class="endpoint-url">@destination.EndpointUrl</small>
-                                <small><span class="status-dot @(destination.Enabled ? "healthy" : "unknown")"></span> @(destination.Enabled ? "Enabled" : "Disabled") · @destination.Kind</small>
+                                <small><span class="status-dot @(destination.Enabled ? "healthy" : "unknown")"></span> @(destination.Enabled ? "Enabled" : "Disabled")</small>
                             </td>
                             <td>
                                 @if (destination.LastFailureAt is not null && (destination.LastSuccessAt is null || destination.LastFailureAt > destination.LastSuccessAt))
@@ -197,7 +198,7 @@
                             <td class="delivery-actions">
                                 <form method="post" asp-page-handler="TestDestination" asp-route-destinationId="@destination.Id">
                                     <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
-                                    <button class="inline-button" type="submit">Test</button>
+                                    <button class="inline-button" type="submit" title="@(destination.Kind == Monitor.Domain.AlertDeliveryKind.PagerDuty ? "PagerDuty tests create a real informational incident." : "Send a provider-native test notification.")">Test</button>
                                 </form>
                                 <form method="post" asp-page-handler="ToggleDestination" asp-route-destinationId="@destination.Id">
                                     <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
@@ -216,26 +217,64 @@
         <div class="panel-head">
             <div>
                 <p class="eyebrow">ADD DESTINATION</p>
-                <h2>Webhook endpoint</h2>
+                <h2>Delivery adapter</h2>
             </div>
         </div>
-        <form method="post" asp-page-handler="CreateDestination" class="alert-form">
+        <form method="post" asp-page-handler="CreateDestination" class="alert-form" id="destination-form">
             <input type="hidden" name="returnUrl" value="@Model.ReturnUrl" />
             <label>
                 <span>Name</span>
-                <input asp-for="DestinationInput.Name" placeholder="Ops webhook" autocomplete="off" />
+                <input asp-for="DestinationInput.Name" placeholder="Operations notifications" autocomplete="off" />
             </label>
             <label>
+                <span>Type</span>
+                <select asp-for="DestinationInput.Kind" id="destination-kind">
+                    @foreach (var kind in Model.DestinationKinds)
+                    {
+                        <option value="@kind">@AlertsModel.DisplayKind(kind)</option>
+                    }
+                </select>
+            </label>
+            <label data-destination-kinds="Webhook,Slack,MicrosoftTeams,Discord">
                 <span>Endpoint URL</span>
-                <input asp-for="DestinationInput.EndpointUrl" placeholder="https://example.com/hooks/monitor" autocomplete="url" />
+                <input asp-for="DestinationInput.EndpointUrl" placeholder="https://…" autocomplete="url" />
+                <small data-endpoint-help>Chat webhook URLs are encrypted at rest and only a redacted host is shown after creation.</small>
             </label>
-            <label>
-                <span>Signing secret</span>
-                <input asp-for="DestinationInput.Secret" type="password" placeholder="At least 16 characters" autocomplete="new-password" />
-                <small>Stored encrypted through ASP.NET Core Data Protection. Monitor signs <code>timestamp.body</code> with HMAC-SHA256.</small>
+            <label data-destination-kinds="Webhook,PagerDuty">
+                <span data-secret-label>Signing secret / routing key</span>
+                <input asp-for="DestinationInput.Secret" type="password" autocomplete="new-password" />
+                <small data-secret-help>Signed webhooks require at least 16 characters. PagerDuty uses the Events API v2 routing key.</small>
             </label>
-            <button class="primary-action" type="submit">Add webhook</button>
-            <p class="form-hint">Each future alert event receives one outbox row per enabled destination. Disabling a destination pauses its queued work without deleting history.</p>
+            <label data-destination-kinds="Email">
+                <span>Recipient</span>
+                <input asp-for="DestinationInput.EmailRecipient" type="email" placeholder="ops@example.com" autocomplete="email" />
+            </label>
+            <label data-destination-kinds="Email">
+                <span>SMTP host</span>
+                <input asp-for="DestinationInput.SmtpHost" placeholder="smtp.example.com" autocomplete="off" />
+            </label>
+            <label data-destination-kinds="Email">
+                <span>SMTP port</span>
+                <input asp-for="DestinationInput.SmtpPort" type="number" min="1" max="65535" />
+            </label>
+            <label data-destination-kinds="Email">
+                <span>From address</span>
+                <input asp-for="DestinationInput.SmtpFromAddress" type="email" placeholder="monitor@example.com" autocomplete="email" />
+            </label>
+            <label data-destination-kinds="Email">
+                <span>SMTP username</span>
+                <input asp-for="DestinationInput.SmtpUserName" autocomplete="username" />
+            </label>
+            <label data-destination-kinds="Email">
+                <span>SMTP password</span>
+                <input asp-for="DestinationInput.SmtpPassword" type="password" autocomplete="new-password" />
+                <small>SMTP credentials are encrypted with ASP.NET Core Data Protection and never copied into audit snapshots.</small>
+            </label>
+            <label data-destination-kinds="Email">
+                <span><input asp-for="DestinationInput.SmtpEnableSsl" type="checkbox" /> Use TLS/SSL</span>
+            </label>
+            <button class="primary-action" type="submit">Add destination</button>
+            <p class="form-hint">Slack, Teams, Discord, PagerDuty, and email reuse the same durable outbox, retries, dead-letter state, per-rule/per-budget routing, health, and audit trail as signed webhooks.</p>
         </form>
     </article>
 </section>
@@ -258,7 +297,7 @@
         <div class="table-wrap">
             <table>
                 <thead>
-                    <tr><th>Destination</th><th>Alert</th><th>Status</th><th>Attempts</th><th>HTTP</th><th>Last attempt</th><th>Error</th><th></th></tr>
+                    <tr><th>Destination</th><th>Alert</th><th>Status</th><th>Attempts</th><th>Transport</th><th>Last attempt</th><th>Error</th><th></th></tr>
                 </thead>
                 <tbody>
                 @foreach (var delivery in Model.RecentDeliveries)
@@ -414,3 +453,40 @@
         </div>
     }
 </section>
+
+<script>
+(() => {
+    const kindSelect = document.getElementById('destination-kind');
+    if (!kindSelect) return;
+
+    const groups = Array.from(document.querySelectorAll('[data-destination-kinds]'));
+    const secretLabel = document.querySelector('[data-secret-label]');
+    const secretHelp = document.querySelector('[data-secret-help]');
+    const endpointHelp = document.querySelector('[data-endpoint-help]');
+
+    const sync = () => {
+        const kind = kindSelect.value;
+        groups.forEach(group => {
+            const kinds = group.dataset.destinationKinds.split(',');
+            group.hidden = !kinds.includes(kind);
+        });
+
+        if (secretLabel) {
+            secretLabel.textContent = kind === 'PagerDuty' ? 'Routing key' : 'Signing secret';
+        }
+        if (secretHelp) {
+            secretHelp.textContent = kind === 'PagerDuty'
+                ? 'PagerDuty Events API v2 integration/routing key. Testing creates a real informational incident.'
+                : 'At least 16 characters. Stored encrypted and used to HMAC-sign timestamp.body.';
+        }
+        if (endpointHelp) {
+            endpointHelp.textContent = kind === 'Webhook'
+                ? 'Monitor posts canonical JSON and signs timestamp.body with HMAC-SHA256.'
+                : 'Provider webhook URLs are encrypted at rest; only a redacted host is retained for display/audit.';
+        }
+    };
+
+    kindSelect.addEventListener('change', sync);
+    sync();
+})();
+</script>

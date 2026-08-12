@@ -26,7 +26,10 @@ builder.Services.AddRazorPages(options =>
 });
 builder.Services.AddSignalR();
 builder.Services.AddDataProtection();
-builder.Services.AddHttpClient("alert-webhooks");
+builder.Services.AddHttpClient("alert-webhooks")
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient("alert-adapters")
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -59,7 +62,9 @@ builder.Services.Configure<ComponentCommandOptions>(builder.Configuration.GetSec
 builder.Services.AddScoped<ComponentCommandService>();
 builder.Services.AddHostedService<ComponentCommandExpiryWorker>();
 builder.Services.Configure<AlertDeliveryOptions>(builder.Configuration.GetSection(AlertDeliveryOptions.SectionName));
+builder.Services.AddScoped<AlertDestinationSecretProtector>();
 builder.Services.AddScoped<WebhookAlertSender>();
+builder.Services.AddScoped<AlertDeliverySender>();
 builder.Services.AddHostedService<AlertDeliveryWorker>();
 builder.Services.AddScoped<ComponentCredentialIssuer>();
 builder.Services.AddScoped<IngestionCredentialAuthenticator>();

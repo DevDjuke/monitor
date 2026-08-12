@@ -12,7 +12,7 @@ This roadmap is the current product sequence for turning Monitor from an observa
 - Durable usage aggregation and success-only retention with failed/cancelled forensic preservation.
 - Failure fingerprint/category grouping and failure drill-down.
 - Threshold/window/cooldown failure alerting with duplicate-evidence suppression.
-- Durable alert-delivery outbox with HMAC-signed webhook delivery, retry, and dead-letter handling.
+- Durable multi-channel alert-delivery outbox with signed webhook, Slack, Teams, Discord, PagerDuty, and SMTP email adapters, retry, and dead-letter handling.
 - Durable append-only operator audit trail with safe before/after snapshots and searchable history.
 - Daily/monthly cost and token budget policy with warning/critical alert delivery.
 - Durable leased component control commands with acknowledgement, redelivery, timeout/expiry, and audit history.
@@ -65,8 +65,8 @@ Status: **complete**
 
 - Persist append-only `AuditEvent` records with occurred time, actor type/id/name, action, target type/id/name, and optional before/after/metadata JSON.
 - Stage the audit row in the same EF Core `SaveChanges` boundary as the operator mutation so a change cannot commit without its corresponding audit evidence.
-- Audit alert acknowledgement, alert-rule create/edit/toggle/delete, webhook destination create/toggle/test, alert-delivery requeue, and component credential issue/rotate/revoke.
-- Keep snapshots deliberately secret-safe: component credential plaintext/hash and protected webhook signing secrets are never copied into audit JSON.
+- Audit alert acknowledgement, alert-rule create/edit/toggle/delete, delivery destination create/toggle/test, alert-delivery requeue, and component credential issue/rotate/revoke.
+- Keep snapshots deliberately secret-safe: component credential plaintext/hash and protected delivery secrets/configuration are never copied into audit JSON.
 - Keep audit evidence independent of mutable targets: `AuditEvents` has no foreign keys to operational tables, so later deletion or retention cannot cascade away history.
 - Support operator/system/component actor types and provide a system-writer path for future automated control-plane changes.
 - Search/filter `/audit` by time window, actor, action, target, target id, and free text, with expandable before/after/metadata snapshots.
@@ -81,7 +81,7 @@ Status: **complete**
 - Evaluate budgets from the same accounting contract as `/usage`: durable hourly aggregates plus only terminal raw runs that have not yet been aggregated.
 - Emit Warning once and Critical once per UTC budget period; a new period resets notification state without deleting historical events.
 - Assign delivery destinations per budget or use all enabled destinations.
-- Deliver budget alerts through the existing webhook destination, HMAC signing, retry/backoff, health and dead-letter infrastructure under the shared dispatcher lock.
+- Deliver budget alerts through the shared durable destination, retry/backoff, health, and dead-letter infrastructure.
 - Manage policies, threshold history, acknowledgement and budget delivery state from `/budgets`, including manual retry for non-delivered budget notifications.
 - Audit budget create/edit/enable/disable/delete, acknowledgement/requeue, plus system-originated warning/critical threshold crossings.
 - Detailed contract: `docs/budgets-and-usage-policy.md`.
@@ -137,9 +137,27 @@ Status: **complete**
 - Keep the existing coarse `RunChanged` event for the latest Runs list while P8 detailed events are group-scoped.
 - Detailed contract: `docs/richer-live-experience.md`.
 
+## Alerting expansion
+
+### 9. Alert delivery adapters
+
+Status: **complete**
+
+- Extend the existing durable destination/outbox model with Slack, Microsoft Teams, Discord, PagerDuty Events API v2, and SMTP email without introducing provider-specific queues.
+- Preserve the original signed-webhook schema, Data Protection purpose, HMAC-SHA256 contract, retry behavior, and existing destination rows for backward compatibility.
+- Translate canonical failure and budget notifications into provider-native payloads while retaining the same per-rule/per-budget destination assignment semantics.
+- Encrypt secret-bearing Slack/Teams/Discord webhook URLs, PagerDuty routing keys, and serialized SMTP configuration through ASP.NET Core Data Protection.
+- Render and audit only redacted chat-webhook endpoints; protected provider material never enters immutable audit snapshots or operator HTML.
+- Disable automatic HTTP redirects for alert transports so credentials cannot be silently replayed to a redirect target.
+- Keep shared durable retry/backoff, destination health, manual requeue, dead-letter state, and SQL Server dispatcher locking across all adapter kinds.
+- Provide destination create/test/enable/disable controls from `/alerts`; PagerDuty test delivery is explicitly identified as a real trigger.
+- Require HTTPS for remote provider webhooks while permitting HTTP only for loopback development/integration endpoints.
+- Reuse the existing schema and integer `Kind` column; P9 requires no EF Core migration.
+- Add a permanent SQL Server-backed integration gate that fans one real failure alert out to all six channel kinds and validates the provider wire contracts plus SMTP delivery.
+- Detailed contract: `docs/alert-delivery-adapters.md`.
+
 ## Later platform work
 
-- Additional alert-delivery adapters: email, Slack, Teams, Discord, PagerDuty-style integrations.
 - Host/process-supervisor command adapters for restart semantics where appropriate.
 - Optional budget enforcement policies that enqueue control commands rather than mutating workloads directly.
 - OTLP/HTTP JSON and OTLP/gRPC support.
@@ -150,4 +168,4 @@ Status: **complete**
 
 ## Security debt explicitly tracked
 
-The current development ingestion key may remain in solution/local development configuration temporarily. Before production hardening, move ingestion keys, webhook secrets, Data Protection keys, and other operational secrets to an appropriate vault/secret store with documented rotation and recovery procedures.
+The current development ingestion key may remain in solution/local development configuration temporarily. Before production hardening, move ingestion keys, delivery destination secrets/configuration, Data Protection keys, and other operational secrets to an appropriate vault/secret store with documented rotation and recovery procedures.
