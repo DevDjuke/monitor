@@ -47,7 +47,7 @@ public sealed class AlertDeliveryWorker(
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<MonitorDbContext>();
-        var sender = scope.ServiceProvider.GetRequiredService<WebhookAlertSender>();
+        var sender = scope.ServiceProvider.GetRequiredService<AlertDeliverySender>();
 
         await db.Database.OpenConnectionAsync(cancellationToken);
         try
@@ -123,7 +123,7 @@ public sealed class AlertDeliveryWorker(
         }
     }
 
-    private void ApplyResult(AlertDelivery delivery, WebhookSendResult result, DateTimeOffset attemptedAt)
+    private void ApplyResult(AlertDelivery delivery, AlertSendResult result, DateTimeOffset attemptedAt)
     {
         if (result.Succeeded)
         {
@@ -132,13 +132,13 @@ public sealed class AlertDeliveryWorker(
         }
 
         delivery.MarkFailed(
-            result.Error ?? "Webhook delivery failed.",
+            result.Error ?? "Alert delivery failed.",
             result.StatusCode,
             attemptedAt,
             GetNextAttemptAt(delivery.AttemptCount, result.Retryable, attemptedAt));
     }
 
-    private void ApplyResult(UsageBudgetAlertDelivery delivery, WebhookSendResult result, DateTimeOffset attemptedAt)
+    private void ApplyResult(UsageBudgetAlertDelivery delivery, AlertSendResult result, DateTimeOffset attemptedAt)
     {
         if (result.Succeeded)
         {
@@ -147,7 +147,7 @@ public sealed class AlertDeliveryWorker(
         }
 
         delivery.MarkFailed(
-            result.Error ?? "Webhook delivery failed.",
+            result.Error ?? "Alert delivery failed.",
             result.StatusCode,
             attemptedAt,
             GetNextAttemptAt(delivery.AttemptCount, result.Retryable, attemptedAt));
@@ -199,9 +199,9 @@ public sealed class AlertDeliveryWorker(
 
 internal static class AlertDeliveryDestinationHealthExtensions
 {
-    public static void RecordSuccessOrFailure(this AlertDeliveryDestination destination, WebhookSendResult result, DateTimeOffset attemptedAt)
+    public static void RecordSuccessOrFailure(this AlertDeliveryDestination destination, AlertSendResult result, DateTimeOffset attemptedAt)
     {
         if (result.Succeeded) destination.RecordSuccess(attemptedAt);
-        else destination.RecordFailure(result.Error ?? "Webhook delivery failed.", attemptedAt);
+        else destination.RecordFailure(result.Error ?? "Alert delivery failed.", attemptedAt);
     }
 }

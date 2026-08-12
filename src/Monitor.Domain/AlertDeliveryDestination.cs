@@ -2,7 +2,12 @@ namespace Monitor.Domain;
 
 public enum AlertDeliveryKind
 {
-    Webhook = 1
+    Webhook = 1,
+    Slack = 2,
+    MicrosoftTeams = 3,
+    Discord = 4,
+    PagerDuty = 5,
+    Email = 6
 }
 
 public sealed class AlertDeliveryDestination
@@ -28,21 +33,22 @@ public sealed class AlertDeliveryDestination
         string name,
         string endpointUrl,
         string protectedSecret,
+        DateTimeOffset now) =>
+        Create(name, AlertDeliveryKind.Webhook, endpointUrl, protectedSecret, now);
+
+    public static AlertDeliveryDestination CreateAdapter(
+        string name,
+        AlertDeliveryKind kind,
+        string endpointDisplay,
+        string protectedSecret,
         DateTimeOffset now)
     {
-        Validate(name, endpointUrl, protectedSecret);
-
-        return new AlertDeliveryDestination
+        if (kind == AlertDeliveryKind.Webhook)
         {
-            Id = Guid.NewGuid(),
-            Name = name.Trim(),
-            Kind = AlertDeliveryKind.Webhook,
-            EndpointUrl = endpointUrl.Trim(),
-            ProtectedSecret = protectedSecret,
-            Enabled = true,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
+            throw new ArgumentException("Use CreateWebhook for signed webhook destinations.", nameof(kind));
+        }
+
+        return Create(name, kind, endpointDisplay, protectedSecret, now);
     }
 
     public void SetEnabled(bool enabled, DateTimeOffset now)
@@ -65,22 +71,66 @@ public sealed class AlertDeliveryDestination
         UpdatedAt = now;
     }
 
-    private static void Validate(string name, string endpointUrl, string protectedSecret)
+    private static AlertDeliveryDestination Create(
+        string name,
+        AlertDeliveryKind kind,
+        string endpointDisplay,
+        string protectedSecret,
+        DateTimeOffset now)
+    {
+        Validate(name, kind, endpointDisplay, protectedSecret);
+
+        return new AlertDeliveryDestination
+        {
+            Id = Guid.NewGuid(),
+            Name = name.Trim(),
+            Kind = kind,
+            EndpointUrl = endpointDisplay.Trim(),
+            ProtectedSecret = protectedSecret,
+            Enabled = true,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+    }
+
+    private static void Validate(
+        string name,
+        AlertDeliveryKind kind,
+        string endpointDisplay,
+        string protectedSecret)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
             throw new ArgumentException("Destination name is required.", nameof(name));
         }
 
-        if (!Uri.TryCreate(endpointUrl, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        if (!Enum.IsDefined(kind))
         {
-            throw new ArgumentException("Webhook URL must be an absolute HTTP or HTTPS URL.", nameof(endpointUrl));
+            throw new ArgumentOutOfRangeException(nameof(kind));
+        }
+
+        if (string.IsNullOrWhiteSpace(endpointDisplay))
+        {
+            throw new ArgumentException("Destination endpoint is required.", nameof(endpointDisplay));
+        }
+
+        if (kind == AlertDeliveryKind.Email)
+        {
+            if (!Uri.TryCreate(endpointDisplay, UriKind.Absolute, out var emailUri) ||
+                !string.Equals(emailUri.Scheme, Uri.UriSchemeMailto, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException("Email destinations must use a mailto endpoint.", nameof(endpointDisplay));
+            }
+        }
+        else if (!Uri.TryCreate(endpointDisplay, UriKind.Absolute, out var uri) ||
+                 (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new ArgumentException("Delivery endpoint must be an absolute HTTP or HTTPS URL.", nameof(endpointDisplay));
         }
 
         if (string.IsNullOrWhiteSpace(protectedSecret))
         {
-            throw new ArgumentException("A protected webhook secret is required.", nameof(protectedSecret));
+            throw new ArgumentException("Protected destination configuration is required.", nameof(protectedSecret));
         }
     }
 }
