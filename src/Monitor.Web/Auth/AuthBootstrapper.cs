@@ -14,21 +14,34 @@ public static class AuthBootstrapper
         var userManager = services.GetRequiredService<UserManager<MonitorUser>>();
         var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
 
+        var roleModelWasInitialized = true;
+        foreach (var role in MonitorRoles.All)
+        {
+            if (!await roleManager.RoleExistsAsync(role))
+            {
+                roleModelWasInitialized = false;
+                break;
+            }
+        }
+
         await EnsureRolesAsync(roleManager);
 
         var existingUsers = await userManager.Users.ToListAsync();
         if (existingUsers.Count > 0)
         {
-            // P12 upgrade path: accounts created before roles existed had unrestricted access.
-            // Promote any account without a recognized Monitor role to Owner so the rollout
-            // cannot lock an existing administrator out.
-            foreach (var existingUser in existingUsers)
+            if (!roleModelWasInitialized)
             {
-                var roles = await userManager.GetRolesAsync(existingUser);
-                if (!roles.Any(MonitorRoles.All.Contains))
+                // P12 upgrade path: accounts created before Monitor roles existed had
+                // unrestricted access. Promote only during role-model initialization;
+                // once P12 is established, a later roleless account is not escalated.
+                foreach (var existingUser in existingUsers)
                 {
-                    var roleResult = await userManager.AddToRoleAsync(existingUser, MonitorRoles.Owner);
-                    ThrowIfFailed(roleResult, $"Unable to assign Owner to existing account {existingUser.Email}");
+                    var roles = await userManager.GetRolesAsync(existingUser);
+                    if (!roles.Any(role => MonitorRoles.All.Contains(role)))
+                    {
+                        var roleResult = await userManager.AddToRoleAsync(existingUser, MonitorRoles.Owner);
+                        ThrowIfFailed(roleResult, $"Unable to assign Owner to existing account {existingUser.Email}");
+                    }
                 }
             }
 
