@@ -24,6 +24,12 @@ scalar() {
     -Q "SET NOCOUNT ON; $1" | tr -d '\r' | xargs
 }
 
+raw_scalar() {
+  docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
+    -S localhost -U sa -P "$SQL_PASSWORD" -C -b -d "$DB" -h -1 -W -y 0 \
+    -Q "SET NOCOUNT ON; $1" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$/'
+}
+
 get_token() {
   local url="$1" output="$2"
   curl -fsS -b "$COOKIE_JAR" "$url" -o "$output"
@@ -216,8 +222,8 @@ test "$ready" = true
 
 pause_alert_id=$(scalar "SELECT TOP 1 CONVERT(varchar(36),Id) FROM UsageBudgetAlertEvents WHERE UsageBudgetId='$pause_budget_id' AND Level=2;")
 disable_alert_id=$(scalar "SELECT TOP 1 CONVERT(varchar(36),Id) FROM UsageBudgetAlertEvents WHERE UsageBudgetId='$disable_budget_id' AND Level=2;")
-pause_payload=$(scalar "SELECT TOP 1 PayloadJson FROM ComponentCommands WHERE ComponentId='$pause_component_id' AND RequestedBy=N'policy:usage-budget' ORDER BY CreatedAt DESC;")
-disable_payload=$(scalar "SELECT TOP 1 PayloadJson FROM ComponentCommands WHERE ComponentId='$disable_component_id' AND RequestedBy=N'policy:usage-budget' ORDER BY CreatedAt DESC;")
+pause_payload=$(raw_scalar "SELECT TOP 1 PayloadJson FROM ComponentCommands WHERE ComponentId='$pause_component_id' AND RequestedBy=N'policy:usage-budget' ORDER BY CreatedAt DESC;")
+disable_payload=$(raw_scalar "SELECT TOP 1 PayloadJson FROM ComponentCommands WHERE ComponentId='$disable_component_id' AND RequestedBy=N'policy:usage-budget' ORDER BY CreatedAt DESC;")
 python3 - "$pause_payload" "$pause_budget_id" "$pause_alert_id" Pause <<'PY'
 import json,sys
 payload=json.loads(sys.argv[1])
