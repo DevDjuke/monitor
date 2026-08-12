@@ -65,10 +65,10 @@ public static class ProductionConfigurationValidator
         ProductionOptions options,
         ICollection<string> errors)
     {
-        var allowedHosts = configuration["AllowedHosts"];
-        if (string.IsNullOrWhiteSpace(allowedHosts) ||
-            allowedHosts.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Any(x => x == "*"))
+        var allowedHosts = (configuration["AllowedHosts"] ?? string.Empty)
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (allowedHosts.Length == 0 || allowedHosts.Any(x => x == "*"))
         {
             errors.Add("AllowedHosts must explicitly list the public Monitor host in Production; wildcard '*' is not allowed.");
         }
@@ -78,6 +78,10 @@ public static class ProductionConfigurationValidator
             string.IsNullOrWhiteSpace(publicUri.Host))
         {
             errors.Add("Production:PublicUrl must be an absolute HTTPS URL.");
+        }
+        else if (!allowedHosts.Contains(publicUri.Host, StringComparer.OrdinalIgnoreCase))
+        {
+            errors.Add($"AllowedHosts must contain the Production:PublicUrl host '{publicUri.Host}'.");
         }
 
         if (options.ForwardedHeaders.Enabled)
