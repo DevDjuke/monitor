@@ -5,11 +5,14 @@ using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
 using Monitor.Infrastructure.Auditing;
+using Monitor.Infrastructure.Usage;
 
 namespace Monitor.Web.Pages;
 
 public sealed class BudgetEditModel(MonitorDbContext db, AuditTrailWriter audit) : PageModel
 {
+    private readonly UsageBudgetEnforcementPolicyStore _enforcementPolicies = new(db);
+
     public Guid? BudgetId { get; private set; }
     public bool IsEdit => BudgetId is not null;
     public IReadOnlyList<ComponentOption> Components { get; private set; } = [];
@@ -43,7 +46,8 @@ public sealed class BudgetEditModel(MonitorDbContext db, AuditTrailWriter audit)
                 CriticalPercent = budget.CriticalPercent,
                 Enabled = budget.Enabled,
                 DeliverToAllEnabledDestinations = budget.DeliverToAllEnabledDestinations,
-                SelectedDestinationIds = budget.DestinationAssignments.Select(x => x.DestinationId).ToList()
+                SelectedDestinationIds = budget.DestinationAssignments.Select(x => x.DestinationId).ToList(),
+                CriticalAction = await _enforcementPolicies.GetCriticalActionAsync(budget.Id, cancellationToken)
             };
         }
 
@@ -65,6 +69,10 @@ public sealed class BudgetEditModel(MonitorDbContext db, AuditTrailWriter audit)
             ModelState.AddModelError(nameof(Input.WarningPercent), "Warning threshold must be lower than critical threshold.");
         if (!Input.DeliverToAllEnabledDestinations && Input.SelectedDestinationIds.Count == 0)
             ModelState.AddModelError(nameof(Input.SelectedDestinationIds), "Select at least one destination, or use all enabled destinations.");
+        if (!Enum.IsDefined(Input.CriticalAction))
+            ModelState.AddModelError(nameof(Input.CriticalAction), "Select a valid critical action.");
+        if (Input.CriticalAction != UsageBudgetEnforcementAction.None && Input.ComponentId is null)
+            ModelState.AddModelError(nameof(Input.CriticalAction), "Automatic enforcement requires a budget scoped to one component.");
         if (Input.ComponentId is not null && !await db.Components.AnyAsync(x => x.Id == Input.ComponentId.Value, cancellationToken))
             ModelState.AddModelError(nameof(Input.ComponentId), "Select a valid component.");
         if (!Input.DeliverToAllEnabledDestinations && Input.SelectedDestinationIds.Count > 0)
@@ -75,10 +83,12 @@ public sealed class BudgetEditModel(MonitorDbContext db, AuditTrailWriter audit)
         }
 
         UsageBudget? existing = null;
+        var previousCriticalAction = UsageBudgetEnforcementAction.None;
         if (id is not null)
         {
             existing = await db.UsageBudgets.Include(x => x.DestinationAssignments).SingleOrDefaultAsync(x => x.Id == id.Value, cancellationToken);
             if (existing is null || existing.IsDeleted) return NotFound();
+            previousCriticalAction = await _enforcementPolicies.GetCriticalActionAsync(existing.Id, cancellationToken);
         }
 
         if (!ModelState.IsValid)
@@ -88,7 +98,7 @@ public sealed class BudgetEditModel(MonitorDbContext db, AuditTrailWriter audit)
         }
 
         var now = DateTimeOffset.UtcNow;
-        var before = existing is null ? null : Snapshot(existing);
+        var before = existing is null ? null : Snapshot(existing, previousCriticalAction);
         try
         {
             var budget = existing ?? UsageBudget.Create(
@@ -123,11 +133,19 @@ public sealed class BudgetEditModel(MonitorDbContext db, AuditTrailWriter audit)
                 budget.Id.ToString(),
                 budget.Name,
                 before,
-                Snapshot(budget),
-                metadata: new { destinationIds = Input.DeliverToAllEnabledDestinations ? null : Input.SelectedDestinationIds },
+                Snapshot(budget, Input.CriticalAction),
+                metadata: new
+                {
+                    destinationIds = Input.DeliverToAllEnabledDestinations ? null : Input.SelectedDestinationIds,
+                    criticalAction = Input.CriticalAction
+                },
                 occurredAt: now);
 
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
+            await _enforcementPolicies.SetCriticalActionAsync(budget.Id, Input.CriticalAction, now, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
             TempData["StatusMessage"] = existing is null ? "Usage budget created." : "Usage budget updated.";
             return RedirectToPage("/Budgets");
         }
@@ -174,7 +192,7 @@ public sealed class BudgetEditModel(MonitorDbContext db, AuditTrailWriter audit)
             .Select(x => new DestinationOption(x.Id, x.Name, x.EndpointUrl, x.Enabled)).ToListAsync(cancellationToken);
     }
 
-    private static object Snapshot(UsageBudget x) => new
+    private static object Snapshot(UsageBudget x, UsageBudgetEnforcementAction criticalAction) => new
     {
         x.Name,
         x.ComponentId,
@@ -186,7 +204,8 @@ public sealed class BudgetEditModel(MonitorDbContext db, AuditTrailWriter audit)
         x.WarningPercent,
         x.CriticalPercent,
         x.Enabled,
-        x.DeliverToAllEnabledDestinations
+        x.DeliverToAllEnabledDestinations,
+        CriticalAction = criticalAction
     };
 
     private static string? Normalize(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -202,6 +221,7 @@ public sealed class BudgetEditModel(MonitorDbContext db, AuditTrailWriter audit)
         [Range(1, long.MaxValue)] public long? TokenLimit { get; set; }
         [Range(1, 1000)] public int WarningPercent { get; set; } = 80;
         [Range(1, 1000)] public int CriticalPercent { get; set; } = 100;
+        public UsageBudgetEnforcementAction CriticalAction { get; set; } = UsageBudgetEnforcementAction.None;
         public bool Enabled { get; set; } = true;
         public bool DeliverToAllEnabledDestinations { get; set; } = true;
         public List<Guid> SelectedDestinationIds { get; set; } = [];
