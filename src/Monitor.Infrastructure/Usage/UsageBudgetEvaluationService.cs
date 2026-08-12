@@ -1,9 +1,11 @@
 using System.Data.Common;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Monitor.Domain;
 using Monitor.Infrastructure.Auditing;
+using Monitor.Infrastructure.Control;
 
 namespace Monitor.Infrastructure.Usage;
 
@@ -19,10 +21,15 @@ public sealed class UsageBudgetEvaluationService(
     MonitorDbContext db,
     AuditTrailWriter audit,
     IOptions<UsageBudgetOptions> options,
+    IOptions<ComponentCommandOptions> commandOptions,
     ILogger<UsageBudgetEvaluationService> logger)
 {
     private const string LockResource = "Monitor.UsageBudgets";
+    private const string PolicyActor = "UsageBudgetEvaluator";
+    private const string PolicyRequestedBy = "policy:usage-budget";
     private readonly UsageBudgetOptions _options = options.Value;
+    private readonly ComponentCommandOptions _commandOptions = commandOptions.Value;
+    private readonly UsageBudgetEnforcementPolicyStore _enforcementPolicies = new(db);
 
     public async Task<UsageBudgetSweepResult> SweepAsync(CancellationToken cancellationToken = default)
     {
@@ -48,8 +55,12 @@ public sealed class UsageBudgetEvaluationService(
 
                 if (budgets.Count == 0)
                 {
-                    return new UsageBudgetSweepResult(true, false, 0, 0, 0, []);
+                    return new UsageBudgetSweepResult(true, false, 0, 0, 0, 0, []);
                 }
+
+                var enforcementActions = await _enforcementPolicies.GetCriticalActionsAsync(
+                    budgets.Select(x => x.Id),
+                    cancellationToken);
 
                 var enabledDestinations = await db.AlertDeliveryDestinations
                     .Where(x => x.Enabled)
@@ -58,6 +69,7 @@ public sealed class UsageBudgetEvaluationService(
 
                 var triggeredIds = new List<Guid>();
                 var enqueuedDeliveries = 0;
+                var enqueuedCommands = 0;
 
                 foreach (var budget in budgets)
                 {
@@ -97,10 +109,29 @@ public sealed class UsageBudgetEvaluationService(
                         enqueuedDeliveries++;
                     }
 
+                    if (level == UsageBudgetAlertLevel.Critical &&
+                        enforcementActions.TryGetValue(budget.Id, out var enforcementAction) &&
+                        enforcementAction != UsageBudgetEnforcementAction.None)
+                    {
+                        if (TryCreateEnforcementCommand(
+                                budget,
+                                alertEvent,
+                                enforcementAction,
+                                periodStart,
+                                periodEnd,
+                                utilization,
+                                now,
+                                out var command))
+                        {
+                            db.ComponentCommands.Add(command!);
+                            enqueuedCommands++;
+                        }
+                    }
+
                     budget.MarkTriggered(level.Value, now);
                     triggeredIds.Add(alertEvent.Id);
                     audit.RecordSystem(
-                        "UsageBudgetEvaluator",
+                        PolicyActor,
                         $"usage-budget.{level.Value.ToString().ToLowerInvariant()}",
                         "UsageBudget",
                         budget.Id.ToString(),
@@ -122,12 +153,20 @@ public sealed class UsageBudgetEvaluationService(
                 if (triggeredIds.Count > 0)
                 {
                     logger.LogWarning(
-                        "Usage budget sweep triggered {AlertCount} budget alert(s) and enqueued {DeliveryCount} delivery item(s).",
+                        "Usage budget sweep triggered {AlertCount} budget alert(s), enqueued {DeliveryCount} delivery item(s), and enqueued {CommandCount} policy command(s).",
                         triggeredIds.Count,
-                        enqueuedDeliveries);
+                        enqueuedDeliveries,
+                        enqueuedCommands);
                 }
 
-                return new UsageBudgetSweepResult(true, false, budgets.Count, triggeredIds.Count, enqueuedDeliveries, triggeredIds);
+                return new UsageBudgetSweepResult(
+                    true,
+                    false,
+                    budgets.Count,
+                    triggeredIds.Count,
+                    enqueuedDeliveries,
+                    enqueuedCommands,
+                    triggeredIds);
             }
             finally
             {
@@ -138,6 +177,80 @@ public sealed class UsageBudgetEvaluationService(
         {
             await db.Database.CloseConnectionAsync();
         }
+    }
+
+    private bool TryCreateEnforcementCommand(
+        UsageBudget budget,
+        UsageBudgetAlertEvent alertEvent,
+        UsageBudgetEnforcementAction action,
+        DateTimeOffset periodStart,
+        DateTimeOffset periodEnd,
+        double utilization,
+        DateTimeOffset now,
+        out ComponentCommand? command)
+    {
+        command = null;
+        if (budget.ComponentId is null)
+        {
+            logger.LogError(
+                "Usage budget {BudgetId} is configured for automatic {Action} enforcement without a component scope; no command was issued.",
+                budget.Id,
+                action);
+            return false;
+        }
+
+        var commandType = action switch
+        {
+            UsageBudgetEnforcementAction.Pause => ComponentCommandType.Pause,
+            UsageBudgetEnforcementAction.Disable => ComponentCommandType.Disable,
+            _ => throw new ArgumentOutOfRangeException(nameof(action))
+        };
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            source = "usage-budget",
+            budgetId = budget.Id,
+            budgetName = budget.Name,
+            alertEventId = alertEvent.Id,
+            level = UsageBudgetAlertLevel.Critical.ToString(),
+            action = action.ToString(),
+            periodStart,
+            periodEnd,
+            utilizationPercent = utilization
+        });
+
+        var expiryMinutes = Math.Clamp(_commandOptions.DefaultExpiryMinutes, 1, 24 * 60);
+        command = ComponentCommand.Create(
+            budget.ComponentId.Value,
+            commandType,
+            targetRunId: null,
+            payloadJson: payload,
+            requestedBy: PolicyRequestedBy,
+            now,
+            now.AddMinutes(expiryMinutes));
+
+        audit.RecordSystem(
+            PolicyActor,
+            AuditActions.ComponentCommandIssued,
+            AuditTargetTypes.ComponentCommand,
+            command.Id.ToString("D"),
+            command.Type.ToString(),
+            after: ComponentCommandService.Snapshot(command),
+            metadata: new
+            {
+                source = "usage-budget",
+                budgetId = budget.Id,
+                alertEventId = alertEvent.Id,
+                budget.ComponentId,
+                level = UsageBudgetAlertLevel.Critical,
+                action,
+                periodStart,
+                periodEnd,
+                utilizationPercent = utilization
+            },
+            occurredAt: now);
+
+        return true;
     }
 
     private async Task<UsageSummary> CalculateUsageAsync(
@@ -227,8 +340,9 @@ public sealed record UsageBudgetSweepResult(
     int EvaluatedBudgets,
     int TriggeredAlerts,
     int EnqueuedDeliveries,
+    int EnqueuedCommands,
     IReadOnlyList<Guid> AlertEventIds)
 {
-    public static UsageBudgetSweepResult Disabled { get; } = new(false, false, 0, 0, 0, []);
-    public static UsageBudgetSweepResult Locked { get; } = new(false, true, 0, 0, 0, []);
+    public static UsageBudgetSweepResult Disabled { get; } = new(false, false, 0, 0, 0, 0, []);
+    public static UsageBudgetSweepResult Locked { get; } = new(false, true, 0, 0, 0, 0, []);
 }
