@@ -149,6 +149,13 @@ public sealed class OperatorsModel(
             }
         }
 
+        var stampResult = await userManager.UpdateSecurityStampAsync(user);
+        if (!stampResult.Succeeded)
+        {
+            TempData["StatusMessage"] = FormatErrors(stampResult);
+            return RedirectToPage();
+        }
+
         audit.RecordOperator(
             User,
             AuditActions.OperatorRoleChanged,
@@ -157,10 +164,11 @@ public sealed class OperatorsModel(
             user.Email,
             before: new { role = currentRole },
             after: new { role },
+            metadata: new { securityStampRotated = true },
             occurredAt: DateTimeOffset.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
 
-        TempData["StatusMessage"] = $"Changed {user.Email} to {role}.";
+        TempData["StatusMessage"] = $"Changed {user.Email} to {role}. Existing sessions will be revalidated shortly.";
         return RedirectToPage();
     }
 
