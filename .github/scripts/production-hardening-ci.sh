@@ -12,6 +12,7 @@ ADMIN_PASSWORD="MonitorP10Admin2026Password"
 BASE_URL="http://127.0.0.1:5097"
 SECRETS_DIR="$(mktemp -d)"
 LOGIN_HTML="$(mktemp)"
+LOGIN_GET_HEADERS="$(mktemp)"
 LOGIN_HEADERS="$(mktemp)"
 COMPOSE_ENV="deploy/single-node/.env"
 
@@ -19,7 +20,7 @@ cleanup() {
   docker rm -f "$APP_CONTAINER" "$SQL_CONTAINER" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
   docker volume rm "$DP_VOLUME" >/dev/null 2>&1 || true
-  rm -rf "$SECRETS_DIR" "$LOGIN_HTML" "$LOGIN_HEADERS"
+  rm -rf "$SECRETS_DIR" "$LOGIN_HTML" "$LOGIN_GET_HEADERS" "$LOGIN_HEADERS"
   rm -f "$COMPOSE_ENV"
   rm -f deploy/single-node/secrets/ConnectionStrings__Monitor \
         deploy/single-node/secrets/Monitor__BootstrapAdmin__Password \
@@ -119,6 +120,7 @@ docker run -d \
   mcr.microsoft.com/mssql/server:2022-latest >/dev/null
 wait_for_sql
 
+chmod 755 "$SECRETS_DIR"
 printf '%s' \
   "Server=sqlserver,1433;Database=MonitorP10Ci;User Id=sa;Password=${SQL_PASSWORD};Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True" \
   > "$SECRETS_DIR/ConnectionStrings__Monitor"
@@ -168,7 +170,7 @@ if [ "$USER_ID" = "0" ]; then
 fi
 
 echo "Verifying trusted forwarded HTTPS and HSTS..."
-HSTS_HEADERS=$(curl -fsSI \
+HSTS_HEADERS=$(curl -fsS -D - -o /dev/null \
   -H 'Host: monitor.local' \
   -H 'X-Forwarded-For: 203.0.113.10' \
   -H 'X-Forwarded-Proto: https' \
@@ -176,7 +178,7 @@ HSTS_HEADERS=$(curl -fsSI \
 grep -qi '^Strict-Transport-Security:' <<<"$HSTS_HEADERS"
 
 echo "Signing in with bootstrap password loaded from /run/secrets..."
-curl -fsS \
+curl -fsS -D "$LOGIN_GET_HEADERS" \
   -H 'Host: monitor.local' \
   -H 'X-Forwarded-For: 203.0.113.10' \
   -H 'X-Forwarded-Proto: https' \
@@ -190,10 +192,20 @@ print(html.unescape(m.group(1)))
 PY
 )
 
+ANTIFORGERY_COOKIE=$(python3 - "$LOGIN_GET_HEADERS" <<'PY'
+import re, sys
+headers = open(sys.argv[1], encoding='utf-8').read()
+m = re.search(r'(?im)^set-cookie:\s*([^=;]*Antiforgery[^=;]*)=([^;]+)', headers)
+assert m, 'antiforgery cookie missing'
+print(f'{m.group(1)}={m.group(2)}')
+PY
+)
+
 HTTP_CODE=$(curl -sS -o /dev/null -D "$LOGIN_HEADERS" -w '%{http_code}' \
   -H 'Host: monitor.local' \
   -H 'X-Forwarded-For: 203.0.113.10' \
   -H 'X-Forwarded-Proto: https' \
+  -H "Cookie: $ANTIFORGERY_COOKIE" \
   --data-urlencode "__RequestVerificationToken=$TOKEN" \
   --data-urlencode "Input.Email=$ADMIN_EMAIL" \
   --data-urlencode "Input.Password=$ADMIN_PASSWORD" \
@@ -232,7 +244,7 @@ if [ "$KEY_COUNT" -lt 1 ]; then
   exit 1
 fi
 
-KEY_LIST_BEFORE=$(docker run --rm -v "$DP_VOLUME:/keys:ro" alpine:3.22 sh -c 'find /keys -type f -printf "%f\n" | sort')
+KEY_LIST_BEFORE=$(docker run --rm -v "$DP_VOLUME:/keys:ro" alpine:3.22 sh -c "find /keys -type f | sed 's#.*/##' | sort")
 
 echo "Recreating the app container while retaining SQL and Data Protection state..."
 docker rm -f "$APP_CONTAINER" >/dev/null
@@ -240,7 +252,7 @@ rm -f "$SECRETS_DIR/Monitor__BootstrapAdmin__Password"
 start_monitor "$GATEWAY"
 wait_for_monitor
 
-KEY_LIST_AFTER=$(docker run --rm -v "$DP_VOLUME:/keys:ro" alpine:3.22 sh -c 'find /keys -type f -printf "%f\n" | sort')
+KEY_LIST_AFTER=$(docker run --rm -v "$DP_VOLUME:/keys:ro" alpine:3.22 sh -c "find /keys -type f | sed 's#.*/##' | sort")
 if [ "$KEY_LIST_BEFORE" != "$KEY_LIST_AFTER" ]; then
   echo "Data Protection key set unexpectedly changed during immediate restart." >&2
   diff <(printf '%s\n' "$KEY_LIST_BEFORE") <(printf '%s\n' "$KEY_LIST_AFTER") || true
