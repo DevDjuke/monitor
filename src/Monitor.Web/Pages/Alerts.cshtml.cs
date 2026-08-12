@@ -1,4 +1,6 @@
 using System.ComponentModel.DataAnnotations;
+using System.Net.Mail;
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -12,8 +14,12 @@ namespace Monitor.Web.Pages;
 public sealed class AlertsModel(
     MonitorDbContext db,
     WebhookAlertSender webhookSender,
+    AlertDestinationSecretProtector destinationSecretProtector,
+    AlertDeliverySender deliverySender,
     AuditTrailWriter audit) : PageModel
 {
+    private const string PagerDutyEventsEndpoint = "https://events.pagerduty.com/v2/enqueue";
+
     [BindProperty(SupportsGet = true)]
     public string Window { get; set; } = "24h";
 
@@ -46,6 +52,7 @@ public sealed class AlertsModel(
 
     public IReadOnlyList<FailureCategory> FailureCategories { get; } = Enum.GetValues<FailureCategory>();
     public IReadOnlyList<AlertDeliveryStatus> DeliveryStatuses { get; } = Enum.GetValues<AlertDeliveryStatus>();
+    public IReadOnlyList<AlertDeliveryKind> DestinationKinds { get; } = Enum.GetValues<AlertDeliveryKind>();
     public IReadOnlyList<AlertEventRow> RecentAlerts { get; private set; } = [];
     public IReadOnlyList<AlertRuleRow> Rules { get; private set; } = [];
     public IReadOnlyList<DestinationRow> Destinations { get; private set; } = [];
@@ -132,12 +139,7 @@ public sealed class AlertsModel(
         try
         {
             var now = DateTimeOffset.UtcNow;
-            var protectedSecret = webhookSender.ProtectSecret(DestinationInput.Secret);
-            var destination = AlertDeliveryDestination.CreateWebhook(
-                DestinationInput.Name,
-                DestinationInput.EndpointUrl,
-                protectedSecret,
-                now);
+            var destination = BuildDestination(now);
 
             db.AlertDeliveryDestinations.Add(destination);
             audit.RecordOperator(
@@ -150,7 +152,7 @@ public sealed class AlertsModel(
                 occurredAt: now);
 
             await db.SaveChangesAsync(cancellationToken);
-            TempData["StatusMessage"] = "Webhook destination created. Future alert events will be queued for delivery.";
+            TempData["StatusMessage"] = $"{DisplayKind(destination.Kind)} destination created. Future matching alerts will use the durable delivery outbox.";
             return RedirectBack(returnUrl);
         }
         catch (ArgumentException exception)
@@ -185,8 +187,8 @@ public sealed class AlertsModel(
 
         await db.SaveChangesAsync(cancellationToken);
         TempData["StatusMessage"] = destination.Enabled
-            ? "Webhook destination enabled."
-            : "Webhook destination disabled. Existing queued deliveries are retained and will resume if it is enabled again.";
+            ? $"{DisplayKind(destination.Kind)} destination enabled."
+            : $"{DisplayKind(destination.Kind)} destination disabled. Existing queued deliveries are retained and will resume if it is enabled again.";
         return RedirectBack(returnUrl);
     }
 
@@ -201,16 +203,18 @@ public sealed class AlertsModel(
 
         var before = SnapshotDestination(destination);
         var now = DateTimeOffset.UtcNow;
-        var result = await webhookSender.SendTestAsync(destination, cancellationToken);
+        var result = await deliverySender.SendTestAsync(destination, cancellationToken);
         if (result.Succeeded)
         {
             destination.RecordSuccess(now);
-            TempData["StatusMessage"] = $"Test webhook delivered successfully (HTTP {result.StatusCode}).";
+            TempData["StatusMessage"] = result.StatusCode is null
+                ? $"Test {DisplayKind(destination.Kind)} notification delivered successfully."
+                : $"Test {DisplayKind(destination.Kind)} notification delivered successfully (status {result.StatusCode}).";
         }
         else
         {
-            destination.RecordFailure(result.Error ?? "Test webhook failed.", now);
-            TempData["StatusMessage"] = $"Test webhook failed: {result.Error}";
+            destination.RecordFailure(result.Error ?? "Test delivery failed.", now);
+            TempData["StatusMessage"] = $"Test {DisplayKind(destination.Kind)} notification failed: {result.Error}";
         }
 
         audit.RecordOperator(
@@ -221,7 +225,7 @@ public sealed class AlertsModel(
             destination.Name,
             before,
             SnapshotDestination(destination),
-            new { result.Succeeded, result.StatusCode },
+            new { result.Succeeded, result.StatusCode, destination.Kind },
             now);
 
         await db.SaveChangesAsync(cancellationToken);
@@ -276,6 +280,104 @@ public sealed class AlertsModel(
         await db.SaveChangesAsync(cancellationToken);
         TempData["StatusMessage"] = "Alert delivery requeued for immediate retry.";
         return RedirectBack(returnUrl);
+    }
+
+    private AlertDeliveryDestination BuildDestination(DateTimeOffset now)
+    {
+        var name = DestinationInput.Name.Trim();
+
+        return DestinationInput.Kind switch
+        {
+            AlertDeliveryKind.Webhook => BuildSignedWebhook(name, now),
+            AlertDeliveryKind.Slack => BuildProtectedWebhook(name, AlertDeliveryKind.Slack, "Slack", now),
+            AlertDeliveryKind.MicrosoftTeams => BuildProtectedWebhook(name, AlertDeliveryKind.MicrosoftTeams, "Microsoft Teams", now),
+            AlertDeliveryKind.Discord => BuildProtectedWebhook(name, AlertDeliveryKind.Discord, "Discord", now),
+            AlertDeliveryKind.PagerDuty => BuildPagerDuty(name, now),
+            AlertDeliveryKind.Email => BuildEmail(name, now),
+            _ => throw new ArgumentOutOfRangeException(nameof(DestinationInput.Kind), "Unsupported delivery destination kind.")
+        };
+    }
+
+    private AlertDeliveryDestination BuildSignedWebhook(string name, DateTimeOffset now)
+    {
+        var endpoint = RequireHttpEndpoint(DestinationInput.EndpointUrl, "Webhook URL", requireHttps: false);
+        var secret = RequireValue(DestinationInput.Secret, "Webhook signing secret");
+        if (secret.Length < 16)
+        {
+            throw new ArgumentException("Webhook signing secret must be at least 16 characters.");
+        }
+
+        return AlertDeliveryDestination.CreateWebhook(
+            name,
+            endpoint,
+            webhookSender.ProtectSecret(secret),
+            now);
+    }
+
+    private AlertDeliveryDestination BuildProtectedWebhook(
+        string name,
+        AlertDeliveryKind kind,
+        string providerName,
+        DateTimeOffset now)
+    {
+        var endpoint = RequireHttpEndpoint(DestinationInput.EndpointUrl, $"{providerName} webhook URL", requireHttps: true);
+        var protectedEndpoint = destinationSecretProtector.Protect(endpoint);
+        return AlertDeliveryDestination.CreateAdapter(
+            name,
+            kind,
+            RedactEndpoint(endpoint),
+            protectedEndpoint,
+            now);
+    }
+
+    private AlertDeliveryDestination BuildPagerDuty(string name, DateTimeOffset now)
+    {
+        var routingKey = RequireValue(DestinationInput.Secret, "PagerDuty routing key");
+        return AlertDeliveryDestination.CreateAdapter(
+            name,
+            AlertDeliveryKind.PagerDuty,
+            PagerDutyEventsEndpoint,
+            destinationSecretProtector.Protect(routingKey),
+            now);
+    }
+
+    private AlertDeliveryDestination BuildEmail(string name, DateTimeOffset now)
+    {
+        var recipient = NormalizeEmail(DestinationInput.EmailRecipient, "Recipient email");
+        var fromAddress = NormalizeEmail(DestinationInput.SmtpFromAddress, "SMTP from address");
+        var host = RequireValue(DestinationInput.SmtpHost, "SMTP host");
+
+        if (DestinationInput.SmtpPort is < 1 or > 65535)
+        {
+            throw new ArgumentException("SMTP port must be between 1 and 65535.");
+        }
+
+        var userName = string.IsNullOrWhiteSpace(DestinationInput.SmtpUserName)
+            ? null
+            : DestinationInput.SmtpUserName.Trim();
+        var password = string.IsNullOrWhiteSpace(DestinationInput.SmtpPassword)
+            ? null
+            : DestinationInput.SmtpPassword;
+
+        if (userName is not null && password is null)
+        {
+            throw new ArgumentException("SMTP password is required when an SMTP username is configured.");
+        }
+
+        var configuration = new EmailDestinationConfiguration(
+            host,
+            DestinationInput.SmtpPort,
+            fromAddress,
+            userName,
+            password,
+            DestinationInput.SmtpEnableSsl);
+
+        return AlertDeliveryDestination.CreateAdapter(
+            name,
+            AlertDeliveryKind.Email,
+            $"mailto:{recipient}",
+            destinationSecretProtector.Protect(JsonSerializer.Serialize(configuration)),
+            now);
     }
 
     private async Task LoadAsync(CancellationToken cancellationToken)
@@ -567,16 +669,92 @@ public sealed class AlertsModel(
         destination.LastFailure
     };
 
+    private static string RequireValue(string? value, string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new ArgumentException($"{fieldName} is required.");
+        }
+
+        return value.Trim();
+    }
+
+    private static string RequireHttpEndpoint(string? value, string fieldName, bool requireHttps)
+    {
+        var endpoint = RequireValue(value, fieldName);
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new ArgumentException($"{fieldName} must be an absolute HTTP or HTTPS URL.");
+        }
+
+        if (requireHttps && uri.Scheme != Uri.UriSchemeHttps)
+        {
+            throw new ArgumentException($"{fieldName} must use HTTPS.");
+        }
+
+        return uri.AbsoluteUri;
+    }
+
+    private static string RedactEndpoint(string endpoint)
+    {
+        var uri = new Uri(endpoint, UriKind.Absolute);
+        var authority = uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}";
+        return $"{uri.Scheme}://{authority}/***";
+    }
+
+    private static string NormalizeEmail(string? value, string fieldName)
+    {
+        var email = RequireValue(value, fieldName);
+        try
+        {
+            return new MailAddress(email).Address;
+        }
+        catch (FormatException)
+        {
+            throw new ArgumentException($"{fieldName} is not a valid email address.");
+        }
+    }
+
+    public static string DisplayKind(AlertDeliveryKind kind) => kind switch
+    {
+        AlertDeliveryKind.MicrosoftTeams => "Microsoft Teams",
+        AlertDeliveryKind.PagerDuty => "PagerDuty",
+        _ => kind.ToString()
+    };
+
     public sealed class CreateDestinationInput
     {
         [Required, StringLength(200)]
         public string Name { get; set; } = string.Empty;
 
-        [Required, StringLength(2000), Url]
-        public string EndpointUrl { get; set; } = string.Empty;
+        public AlertDeliveryKind Kind { get; set; } = AlertDeliveryKind.Webhook;
 
-        [Required, StringLength(512, MinimumLength = 16)]
-        public string Secret { get; set; } = string.Empty;
+        [StringLength(2000)]
+        public string? EndpointUrl { get; set; }
+
+        [StringLength(2000)]
+        public string? Secret { get; set; }
+
+        [StringLength(320), EmailAddress]
+        public string? EmailRecipient { get; set; }
+
+        [StringLength(500)]
+        public string? SmtpHost { get; set; }
+
+        [Range(1, 65535)]
+        public int SmtpPort { get; set; } = 587;
+
+        [StringLength(320), EmailAddress]
+        public string? SmtpFromAddress { get; set; }
+
+        [StringLength(500)]
+        public string? SmtpUserName { get; set; }
+
+        [StringLength(2000)]
+        public string? SmtpPassword { get; set; }
+
+        public bool SmtpEnableSsl { get; set; } = true;
     }
 
     public sealed record AlertEventRow(
