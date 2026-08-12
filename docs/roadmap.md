@@ -156,16 +156,71 @@ Status: **complete**
 - Add a permanent SQL Server-backed integration gate that fans one real failure alert out to all six channel kinds and validates the provider wire contracts plus SMTP delivery.
 - Detailed contract: `docs/alert-delivery-adapters.md`.
 
-## Later platform work
+## Production and control-plane continuation
 
-- Host/process-supervisor command adapters for restart semantics where appropriate.
-- Optional budget enforcement policies that enqueue control commands rather than mutating workloads directly.
-- OTLP/HTTP JSON and OTLP/gRPC support.
-- OTLP metrics.
-- Daily/monthly aggregate rollups when real data volume makes hourly-only retention inefficient.
-- Multi-node operational hardening, shared Data Protection key management, and deployment packaging.
-- Roles/permissions if Monitor grows beyond a single-owner control plane.
+P9 delivery adapters were implemented ahead of their originally proposed position. The continuation keeps that completed numbering and resumes the intended priority order from production safety onward.
+
+### 10. Production hardening and deployability
+
+Status: **complete**
+
+- Ship a production multi-stage Docker image and a straightforward single-node Docker Compose deployment contract.
+- Support reverse proxies safely with explicit forwarded-header trust rather than accepting arbitrary forwarded headers.
+- Separate liveness from readiness; readiness includes SQL Server connectivity and schema readiness.
+- Validate production configuration at startup and fail fast on unsafe or incomplete deployment settings.
+- Make EF Core migration-on-startup behavior explicit and configurable, including a one-shot `--migrate-only` mode.
+- Persist the ASP.NET Core Data Protection key ring outside the container so protected delivery configuration and authentication state survive restarts/redeployments.
+- Load production application secrets from deployment-mounted files rather than committed configuration.
+- Treat SQL Server data plus the Data Protection key ring as one logical backup/restore recovery unit.
+- Provide a Caddy-backed single-node deployment with explicit proxy trust, edge HTTPS, internal-only Monitor/SQL networking, non-root Monitor execution, a read-only root filesystem, and persistent state volumes.
+- Document deploy, upgrade, rollback/recovery, reverse-proxy, HTTPS, secret handling, backup/restore, and operational boundaries.
+- Add a permanent Docker/SQL Server integration gate covering fail-fast validation, explicit migration, readiness, forwarded HTTPS/HSTS, real authentication, non-root execution, and Data Protection continuity across container recreation.
+- Keep Kubernetes, multi-node SignalR/shared key management, external vault/HSM integration, and supervisor-specific restart adapters outside this single-node slice.
+- Detailed contract: `docs/production-deployment.md`.
+
+### 11. Automated policy actions
+
+Status: **planned**
+
+- Add opt-in budget enforcement actions such as Critical → Pause or Critical → Disable.
+- Enqueue ordinary durable `ComponentCommand` records; policy evaluators must not mutate workloads directly.
+- Preserve command leasing, acknowledgement, idempotency, audit evidence, and realtime transitions.
+- Deduplicate enforcement per policy/period/threshold.
+- Do not auto-resume or auto-enable in the first version; recovery remains an explicit operator decision.
+- Consider failure-rule actions only after the budget-enforcement path is proven.
+
+### 12. Roles, permissions, and operator management
+
+Status: **planned when multi-user operation is required**
+
+- Introduce a minimal Owner / Operator / Viewer / Auditor authorization model.
+- Separate read-only investigation from configuration and destructive control actions.
+- Keep the current single-owner operating model until a real multi-user deployment requires this slice.
+
+### 13. OTLP metrics
+
+Status: **planned**
+
+- Add metrics as the next observability signal: counters, gauges, histograms, queue depth, saturation, and custom agent metrics.
+- Keep the domain/import pipeline protocol-independent so metrics do not create a transport-specific parallel model.
+
+### 14. OTLP compatibility expansion
+
+Status: **planned**
+
+- Add OTLP/gRPC first and OTLP/HTTP JSON second.
+- Reuse the existing trace/log/metric import services instead of creating duplicate domain paths.
+- Pull this forward only when a real integration is blocked by the current OTLP/HTTP protobuf contract.
+
+### 15+. Scale from measured deployment pressure
+
+Status: **demand-driven**
+
+- Add multi-node SignalR/backplane support only when multiple web nodes are actually required.
+- Add daily/monthly aggregate rollups when measured data volume makes hourly-only retention inefficient.
+- Add storage optimization from real workload measurements rather than speculative scale targets.
+- Build restart/process-supervisor adapters for the actual deployment environment (for example systemd, Windows Service, Docker, or Kubernetes) rather than inventing a universal supervisor abstraction in advance.
 
 ## Security debt explicitly tracked
 
-The current development ingestion key may remain in solution/local development configuration temporarily. Before production hardening, move ingestion keys, delivery destination secrets/configuration, Data Protection keys, and other operational secrets to an appropriate vault/secret store with documented rotation and recovery procedures.
+Development may still use local/shared secrets, but production deployment must keep ingestion credentials, delivery destination secrets/configuration, Data Protection keys, bootstrap credentials, and database credentials out of committed configuration. P10 establishes the single-node secret-loading and durable key-ring contract; external vault integration and shared multi-node key management remain future deployment concerns.

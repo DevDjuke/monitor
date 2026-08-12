@@ -1,0 +1,26 @@
+name: production-hardening-integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: production-hardening-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore Monitor.sln
+      - run: dotnet build Monitor.sln --configuration Release --no-restore
+      - name: Exercise production image, startup contract, health and durable Data Protection
+        run: bash .github/scripts/production-hardening-ci.sh
