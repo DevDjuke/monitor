@@ -162,18 +162,21 @@ P9 delivery adapters were implemented ahead of their originally proposed positio
 
 ### 10. Production hardening and deployability
 
-Status: **in progress**
+Status: **complete**
 
 - Ship a production multi-stage Docker image and a straightforward single-node Docker Compose deployment contract.
 - Support reverse proxies safely with explicit forwarded-header trust rather than accepting arbitrary forwarded headers.
-- Separate liveness from readiness; readiness must include SQL Server connectivity and schema readiness.
+- Separate liveness from readiness; readiness includes SQL Server connectivity and schema readiness.
 - Validate production configuration at startup and fail fast on unsafe or incomplete deployment settings.
-- Make EF Core migration-on-startup behavior explicit and configurable rather than unconditional.
-- Persist the ASP.NET Core Data Protection key ring outside the container so protected delivery configuration survives restarts/redeployments.
-- Define a production secret-loading strategy that keeps credentials out of committed configuration.
-- Document backup/restore as one recovery unit: SQL Server data plus the Data Protection key ring.
-- Document deploy, upgrade, rollback/recovery, reverse-proxy, and HTTPS expectations for a single-node installation.
-- Do not turn this slice into a Kubernetes or generic multi-node platform project.
+- Make EF Core migration-on-startup behavior explicit and configurable, including a one-shot `--migrate-only` mode.
+- Persist the ASP.NET Core Data Protection key ring outside the container so protected delivery configuration and authentication state survive restarts/redeployments.
+- Load production application secrets from deployment-mounted files rather than committed configuration.
+- Treat SQL Server data plus the Data Protection key ring as one logical backup/restore recovery unit.
+- Provide a Caddy-backed single-node deployment with explicit proxy trust, edge HTTPS, internal-only Monitor/SQL networking, non-root Monitor execution, a read-only root filesystem, and persistent state volumes.
+- Document deploy, upgrade, rollback/recovery, reverse-proxy, HTTPS, secret handling, backup/restore, and operational boundaries.
+- Add a permanent Docker/SQL Server integration gate covering fail-fast validation, explicit migration, readiness, forwarded HTTPS/HSTS, real authentication, non-root execution, and Data Protection continuity across container recreation.
+- Keep Kubernetes, multi-node SignalR/shared key management, external vault/HSM integration, and supervisor-specific restart adapters outside this single-node slice.
+- Detailed contract: `docs/production-deployment.md`.
 
 ### 11. Automated policy actions
 
