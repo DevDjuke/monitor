@@ -11,6 +11,7 @@ namespace Monitor.Web.Pages;
 
 public sealed class BudgetEditModel(MonitorDbContext db, AuditTrailWriter audit) : PageModel
 {
+    private const string CriticalActionField = "Input.CriticalAction";
     private readonly UsageBudgetEnforcementPolicyStore _enforcementPolicies = new(db);
 
     public Guid? BudgetId { get; private set; }
@@ -70,9 +71,9 @@ public sealed class BudgetEditModel(MonitorDbContext db, AuditTrailWriter audit)
         if (!Input.DeliverToAllEnabledDestinations && Input.SelectedDestinationIds.Count == 0)
             ModelState.AddModelError(nameof(Input.SelectedDestinationIds), "Select at least one destination, or use all enabled destinations.");
         if (!Enum.IsDefined(Input.CriticalAction))
-            ModelState.AddModelError(nameof(Input.CriticalAction), "Select a valid critical action.");
+            ModelState.AddModelError(CriticalActionField, "Select a valid critical action.");
         if (Input.CriticalAction != UsageBudgetEnforcementAction.None && Input.ComponentId is null)
-            ModelState.AddModelError(nameof(Input.CriticalAction), "Automatic enforcement requires a budget scoped to one component.");
+            ModelState.AddModelError(CriticalActionField, "Automatic enforcement requires a budget scoped to one component.");
         if (Input.ComponentId is not null && !await db.Components.AnyAsync(x => x.Id == Input.ComponentId.Value, cancellationToken))
             ModelState.AddModelError(nameof(Input.ComponentId), "Select a valid component.");
         if (!Input.DeliverToAllEnabledDestinations && Input.SelectedDestinationIds.Count > 0)
