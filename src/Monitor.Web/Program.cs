@@ -43,14 +43,21 @@ var productionOptions = ProductionConfigurationValidator.BindAndValidate(
     migrateOnly);
 
 builder.Services.AddSingleton(productionOptions);
-
-builder.Services.AddRazorPages(options =>
-{
-    options.Conventions.AuthorizeFolder("/");
-    options.Conventions.AllowAnonymousToPage("/Account/Login");
-    options.Conventions.AllowAnonymousToPage("/Account/Setup");
-    options.Conventions.AllowAnonymousToPage("/Error");
-});
+builder.Services.AddScoped<RoleAuthorizationPageFilter>();
+builder.Services
+    .AddRazorPages(options =>
+    {
+        options.Conventions.AuthorizeFolder("/", MonitorPolicies.View);
+        options.Conventions.AuthorizePage("/Audit", MonitorPolicies.Audit);
+        options.Conventions.AuthorizePage("/AlertRuleEdit", MonitorPolicies.Configure);
+        options.Conventions.AuthorizePage("/BudgetEdit", MonitorPolicies.Configure);
+        options.Conventions.AuthorizePage("/Operators", MonitorPolicies.ManageOperators);
+        options.Conventions.AllowAnonymousToPage("/Account/Login");
+        options.Conventions.AllowAnonymousToPage("/Account/Setup");
+        options.Conventions.AllowAnonymousToPage("/Account/AccessDenied");
+        options.Conventions.AllowAnonymousToPage("/Error");
+    })
+    .AddMvcOptions(options => options.Filters.AddService<RoleAuthorizationPageFilter>());
 builder.Services.AddSignalR();
 
 var dataProtection = builder.Services
@@ -144,6 +151,8 @@ builder.Services
     .AddEntityFrameworkStores<MonitorDbContext>()
     .AddDefaultTokenProviders();
 
+builder.Services.AddAuthorization(MonitorPolicies.Configure);
+
 builder.Services.ConfigureApplicationCookie(options =>
 {
     options.Cookie.Name = "Monitor.Auth";
@@ -153,7 +162,7 @@ builder.Services.ConfigureApplicationCookie(options =>
         ? CookieSecurePolicy.Always
         : CookieSecurePolicy.SameAsRequest;
     options.LoginPath = "/account/login";
-    options.AccessDeniedPath = "/account/login";
+    options.AccessDeniedPath = "/account/access-denied";
     options.SlidingExpiration = true;
     options.ExpireTimeSpan = TimeSpan.FromHours(12);
 
@@ -231,7 +240,7 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 }).AllowAnonymous();
 
 app.MapRazorPages();
-app.MapHub<MonitorHub>("/hubs/monitor").RequireAuthorization();
+app.MapHub<MonitorHub>("/hubs/monitor").RequireAuthorization(MonitorPolicies.View);
 app.MapMonitoringApi();
 app.MapControlCommandApi();
 app.MapLogApi();
