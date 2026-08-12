@@ -26,9 +26,9 @@
 .operator-action-row select {
     min-height: 42px;
     padding: .65rem .75rem;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
     border-radius: 8px;
-    background: var(--surface-strong, #111820);
+    background: var(--panel-2);
     color: var(--text);
 }
 
@@ -55,12 +55,17 @@
     align-items: center;
     min-height: 24px;
     padding: 0 .55rem;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
     border-radius: 999px;
     font-size: .72rem;
     letter-spacing: .04em;
     text-transform: uppercase;
 }
+
+.role-owner { color: #aaa1ff; }
+.role-operator { color: var(--healthy); }
+.role-auditor { color: var(--warn); }
+.role-viewer { color: var(--muted); }
 
 .self-chip {
     margin-left: .35rem;
@@ -83,7 +88,7 @@
 
 .operator-delete-row {
     padding-top: .9rem;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--line);
 }
 
 .button-danger {
