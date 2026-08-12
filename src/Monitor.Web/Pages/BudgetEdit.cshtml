@@ -8,7 +8,7 @@
     <div>
         <p class="eyebrow">USAGE POLICY</p>
         <h1>@(Model.IsEdit ? "Edit budget" : "New budget")</h1>
-        <p class="lede">Scope a daily or monthly cost/token guardrail and choose how threshold alerts are delivered.</p>
+        <p class="lede">Scope a daily or monthly cost/token guardrail, choose threshold delivery, and optionally queue a control command at Critical.</p>
     </div>
     <a href="/budgets">Back to budgets</a>
 </header>
@@ -79,6 +79,16 @@
                 <span>Critical threshold (%)</span>
                 <input asp-for="Input.CriticalPercent" type="number" min="1" max="1000" />
                 <span asp-validation-for="Input.CriticalPercent" class="field-validation"></span>
+            </label>
+            <label>
+                <span>Automatic action at Critical</span>
+                <select asp-for="Input.CriticalAction">
+                    <option value="None">No automatic action</option>
+                    <option value="Pause">Pause component</option>
+                    <option value="Disable">Disable component</option>
+                </select>
+                <span asp-validation-for="Input.CriticalAction" class="field-validation"></span>
+                <small>Pause/Disable require one selected component. Monitor queues the normal durable command once per budget period; it never auto-resumes or auto-enables.</small>
             </label>
         </div>
 
