@@ -68,8 +68,7 @@ if (productionOptions.ForwardedHeaders.Enabled)
     {
         options.ForwardedHeaders =
             ForwardedHeaders.XForwardedFor |
-            ForwardedHeaders.XForwardedProto |
-            ForwardedHeaders.XForwardedHost;
+            ForwardedHeaders.XForwardedProto;
         options.ForwardLimit = 1;
         options.RequireHeaderSymmetry = true;
 
