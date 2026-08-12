@@ -1,3 +1,8 @@
+@{
+    var monitorRole = MonitorRoles.All.FirstOrDefault(User.IsInRole) ?? "Unassigned";
+    var canAudit = User.IsInRole(MonitorRoles.Owner) || User.IsInRole(MonitorRoles.Auditor);
+    var canManageOperators = User.IsInRole(MonitorRoles.Owner);
+}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -34,11 +39,19 @@
                 <a href="/budgets">Budgets</a>
                 <a href="/alerts">Alerts</a>
                 <a href="/alerts/rules">Alert rules</a>
-                <a href="/audit">Audit</a>
+                @if (canAudit)
+                {
+                    <a href="/audit">Audit</a>
+                }
+                @if (canManageOperators)
+                {
+                    <a href="/operators">Operators</a>
+                }
             </nav>
             @await Component.InvokeAsync("PinnedSavedViews")
             <div class="sidebar-account">
                 <span class="account-email">@User.Identity?.Name</span>
+                <span class="account-role">@monitorRole</span>
                 <form method="post" asp-page="/Account/Logout">
                     <button type="submit" class="signout-button">Sign out</button>
                 </form>
