@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: production-hardening-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   production-hardening:
     runs-on: ubuntu-latest
