@@ -26,7 +26,7 @@ scalar() {
 
 raw_scalar() {
   docker exec "$sql_container" /opt/mssql-tools18/bin/sqlcmd \
-    -S localhost -U sa -P "$SQL_PASSWORD" -C -b -d "$DB" -h -1 -W -y 0 \
+    -S localhost -U sa -P "$SQL_PASSWORD" -C -b -d "$DB" -h -1 -y 0 -w 65535 \
     -Q "SET NOCOUNT ON; $1" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$/'
 }
 
