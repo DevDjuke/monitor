@@ -1,6 +1,6 @@
 # Budgets and usage policy
 
-Monitor budgets are detection and notification policies over the same usage accounting shown by `/usage`. They do not currently pause components or reject work.
+Monitor budgets are detection and notification policies over the same usage accounting shown by `/usage`. P11 additionally allows a component-scoped budget to opt into one bounded control action when it first crosses `Critical` in a UTC budget period.
 
 ## Scope
 
@@ -55,11 +55,11 @@ Repeated evaluator sweeps over unchanged evidence do not create duplicate alerts
 
 A budget can use all enabled alert destinations or an explicit selected destination set.
 
-Budget alerts use the existing Monitor webhook infrastructure:
+Budget alerts use the shared durable alert-delivery infrastructure:
 
 - the same `AlertDeliveryDestination` records;
-- the same ASP.NET Core Data Protection protected signing secrets;
-- the same HMAC-SHA256 signature contract;
+- signed webhook, Slack, Teams, Discord, PagerDuty, and SMTP adapters;
+- Data Protection protected provider secrets/configuration;
 - the same retry/backoff and destination-health behavior;
 - the same `Monitor.AlertDelivery` SQL application lock;
 - the same shared `AlertDeliveryWorker`.
@@ -73,16 +73,27 @@ usage.budget.warning
 usage.budget.critical
 ```
 
-Payloads include the budget scope/limits, period boundaries, observed cost/tokens and utilization percentage. The standard headers remain:
+Payloads include the budget scope/limits, period boundaries, observed cost/tokens and utilization percentage. Delivery remains at least once and destination-specific transport contracts are documented with the alert-delivery adapters.
+
+## Optional Critical action
+
+`/budgets/edit` can configure one of:
 
 ```text
-X-Monitor-Event
-X-Monitor-Delivery-Id
-X-Monitor-Timestamp
-X-Monitor-Signature
+None
+Pause
+Disable
 ```
 
-Delivery remains at least once. Receivers should deduplicate by delivery id and enforce their normal timestamp replay window.
+`None` is the default. Pause/Disable require one concrete `ComponentId`; broad budgets cannot control several workloads implicitly.
+
+A Critical action never mutates the component directly. The evaluator creates an ordinary durable `ComponentCommand` in the same transaction as the Critical alert event and threshold state. The command is then claimed, leased, acknowledged, retried/expired, audited, and reflected through realtime updates by the existing component-control protocol.
+
+The existing per-period `LastTriggeredLevel` state is also the action deduplication boundary, so repeated sweeps do not create duplicate commands for the same budget/period/Critical transition.
+
+There is deliberately no automatic Resume or Enable. Recovery remains explicit operator intent.
+
+Detailed contract: `docs/automated-policy-actions.md`.
 
 ## Operator surface
 
@@ -91,8 +102,9 @@ Delivery remains at least once. Receivers should deduplicate by delivery id and 
 - enabled/warning/critical policy counts;
 - current evaluator observations and utilization;
 - daily/monthly scope and limits;
+- configured Critical enforcement action where present;
 - recent threshold events and acknowledgement state;
-- budget notification outbox state, attempts, HTTP result/error and manual retry.
+- budget notification outbox state, attempts, result/error and manual retry.
 
 `/budgets/edit` manages:
 
@@ -101,10 +113,11 @@ Delivery remains at least once. Receivers should deduplicate by delivery id and 
 - daily/monthly period;
 - cost/token limits;
 - warning/critical percentages;
+- optional Critical Pause/Disable action;
 - enabled state;
 - all-enabled or selected delivery destinations.
 
-Deletion is soft. Historical budget alerts and notification evidence remain available.
+Deletion is soft. Historical budget alerts and notification evidence remain available; the enforcement-policy sidecar row is removed with the deleted budget only when the budget row itself is physically removed in the future.
 
 ## Audit
 
@@ -127,7 +140,13 @@ usage-budget.warning
 usage-budget.critical
 ```
 
-The system audit record contains safe usage/period metadata, not webhook secrets or credentials.
+P11-generated enforcement commands additionally use the ordinary:
+
+```text
+component-command.issued
+```
+
+system audit event, followed by the normal component command success/failure/rejection lifecycle events. Policy audit metadata contains safe budget/period/action provenance, not delivery secrets or credentials.
 
 ## Configuration
 
@@ -150,7 +169,3 @@ UsageBudgets__SweepIntervalSeconds
 ```
 
 The evaluator uses the SQL Server application lock `Monitor.UsageBudgets`, so only one Monitor node evaluates budget policy at a time.
-
-## Future enforcement
-
-P5 deliberately stops at detection and notification. Once the control-command protocol exists, a later policy may optionally request pause/disable/kill behavior at a budget threshold. That future action must use the command outbox and audit trail rather than directly mutating a remote component from the budget evaluator.

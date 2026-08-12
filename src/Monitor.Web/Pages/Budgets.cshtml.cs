@@ -4,11 +4,14 @@ using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure;
 using Monitor.Infrastructure.Auditing;
+using Monitor.Infrastructure.Usage;
 
 namespace Monitor.Web.Pages;
 
 public sealed class BudgetsModel(MonitorDbContext db, AuditTrailWriter audit) : PageModel
 {
+    private readonly UsageBudgetEnforcementPolicyStore _enforcementPolicies = new(db);
+
     [BindProperty(SupportsGet = true)] public string? Search { get; set; }
     [BindProperty(SupportsGet = true)] public string State { get; set; } = "all";
     [BindProperty(SupportsGet = true)] public UsageBudgetPeriod? Period { get; set; }
@@ -133,6 +136,10 @@ public sealed class BudgetsModel(MonitorDbContext db, AuditTrailWriter audit) : 
             .Take(200)
             .ToListAsync(cancellationToken);
 
+        var enforcementActions = await _enforcementPolicies.GetCriticalActionsAsync(
+            rows.Select(x => x.Id),
+            cancellationToken);
+
         Budgets = rows.Select(x => new BudgetRow(
             x.Id,
             x.Name,
@@ -144,6 +151,7 @@ public sealed class BudgetsModel(MonitorDbContext db, AuditTrailWriter audit) : 
             x.TokenLimit,
             x.WarningPercent,
             x.CriticalPercent,
+            enforcementActions.TryGetValue(x.Id, out var action) ? action : UsageBudgetEnforcementAction.None,
             x.Enabled,
             x.IsDeleted,
             x.LastObservedCostUsd,
@@ -221,7 +229,26 @@ public sealed class BudgetsModel(MonitorDbContext db, AuditTrailWriter audit) : 
             ? LocalRedirect(returnUrl)
             : RedirectToPage();
 
-    public sealed record BudgetRow(Guid Id, string Name, string? ComponentName, string? Environment, string? Model, UsageBudgetPeriod Period, double? CostLimitUsd, long? TokenLimit, int WarningPercent, int CriticalPercent, bool Enabled, bool IsDeleted, double ObservedCostUsd, long ObservedTokens, double UtilizationPercent, UsageBudgetAlertLevel? LastLevel, DateTimeOffset? LastEvaluatedAt);
+    public sealed record BudgetRow(
+        Guid Id,
+        string Name,
+        string? ComponentName,
+        string? Environment,
+        string? Model,
+        UsageBudgetPeriod Period,
+        double? CostLimitUsd,
+        long? TokenLimit,
+        int WarningPercent,
+        int CriticalPercent,
+        UsageBudgetEnforcementAction CriticalAction,
+        bool Enabled,
+        bool IsDeleted,
+        double ObservedCostUsd,
+        long ObservedTokens,
+        double UtilizationPercent,
+        UsageBudgetAlertLevel? LastLevel,
+        DateTimeOffset? LastEvaluatedAt);
+
     public sealed record BudgetAlertRow(Guid Id, Guid UsageBudgetId, string BudgetName, UsageBudgetAlertLevel Level, DateTimeOffset TriggeredAt, DateTimeOffset PeriodStart, DateTimeOffset PeriodEnd, double ObservedCostUsd, long ObservedTokens, double UtilizationPercent, DateTimeOffset? AcknowledgedAt, string? AcknowledgedBy, long Delivered, long Pending, long DeadLetter);
     public sealed record BudgetDeliveryRow(Guid Id, string BudgetName, UsageBudgetAlertLevel Level, string DestinationName, AlertDeliveryStatus Status, int AttemptCount, DateTimeOffset CreatedAt, DateTimeOffset NextAttemptAt, DateTimeOffset? LastAttemptAt, DateTimeOffset? DeliveredAt, int? ResponseStatusCode, string? LastError);
 }
