@@ -1,6 +1,11 @@
+using System.Net;
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Monitor.Infrastructure;
 using Monitor.Infrastructure.Auditing;
 using Monitor.Infrastructure.Auth;
@@ -12,10 +17,32 @@ using Monitor.Infrastructure.Usage;
 using Monitor.Web.Api;
 using Monitor.Web.Auth;
 using Monitor.Web.Otlp;
+using Monitor.Web.Production;
 using Monitor.Web.Realtime;
 using Monitor.Web.Services;
 
-var builder = WebApplication.CreateBuilder(args);
+var migrateOnly = args.Any(x => string.Equals(x, "--migrate-only", StringComparison.OrdinalIgnoreCase));
+var builderArgs = args
+    .Where(x => !string.Equals(x, "--migrate-only", StringComparison.OrdinalIgnoreCase))
+    .ToArray();
+
+var builder = WebApplication.CreateBuilder(builderArgs);
+ProductionSecretLoader.Load(builder.Configuration);
+
+var configuredConnectionString = builder.Configuration.GetConnectionString("Monitor");
+var connectionString = string.IsNullOrWhiteSpace(configuredConnectionString)
+    ? builder.Environment.IsProduction()
+        ? string.Empty
+        : "Server=(localdb)\\MSSQLLocalDB;Database=Monitor;Trusted_Connection=True;TrustServerCertificate=True;MultipleActiveResultSets=True"
+    : configuredConnectionString;
+
+var productionOptions = ProductionConfigurationValidator.BindAndValidate(
+    builder.Configuration,
+    builder.Environment,
+    connectionString,
+    migrateOnly);
+
+builder.Services.AddSingleton(productionOptions);
 
 builder.Services.AddRazorPages(options =>
 {
@@ -25,7 +52,38 @@ builder.Services.AddRazorPages(options =>
     options.Conventions.AllowAnonymousToPage("/Error");
 });
 builder.Services.AddSignalR();
-builder.Services.AddDataProtection();
+
+var dataProtection = builder.Services
+    .AddDataProtection()
+    .SetApplicationName(productionOptions.DataProtectionApplicationName);
+
+if (!migrateOnly && !string.IsNullOrWhiteSpace(productionOptions.DataProtectionKeyPath))
+{
+    dataProtection.PersistKeysToFileSystem(new DirectoryInfo(productionOptions.DataProtectionKeyPath));
+}
+
+if (productionOptions.ForwardedHeaders.Enabled)
+{
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders =
+            ForwardedHeaders.XForwardedFor |
+            ForwardedHeaders.XForwardedProto |
+            ForwardedHeaders.XForwardedHost;
+        options.ForwardLimit = 1;
+        options.RequireHeaderSymmetry = true;
+
+        foreach (var proxy in productionOptions.ForwardedHeaders.KnownProxies)
+        {
+            options.KnownProxies.Add(IPAddress.Parse(proxy));
+        }
+    });
+}
+
+builder.Services.AddHealthChecks()
+    .AddCheck("self", () => HealthCheckResult.Healthy("Monitor process is running."), tags: new[] { "live" })
+    .AddCheck<MonitorDatabaseReadinessHealthCheck>("database", tags: new[] { "ready" });
+
 builder.Services.AddHttpClient("alert-webhooks")
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddHttpClient("alert-adapters")
@@ -33,9 +91,6 @@ builder.Services.AddHttpClient("alert-adapters")
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
-
-var connectionString = builder.Configuration.GetConnectionString("Monitor")
-    ?? "Server=(localdb)\\MSSQLLocalDB;Database=Monitor;Trusted_Connection=True;TrustServerCertificate=True;MultipleActiveResultSets=True";
 
 builder.Services.AddScoped<MonitorRealtimeSaveChangesInterceptor>();
 builder.Services.AddDbContext<MonitorDbContext>((services, options) =>
@@ -95,7 +150,9 @@ builder.Services.ConfigureApplicationCookie(options =>
     options.Cookie.Name = "Monitor.Auth";
     options.Cookie.HttpOnly = true;
     options.Cookie.SameSite = SameSiteMode.Lax;
-    options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+    options.Cookie.SecurePolicy = builder.Environment.IsProduction()
+        ? CookieSecurePolicy.Always
+        : CookieSecurePolicy.SameAsRequest;
     options.LoginPath = "/account/login";
     options.AccessDeniedPath = "/account/login";
     options.SlidingExpiration = true;
@@ -128,18 +185,51 @@ builder.Services.ConfigureApplicationCookie(options =>
 
 var app = builder.Build();
 
+await DatabaseStartup.InitializeAsync(
+    app.Services,
+    builder.Configuration,
+    app.Environment,
+    productionOptions,
+    migrateOnly);
+
+if (migrateOnly)
+{
+    return;
+}
+
+if (productionOptions.ForwardedHeaders.Enabled)
+{
+    app.UseForwardedHeaders();
+}
+
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error");
     app.UseHsts();
 }
 
-app.UseHttpsRedirection();
+if (productionOptions.UseHttpsRedirection)
+{
+    app.UseWhen(
+        context => !context.Request.Path.StartsWithSegments("/health"),
+        branch => branch.UseHttpsRedirection());
+}
+
 app.UseStaticFiles();
 app.UseRouting();
 app.UseMiddleware<ComponentControlMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = registration => registration.Tags.Contains("live")
+}).AllowAnonymous();
+
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = registration => registration.Tags.Contains("ready")
+}).AllowAnonymous();
 
 app.MapRazorPages();
 app.MapHub<MonitorHub>("/hubs/monitor").RequireAuthorization();
@@ -148,14 +238,10 @@ app.MapControlCommandApi();
 app.MapLogApi();
 app.MapOtlp();
 
-await using (var scope = app.Services.CreateAsyncScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<MonitorDbContext>();
-    await db.Database.MigrateAsync();
-    await AuthBootstrapper.EnsureBootstrapAdminAsync(scope.ServiceProvider, builder.Configuration, app.Environment);
-}
-
 app.Run();
 
 static bool IsMachineEndpoint(PathString path) =>
-    path.StartsWithSegments("/api") || path.StartsWithSegments("/hubs") || path.StartsWithSegments("/v1");
+    path.StartsWithSegments("/api") ||
+    path.StartsWithSegments("/hubs") ||
+    path.StartsWithSegments("/v1") ||
+    path.StartsWithSegments("/health");
