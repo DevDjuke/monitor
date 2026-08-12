@@ -43,7 +43,6 @@ public static class ProductionConfigurationValidator
         {
             ValidateHttpConfiguration(configuration, options, errors);
             ValidateDataProtection(options, errors);
-            ValidateBootstrapPair(configuration, errors);
         }
 
         if (errors.Count > 0)
@@ -112,16 +111,6 @@ public static class ProductionConfigurationValidator
         else if (!Path.IsPathRooted(options.DataProtectionKeyPath))
         {
             errors.Add("Production:DataProtectionKeyPath must be an absolute path.");
-        }
-    }
-
-    private static void ValidateBootstrapPair(IConfiguration configuration, ICollection<string> errors)
-    {
-        var email = configuration["Monitor:BootstrapAdmin:Email"];
-        var password = configuration["Monitor:BootstrapAdmin:Password"];
-        if (string.IsNullOrWhiteSpace(email) != string.IsNullOrWhiteSpace(password))
-        {
-            errors.Add("Monitor:BootstrapAdmin:Email and Monitor:BootstrapAdmin:Password must be configured together.");
         }
     }
 
