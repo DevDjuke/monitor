@@ -33,7 +33,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_HTTP_PORTS: 8080
-      AllowedHosts: ${MONITOR_HOST:?Set MONITOR_HOST in .env}
+      AllowedHosts: "${MONITOR_HOST:?Set MONITOR_HOST in .env};localhost;127.0.0.1"
       Production__PublicUrl: https://${MONITOR_HOST:?Set MONITOR_HOST in .env}
       Production__MigrateOnStartup: ${MONITOR_MIGRATE_ON_STARTUP:-true}
       Production__UseHttpsRedirection: "false"
