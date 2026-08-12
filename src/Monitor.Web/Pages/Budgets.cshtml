@@ -8,7 +8,7 @@
     <div>
         <p class="eyebrow">USAGE POLICY</p>
         <h1>Budgets</h1>
-        <p class="lede">Daily and monthly cost/token guardrails over the same accounting used by Usage.</p>
+        <p class="lede">Daily and monthly cost/token guardrails over the same accounting used by Usage, with optional component control at Critical.</p>
     </div>
     <a class="button-link" href="/budgets/edit">New budget</a>
 </header>
@@ -53,6 +53,10 @@
                     @if (budget.CostLimitUsd is not null) { <div>$@budget.CostLimitUsd.Value.ToString("N2")</div> }
                     @if (budget.TokenLimit is not null) { <small>@budget.TokenLimit.Value.ToString("N0") tokens</small> }
                     <small>warning @budget.WarningPercent% · critical @budget.CriticalPercent%</small>
+                    @if (budget.CriticalAction != Monitor.Domain.UsageBudgetEnforcementAction.None)
+                    {
+                        <small><strong>Critical → @budget.CriticalAction</strong> command</small>
+                    }
                 </td>
                 <td><strong>@budget.UtilizationPercent.ToString("N1")%</strong><small>$@budget.ObservedCostUsd.ToString("N4") · @budget.ObservedTokens.ToString("N0") tokens</small><div class="budget-meter"><i style="width:@Math.Min(100, budget.UtilizationPercent).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%"></i></div></td>
                 <td><span class="budget-state @stateClass">@(budget.LastLevel?.ToString() ?? (budget.Enabled ? "OK" : "Disabled"))</span>@if (budget.LastEvaluatedAt is not null) { <small>@budget.LastEvaluatedAt.Value.ToString("u")</small> }</td>
@@ -105,7 +109,7 @@
     <div class="panel-head"><div><p class="eyebrow">DELIVERY OUTBOX</p><h2>Budget notification delivery</h2></div><span>@Model.RecentDeliveries.Count recent</span></div>
     @if (Model.RecentDeliveries.Count == 0)
     {
-        <div class="empty"><strong>No budget deliveries yet.</strong><span>Threshold events enqueue the same signed webhook delivery infrastructure used by failure alerts.</span></div>
+        <div class="empty"><strong>No budget deliveries yet.</strong><span>Threshold events enqueue the same durable delivery infrastructure used by failure alerts.</span></div>
     }
     else
     {
