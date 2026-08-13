@@ -20,7 +20,7 @@ public static class MonitorPolicies
     public const string Control = "Monitor.Control";
     public const string ManageOperators = "Monitor.ManageOperators";
 
-    public static void Configure(AuthorizationOptions options)
+    public static void ConfigurePolicies(AuthorizationOptions options)
     {
         options.AddPolicy(View, policy =>
             policy.RequireRole(MonitorRoles.Owner, MonitorRoles.Operator, MonitorRoles.Viewer, MonitorRoles.Auditor));
