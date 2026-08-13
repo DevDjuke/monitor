@@ -4,6 +4,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.35.1" />
+    <PackageReference Include="Grpc.AspNetCore" Version="2.83.0" />
     <PackageReference Include="Grpc.Tools" Version="2.83.0">
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
@@ -19,5 +20,8 @@
   </ItemGroup>
   <ItemGroup>
     <Protobuf Include="OtlpProtos\**\*.proto" ProtoRoot="OtlpProtos" GrpcServices="None" />
+    <Protobuf Update="OtlpProtos\opentelemetry\proto\collector\trace\v1\trace_service.proto" GrpcServices="Both" />
+    <Protobuf Update="OtlpProtos\opentelemetry\proto\collector\logs\v1\logs_service.proto" GrpcServices="Both" />
+    <Protobuf Update="OtlpProtos\opentelemetry\proto\collector\metrics\v1\metrics_service.proto" GrpcServices="Both" />
   </ItemGroup>
 </Project>
