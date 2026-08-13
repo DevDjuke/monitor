@@ -1,15 +1,15 @@
 name: p14-refresh-legacy-otlp-gates
 
 on:
-  push:
-    branches:
-      - feature/otlp-compatibility
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
   refresh:
+    if: github.head_ref == 'feature/otlp-compatibility'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
