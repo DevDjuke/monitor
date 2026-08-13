@@ -1,4 +1,11 @@
 {$MONITOR_HOST} {
     encode zstd gzip
+
+    @otlpGrpc path \
+        /opentelemetry.proto.collector.trace.v1.TraceService/* \
+        /opentelemetry.proto.collector.logs.v1.LogsService/* \
+        /opentelemetry.proto.collector.metrics.v1.MetricsService/*
+
+    reverse_proxy @otlpGrpc h2c://monitor:4317
     reverse_proxy monitor:8080
 }
