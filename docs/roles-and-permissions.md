@@ -57,7 +57,7 @@ Guardrails:
 - role changes and password resets rotate the Identity security stamp;
 - cookie security stamps are revalidated at most one minute later, so an already signed-in user's old authorization claims are short-lived after a role or password change.
 
-Account creation, role changes, password resets, and deletion are written to the existing append-only audit trail using `operator-account.*` actions.
+Account creation, role changes, password resets, and deletion are written to the existing append-only audit trail using `operator-account.*` actions. Each successful Identity mutation and its `AuditEvent` are enclosed in the same SQL transaction, preserving the P4 mutation-plus-audit atomicity invariant even though `UserManager` performs its own `SaveChanges` calls.
 
 ## Upgrade compatibility
 
