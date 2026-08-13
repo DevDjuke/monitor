@@ -56,6 +56,8 @@ public sealed class OperatorsModel(
             EmailConfirmed = true
         };
 
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
         var createResult = await userManager.CreateAsync(user, Input.Password);
         if (!createResult.Succeeded)
         {
@@ -67,9 +69,7 @@ public sealed class OperatorsModel(
         var roleResult = await userManager.AddToRoleAsync(user, Input.Role);
         if (!roleResult.Succeeded)
         {
-            await userManager.DeleteAsync(user);
             AddErrors(roleResult);
-            await LoadAsync(cancellationToken);
             return Page();
         }
 
@@ -82,6 +82,7 @@ public sealed class OperatorsModel(
             after: new { email, role = Input.Role },
             occurredAt: DateTimeOffset.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         TempData["StatusMessage"] = $"Created {email} as {Input.Role}.";
         return RedirectToPage();
@@ -128,6 +129,8 @@ public sealed class OperatorsModel(
             return RedirectToPage();
         }
 
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
         if (!currentRoles.Contains(role))
         {
             var addResult = await userManager.AddToRoleAsync(user, role);
@@ -167,6 +170,7 @@ public sealed class OperatorsModel(
             metadata: new { securityStampRotated = true },
             occurredAt: DateTimeOffset.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         TempData["StatusMessage"] = $"Changed {user.Email} to {role}. Existing sessions will be revalidated shortly.";
         return RedirectToPage();
@@ -189,6 +193,8 @@ public sealed class OperatorsModel(
             return NotFound();
         }
 
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
         var token = await userManager.GeneratePasswordResetTokenAsync(user);
         var result = await userManager.ResetPasswordAsync(user, token, newPassword);
         if (!result.Succeeded)
@@ -197,7 +203,13 @@ public sealed class OperatorsModel(
             return RedirectToPage();
         }
 
-        await userManager.UpdateSecurityStampAsync(user);
+        var stampResult = await userManager.UpdateSecurityStampAsync(user);
+        if (!stampResult.Succeeded)
+        {
+            TempData["StatusMessage"] = FormatErrors(stampResult);
+            return RedirectToPage();
+        }
+
         audit.RecordOperator(
             User,
             AuditActions.OperatorPasswordReset,
@@ -207,6 +219,7 @@ public sealed class OperatorsModel(
             metadata: new { securityStampRotated = true },
             occurredAt: DateTimeOffset.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         TempData["StatusMessage"] = $"Reset the password for {user.Email}.";
         return RedirectToPage();
@@ -237,6 +250,8 @@ public sealed class OperatorsModel(
         }
 
         var email = user.Email;
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
         var result = await userManager.DeleteAsync(user);
         if (!result.Succeeded)
         {
@@ -253,6 +268,7 @@ public sealed class OperatorsModel(
             before: new { email, roles },
             occurredAt: DateTimeOffset.UtcNow);
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         TempData["StatusMessage"] = $"Deleted {email}.";
         return RedirectToPage();
