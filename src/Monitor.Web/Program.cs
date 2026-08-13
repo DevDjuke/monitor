@@ -153,7 +153,7 @@ builder.Services
 
 builder.Services.Configure<SecurityStampValidatorOptions>(options =>
     options.ValidationInterval = TimeSpan.FromMinutes(1));
-builder.Services.AddAuthorization(MonitorPolicies.Configure);
+builder.Services.AddAuthorization(MonitorPolicies.ConfigurePolicies);
 
 builder.Services.ConfigureApplicationCookie(options =>
 {
