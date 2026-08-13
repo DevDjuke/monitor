@@ -15,11 +15,11 @@ public sealed class OtlpTraceGrpcService(
         ExportTraceServiceRequest request,
         ServerCallContext context)
     {
-        var identity = await AuthenticateAsync(authenticator, context);
+        var identity = await OtlpGrpcAuthentication.AuthenticateAsync(authenticator, context);
         var result = await processor.ProcessAsync(request, identity.ComponentId, context.CancellationToken);
         if (!result.Allowed)
         {
-            throw PermissionDenied();
+            throw OtlpGrpcAuthentication.PermissionDenied();
         }
 
         return result.Response!;
@@ -35,11 +35,11 @@ public sealed class OtlpLogsGrpcService(
         ExportLogsServiceRequest request,
         ServerCallContext context)
     {
-        var identity = await AuthenticateAsync(authenticator, context);
+        var identity = await OtlpGrpcAuthentication.AuthenticateAsync(authenticator, context);
         var result = await processor.ProcessAsync(request, identity.ComponentId, context.CancellationToken);
         if (!result.Allowed)
         {
-            throw PermissionDenied();
+            throw OtlpGrpcAuthentication.PermissionDenied();
         }
 
         return result.Response!;
@@ -55,11 +55,11 @@ public sealed class OtlpMetricsGrpcService(
         ExportMetricsServiceRequest request,
         ServerCallContext context)
     {
-        var identity = await AuthenticateAsync(authenticator, context);
+        var identity = await OtlpGrpcAuthentication.AuthenticateAsync(authenticator, context);
         var result = await processor.ProcessAsync(request, identity.ComponentId, context.CancellationToken);
         if (!result.Allowed)
         {
-            throw PermissionDenied();
+            throw OtlpGrpcAuthentication.PermissionDenied();
         }
 
         return result.Response!;
@@ -85,14 +85,4 @@ file static class OtlpGrpcAuthentication
     public static RpcException PermissionDenied() => new(new Status(
         StatusCode.PermissionDenied,
         "The ingestion credential is not scoped to the OTLP resource component."));
-}
-
-file static class OtlpGrpcHelpers
-{
-    public static Task<IngestionIdentity> AuthenticateAsync(
-        IngestionCredentialAuthenticator authenticator,
-        ServerCallContext context) =>
-        OtlpGrpcAuthentication.AuthenticateAsync(authenticator, context);
-
-    public static RpcException PermissionDenied() => OtlpGrpcAuthentication.PermissionDenied();
 }
