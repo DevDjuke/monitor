@@ -138,6 +138,22 @@ test "$matching_key" != "$other_key"
 
 dotnet "$FIXTURE_DLL" write "$FIXTURE_DIR" 'P14 Agent' production
 
+# Prove the fixture itself follows OTLP/JSON deviations rather than vanilla protobuf JSON:
+# trace/span ids are hex and enum fields are numeric.
+python3 - "$FIXTURE_DIR/traces.json" "$FIXTURE_DIR/logs.json" <<'PY'
+import json,sys
+trace=json.load(open(sys.argv[1],encoding='utf-8'))
+span=trace['resourceSpans'][0]['scopeSpans'][0]['spans'][0]
+assert span['traceId'] == '11223344556677889900aabbccddeeff'
+assert span['spanId'] == '1020304050607080'
+assert span['kind'] == 2 and isinstance(span['kind'], int)
+assert span['status']['code'] == 1 and isinstance(span['status']['code'], int)
+log=json.load(open(sys.argv[2],encoding='utf-8'))['resourceLogs'][0]['scopeLogs'][0]['logRecords'][0]
+assert log['traceId'] == '11223344556677889900aabbccddeeff'
+assert log['spanId'] == '1020304050607080'
+assert log['severityNumber'] == 9 and isinstance(log['severityNumber'], int)
+PY
+
 invalid_auth_status=$(post_json metrics definitely-invalid "$FIXTURE_DIR/metrics.json" /tmp/p14-invalid.json /tmp/p14-invalid.headers)
 test "$invalid_auth_status" = "401"
 
@@ -154,6 +170,24 @@ unsupported_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -d '<metrics />' "$HTTP_URL/v1/metrics")
 test "$unsupported_status" = "415"
 
+python3 - "$FIXTURE_DIR/traces.json" /tmp/p14-enum-name.json /tmp/p14-base64-id.json <<'PY'
+import base64,json,sys
+source=json.load(open(sys.argv[1],encoding='utf-8'))
+with open(sys.argv[2],'w',encoding='utf-8') as f:
+    broken=json.loads(json.dumps(source))
+    broken['resourceSpans'][0]['scopeSpans'][0]['spans'][0]['kind']='SPAN_KIND_SERVER'
+    json.dump(broken,f)
+with open(sys.argv[3],'w',encoding='utf-8') as f:
+    broken=json.loads(json.dumps(source))
+    broken['resourceSpans'][0]['scopeSpans'][0]['spans'][0]['traceId']=base64.b64encode(bytes.fromhex('11223344556677889900aabbccddeeff')).decode()
+    json.dump(broken,f)
+PY
+
+enum_name_status=$(post_json traces "$matching_key" /tmp/p14-enum-name.json /tmp/p14-enum-name-response.json /tmp/p14-enum-name.headers)
+test "$enum_name_status" = "400"
+base64_id_status=$(post_json traces "$matching_key" /tmp/p14-base64-id.json /tmp/p14-base64-id-response.json /tmp/p14-base64-id.headers)
+test "$base64_id_status" = "400"
+
 for signal in traces logs metrics; do
   status=$(post_json "$signal" "$matching_key" "$FIXTURE_DIR/$signal.json" "/tmp/p14-$signal.json" "/tmp/p14-$signal.headers")
   test "$status" = "200"
@@ -167,6 +201,17 @@ done
 test "$(scalar "SELECT COUNT(*) FROM Runs WHERE ComponentId='$matching_id';")" = "1"
 test "$(scalar "SELECT COUNT(*) FROM Spans s INNER JOIN Runs r ON r.Id=s.RunId WHERE r.ComponentId='$matching_id';")" = "1"
 test "$(scalar "SELECT COUNT(*) FROM LogEvents WHERE ComponentId='$matching_id' AND Message=N'P14 transport log';")" = "1"
+test "$(scalar "SELECT COUNT(*) FROM MetricPoints WHERE ComponentId='$matching_id' AND Name=N'p14.transport.gauge';")" = "1"
+
+# OTLP JSON receivers must ignore unknown future fields.
+python3 - "$FIXTURE_DIR/metrics.json" /tmp/p14-future-field.json <<'PY'
+import json,sys
+payload=json.load(open(sys.argv[1],encoding='utf-8'))
+payload['futureField']={'ignored':True}
+json.dump(payload,open(sys.argv[2],'w',encoding='utf-8'))
+PY
+future_field_status=$(post_json metrics "$matching_key" /tmp/p14-future-field.json /tmp/p14-future-field-response.json /tmp/p14-future-field.headers)
+test "$future_field_status" = "200"
 test "$(scalar "SELECT COUNT(*) FROM MetricPoints WHERE ComponentId='$matching_id' AND Name=N'p14.transport.gauge';")" = "1"
 
 gzip -c "$FIXTURE_DIR/metrics.json" >/tmp/p14-metrics.json.gz
