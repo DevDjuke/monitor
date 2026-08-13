@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Infrastructure;
 using OpenTelemetry.Proto.Collector.Logs.V1;
+using OpenTelemetry.Proto.Collector.Metrics.V1;
 using OpenTelemetry.Proto.Collector.Trace.V1;
 using OpenTelemetry.Proto.Common.V1;
 
@@ -55,6 +56,33 @@ public sealed partial class OtlpComponentScopeValidator(MonitorDbContext db)
         foreach (var resourceLogs in request.ResourceLogs)
         {
             if (!Matches(component, resourceLogs.Resource?.Attributes ?? []))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    public async Task<bool> CanIngestAsync(
+        ExportMetricsServiceRequest request,
+        Guid? authorizedComponentId,
+        CancellationToken cancellationToken = default)
+    {
+        if (authorizedComponentId is null)
+        {
+            return true;
+        }
+
+        var component = await GetAuthorizedComponentAsync(authorizedComponentId.Value, cancellationToken);
+        if (component is null)
+        {
+            return false;
+        }
+
+        foreach (var resourceMetrics in request.ResourceMetrics)
+        {
+            if (!Matches(component, resourceMetrics.Resource?.Attributes ?? []))
             {
                 return false;
             }
