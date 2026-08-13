@@ -1,5 +1,5 @@
 @{
-    var monitorRole = MonitorRoles.All.FirstOrDefault(User.IsInRole) ?? "Unassigned";
+    var monitorRole = MonitorRoles.All.FirstOrDefault(role => User.IsInRole(role)) ?? "Unassigned";
     var canAudit = User.IsInRole(MonitorRoles.Owner) || User.IsInRole(MonitorRoles.Auditor);
     var canManageOperators = User.IsInRole(MonitorRoles.Owner);
 }
