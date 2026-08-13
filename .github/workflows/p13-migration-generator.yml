@@ -1,0 +1,37 @@
+name: p13-migration-generator
+
+on:
+  push:
+    branches: [feature/otlp-metrics]
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/otlp-metrics
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore Monitor.sln
+      - name: Generate migration
+        run: |
+          dotnet tool install --global dotnet-ef --version 10.0.10
+          dotnet ef migrations add OtlpMetrics \
+            --project src/Monitor.Infrastructure \
+            --startup-project src/Monitor.Web \
+            --context MonitorDbContext \
+            --output-dir Migrations
+      - name: Commit migration
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/Monitor.Infrastructure/Migrations
+          git diff --cached --quiet && exit 0
+          git commit -m 'P13 add metric persistence migration'
+          git push origin HEAD:feature/otlp-metrics
