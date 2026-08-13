@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Monitor.Infrastructure;
 using Monitor.Infrastructure.Auditing;
@@ -12,6 +13,7 @@ using Monitor.Infrastructure.Auth;
 using Monitor.Infrastructure.Control;
 using Monitor.Infrastructure.Failures;
 using Monitor.Infrastructure.Logs;
+using Monitor.Infrastructure.Metrics;
 using Monitor.Infrastructure.Retention;
 using Monitor.Infrastructure.Usage;
 using Monitor.Web.Api;
@@ -102,6 +104,7 @@ builder.Services.AddScoped<MonitorRealtimeSaveChangesInterceptor>();
 builder.Services.AddDbContext<MonitorDbContext>((services, options) =>
     options
         .UseSqlServer(connectionString)
+        .ReplaceService<IModelCustomizer, MonitorModelCustomizer>()
         .AddInterceptors(services.GetRequiredService<MonitorRealtimeSaveChangesInterceptor>()));
 
 builder.Services.AddScoped<AuditTrailWriter>();
@@ -134,6 +137,7 @@ builder.Services.AddHostedService<LogCorrelationWorker>();
 builder.Services.AddScoped<OtlpComponentScopeValidator>();
 builder.Services.AddScoped<OtlpTraceImporter>();
 builder.Services.AddScoped<OtlpLogImporter>();
+builder.Services.AddScoped<OtlpMetricImporter>();
 
 builder.Services
     .AddIdentity<MonitorUser, IdentityRole>(options =>
