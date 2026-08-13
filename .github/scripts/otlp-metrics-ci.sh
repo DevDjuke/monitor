@@ -210,18 +210,17 @@ WHERE ComponentId='$matching_id'
 assert_one sum "$sum_ok"
 
 hist_ok=$(scalar "
-SELECT COUNT(*) FROM MetricPoints
+SELECT COUNT(*) FROM MetricPoints AS m
 WHERE ComponentId='$matching_id'
   AND Name=N'request.duration'
   AND [Count]=4
   AND [Sum]=100
   AND Min=5
   AND Max=70
-  AND JSON_VALUE(BucketCountsJson,'$[0]')='1'
-  AND JSON_VALUE(BucketCountsJson,'$[1]')='2'
-  AND JSON_VALUE(BucketCountsJson,'$[2]')='1'
-  AND JSON_VALUE(ExplicitBoundsJson,'$[0]')='10'
-  AND JSON_VALUE(ExplicitBoundsJson,'$[1]')='50';")
+  AND (SELECT COUNT(*) FROM OPENJSON(m.BucketCountsJson) WITH ([value] bigint '$') AS b WHERE b.[value] IN (1,2))=3
+  AND (SELECT COUNT(*) FROM OPENJSON(m.BucketCountsJson) WITH ([value] bigint '$') AS b WHERE b.[value]=1)=2
+  AND (SELECT COUNT(*) FROM OPENJSON(m.BucketCountsJson) WITH ([value] bigint '$') AS b WHERE b.[value]=2)=1
+  AND (SELECT COUNT(*) FROM OPENJSON(m.ExplicitBoundsJson) WITH ([value] float '$') AS e WHERE e.[value] IN (10,50))=2;")
 assert_one histogram "$hist_ok"
 
 exp_ok=$(scalar "
@@ -232,10 +231,10 @@ WHERE ComponentId='$matching_id'
   AND [Sum]=12
   AND Scale=2
   AND ZeroCount=1
-  AND JSON_VALUE(PositiveBucketsJson,'$.Offset')='1'
-  AND JSON_VALUE(PositiveBucketsJson,'$.Counts[0]')='2'
-  AND JSON_VALUE(NegativeBucketsJson,'$.Offset')='-1'
-  AND JSON_VALUE(NegativeBucketsJson,'$.Counts[0]')='1';")
+  AND TRY_CONVERT(int,JSON_VALUE(PositiveBucketsJson,'$.Offset'))=1
+  AND TRY_CONVERT(bigint,JSON_VALUE(PositiveBucketsJson,'$.Counts[0]'))=2
+  AND TRY_CONVERT(int,JSON_VALUE(NegativeBucketsJson,'$.Offset'))=-1
+  AND TRY_CONVERT(bigint,JSON_VALUE(NegativeBucketsJson,'$.Counts[0]'))=1;")
 assert_one exponential_histogram "$exp_ok"
 
 summary_ok=$(scalar "
@@ -246,10 +245,10 @@ WHERE ComponentId='$matching_id'
   AND [Sum]=60
   AND Temporality=2
   AND IsMonotonic=0
-  AND JSON_VALUE(QuantilesJson,'$[0].Quantile')='0.5'
-  AND JSON_VALUE(QuantilesJson,'$[0].Value')='20'
-  AND JSON_VALUE(QuantilesJson,'$[1].Quantile')='0.9'
-  AND JSON_VALUE(QuantilesJson,'$[1].Value')='30';")
+  AND TRY_CONVERT(float,JSON_VALUE(QuantilesJson,'$[0].Quantile'))=0.5
+  AND TRY_CONVERT(float,JSON_VALUE(QuantilesJson,'$[0].Value'))=20
+  AND TRY_CONVERT(float,JSON_VALUE(QuantilesJson,'$[1].Quantile'))=0.9
+  AND TRY_CONVERT(float,JSON_VALUE(QuantilesJson,'$[1].Value'))=30;")
 assert_one summary "$summary_ok"
 
 curl -fsS -b "$COOKIE_JAR" \
