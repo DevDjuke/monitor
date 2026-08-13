@@ -63,7 +63,7 @@ Account creation, role changes, password resets, and deletion are written to the
 
 The Identity schema already included `AspNetRoles` and `AspNetUserRoles`, so P12 requires no database migration.
 
-Before P12, authenticated users had no Monitor role and effectively had unrestricted UI access. On startup, P12 creates any missing Monitor roles and assigns `Owner` to every existing account that has no recognized Monitor role. This preserves access for existing installations and prevents an upgrade from locking the administrator out.
+Before P12, authenticated users had no Monitor role and effectively had unrestricted UI access. When the Monitor role model is first initialized, P12 creates the missing roles and assigns `Owner` to existing accounts that have no recognized Monitor role. Once all four Monitor roles already exist, later roleless accounts are not promoted on restart and remain unauthorized. This preserves access for genuine pre-P12 installations without creating a permanent privilege-escalation fallback.
 
 Fresh production bootstrap administrators and the Development `/account/setup` first user are assigned `Owner` immediately.
 
