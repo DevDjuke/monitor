@@ -238,17 +238,18 @@ WHERE ComponentId='$matching_id'
 assert_one exponential_histogram "$exp_ok"
 
 summary_ok=$(scalar "
-SELECT COUNT(*) FROM MetricPoints
+SELECT COUNT(*) FROM MetricPoints AS m
 WHERE ComponentId='$matching_id'
   AND Name=N'legacy.latency'
   AND [Count]=3
   AND [Sum]=60
   AND Temporality=2
   AND IsMonotonic=0
-  AND TRY_CONVERT(float,JSON_VALUE(QuantilesJson,'$[0].Quantile'))=0.5
-  AND TRY_CONVERT(float,JSON_VALUE(QuantilesJson,'$[0].Value'))=20
-  AND TRY_CONVERT(float,JSON_VALUE(QuantilesJson,'$[1].Quantile'))=0.9
-  AND TRY_CONVERT(float,JSON_VALUE(QuantilesJson,'$[1].Value'))=30;")
+  AND (SELECT COUNT(*)
+       FROM OPENJSON(m.QuantilesJson)
+       WITH (Quantile float '$.Quantile', [Value] float '$.Value') AS q
+       WHERE (q.Quantile=0.5 AND q.[Value]=20)
+          OR (q.Quantile=0.9 AND q.[Value]=30))=2;")
 assert_one summary "$summary_ok"
 
 curl -fsS -b "$COOKIE_JAR" \
