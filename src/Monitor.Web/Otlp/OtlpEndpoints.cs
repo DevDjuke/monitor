@@ -24,8 +24,8 @@ public static class OtlpEndpoints
         IngestionCredentialAuthenticator authenticator,
         CancellationToken cancellationToken)
     {
-        var authenticated = await AuthenticateAsync(httpContext, authenticator, cancellationToken);
-        if (authenticated.Identity is null)
+        var identity = await AuthenticateAsync(httpContext, authenticator, cancellationToken);
+        if (identity is null)
         {
             return Results.Unauthorized();
         }
@@ -41,7 +41,7 @@ public static class OtlpEndpoints
             return Results.BadRequest();
         }
 
-        var result = await processor.ProcessAsync(request, authenticated.Identity.ComponentId, cancellationToken);
+        var result = await processor.ProcessAsync(request, identity.ComponentId, cancellationToken);
         return result.Allowed
             ? WriteResponse(result.Response!, encoding)
             : Results.StatusCode(StatusCodes.Status403Forbidden);
@@ -53,8 +53,8 @@ public static class OtlpEndpoints
         IngestionCredentialAuthenticator authenticator,
         CancellationToken cancellationToken)
     {
-        var authenticated = await AuthenticateAsync(httpContext, authenticator, cancellationToken);
-        if (authenticated.Identity is null)
+        var identity = await AuthenticateAsync(httpContext, authenticator, cancellationToken);
+        if (identity is null)
         {
             return Results.Unauthorized();
         }
@@ -70,7 +70,7 @@ public static class OtlpEndpoints
             return Results.BadRequest();
         }
 
-        var result = await processor.ProcessAsync(request, authenticated.Identity.ComponentId, cancellationToken);
+        var result = await processor.ProcessAsync(request, identity.ComponentId, cancellationToken);
         return result.Allowed
             ? WriteResponse(result.Response!, encoding)
             : Results.StatusCode(StatusCodes.Status403Forbidden);
@@ -82,8 +82,8 @@ public static class OtlpEndpoints
         IngestionCredentialAuthenticator authenticator,
         CancellationToken cancellationToken)
     {
-        var authenticated = await AuthenticateAsync(httpContext, authenticator, cancellationToken);
-        if (authenticated.Identity is null)
+        var identity = await AuthenticateAsync(httpContext, authenticator, cancellationToken);
+        if (identity is null)
         {
             return Results.Unauthorized();
         }
@@ -99,20 +99,17 @@ public static class OtlpEndpoints
             return Results.BadRequest();
         }
 
-        var result = await processor.ProcessAsync(request, authenticated.Identity.ComponentId, cancellationToken);
+        var result = await processor.ProcessAsync(request, identity.ComponentId, cancellationToken);
         return result.Allowed
             ? WriteResponse(result.Response!, encoding)
             : Results.StatusCode(StatusCodes.Status403Forbidden);
     }
 
-    private static async Task<(IngestionIdentity? Identity, bool Authenticated)> AuthenticateAsync(
+    private static Task<IngestionIdentity?> AuthenticateAsync(
         HttpContext httpContext,
         IngestionCredentialAuthenticator authenticator,
-        CancellationToken cancellationToken)
-    {
-        var identity = await authenticator.AuthenticateAsync(httpContext, allowOperator: false, cancellationToken);
-        return (identity, identity is not null);
-    }
+        CancellationToken cancellationToken) =>
+        authenticator.AuthenticateAsync(httpContext, allowOperator: false, cancellationToken);
 
     private static bool TryGetEncoding(string? contentType, out OtlpHttpEncoding encoding)
     {
@@ -139,7 +136,7 @@ public static class OtlpEndpoints
         MessageParser<T> parser,
         OtlpHttpEncoding encoding,
         CancellationToken cancellationToken)
-        where T : class, IMessage<T>
+        where T : class, IMessage<T>, new()
     {
         var payload = await ReadPayloadAsync(request, cancellationToken);
         if (payload is null)
