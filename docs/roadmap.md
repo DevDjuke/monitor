@@ -6,7 +6,7 @@ This roadmap is the current product sequence for turning Monitor from an observa
 
 - Component registry, heartbeats, runs, spans, costs, tokens, and run history.
 - SQL Server persistence and versioned EF Core migrations.
-- Monitor-native ingestion plus OTLP/HTTP protobuf trace and log ingestion.
+- Monitor-native ingestion plus OTLP/HTTP protobuf trace, log, and metric ingestion.
 - Structured component/run log events with trace/span correlation and filtered log search.
 - SignalR-backed live run lists, run drill-down, log/span reconciliation, and command-state transitions with explicit frozen-history behavior.
 - Durable usage aggregation and success-only retention with failed/cancelled forensic preservation.
@@ -216,10 +216,19 @@ Status: **complete**
 
 ### 13. OTLP metrics
 
-Status: **planned**
+Status: **complete**
 
-- Add metrics as the next observability signal: counters, gauges, histograms, queue depth, saturation, and custom agent metrics.
-- Keep the domain/import pipeline protocol-independent so metrics do not create a transport-specific parallel model.
+- Add a protocol-independent durable metric-point model for gauges, monotonic/non-monotonic sums, explicit histograms, exponential histograms, and legacy summaries.
+- Accept OTLP/HTTP protobuf metrics at `/v1/metrics` with the same shared/component-scoped machine-authentication contract as traces and logs.
+- Preserve temporality, monotonicity, units, dimensions, resource/scope metadata, schema URLs, exemplars, histogram buckets/bounds, exponential bucket parameters, and summary quantiles without silently reinterpreting source aggregation semantics.
+- Preserve OTLP unsigned 64-bit distribution counts with SQL `decimal(20,0)` rather than narrowing them to signed `bigint`.
+- Reject malformed individual points through OTLP partial-success while retaining valid siblings in the same request.
+- Deduplicate exporter retries with a stable semantic SHA-256 point identity plus a database unique constraint.
+- Add a filtered `/metrics` operator surface and make Metrics a first-class personal Saved Views surface.
+- Bound raw metric detail retention with `Retention:MetricDetailDays` (30 days by default) and the existing retention worker; defer rollups/downsampling until measured volume justifies them.
+- Add a permanent SQL Server-backed integration gate covering component scope, invalid auth/content types, five metric kinds, malformed-point partial success, exact retry dedupe, stored distribution/resource/exemplar fidelity, Metrics Saved Views, UI filtering, and retention.
+- Keep OTLP/gRPC and OTLP/HTTP JSON transport expansion in P14 so both reuse the same importer/domain path.
+- Detailed contract: `docs/otlp-metrics.md`.
 
 ### 14. OTLP compatibility expansion
 
