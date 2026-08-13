@@ -14,7 +14,14 @@ Monitor accepts traces, logs and metrics through all of the following transports
 
 HTTP protobuf accepts `application/x-protobuf` and `application/protobuf`. HTTP JSON accepts `application/json`, including a charset parameter. Both HTTP encodings support `Content-Encoding: gzip`; other request content encodings are rejected.
 
-OTLP/HTTP JSON is parsed and formatted with protobuf JSON semantics. Field names, enum values, 64-bit integers and byte fields therefore follow the canonical protobuf JSON mapping instead of a Monitor-specific JSON schema.
+OTLP/HTTP JSON uses the OTLP protobuf-JSON wire contract rather than vanilla Google.Protobuf JSON. `OtlpJson` deliberately keeps Google.Protobuf responsible for protobuf parsing/formatting while adapting OTLP's protocol-specific deviations:
+
+- `traceId` and `spanId` are case-insensitive hexadecimal strings on the OTLP JSON wire, not base64 byte strings;
+- enum fields are integer values rather than protobuf enum-name strings;
+- unknown message fields are ignored for forward compatibility;
+- protobuf 64-bit numeric semantics remain owned by Google.Protobuf.
+
+The compatibility gate uses those OTLP-specific representations explicitly, including rejecting vanilla base64 trace ids and enum-name strings, so a self-consistent non-standard JSON codec cannot satisfy P14.
 
 ## One ingestion path
 
@@ -43,7 +50,7 @@ Human Owner/Operator/Viewer/Auditor roles do not grant OTLP ingestion access.
 
 Signal validation remains importer-owned, so partial-success behavior is identical regardless of transport. Valid sibling telemetry can be committed while invalid individual spans/logs/metric points are reported through the standard OTLP response message.
 
-HTTP responses use the same representation family as the request: protobuf requests receive protobuf responses and JSON requests receive protobuf-JSON responses. gRPC uses the generated OTLP response messages directly.
+HTTP responses use the same representation family as the request: protobuf requests receive protobuf responses and JSON requests receive OTLP protobuf-JSON responses. gRPC uses the generated OTLP response messages directly.
 
 ## Production listener model
 
@@ -62,7 +69,9 @@ Container defaults expose both internal ports. Deployments that replace Caddy mu
 
 `.github/workflows/otlp-compatibility-ci.yml` is the permanent P14 integration gate. Against real SQL Server it verifies:
 
-- HTTP JSON traces, logs and metrics
+- HTTP JSON traces, logs and metrics using OTLP hex ids and integer enums
+- rejection of vanilla protobuf-JSON base64 trace ids and enum-name strings
+- unknown-field tolerance for forward compatibility
 - JSON response media type and parseability
 - gzip-compressed JSON
 - malformed JSON and unsupported media-type rejection
