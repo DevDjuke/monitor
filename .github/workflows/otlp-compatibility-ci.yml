@@ -1,0 +1,57 @@
+name: otlp-compatibility-integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: otlp-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  otlp-compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: MonitorOtlpCompatibilityCi!2026Password
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'MonitorOtlpCompatibilityCi!2026Password' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore Monitor.sln
+      - run: dotnet restore .github/fixtures/OtlpCompatibilityFixture/OtlpCompatibilityFixture.csproj
+      - run: dotnet build Monitor.sln --configuration Release --no-restore
+      - run: dotnet build .github/fixtures/OtlpCompatibilityFixture/OtlpCompatibilityFixture.csproj --configuration Release --no-restore
+      - name: Exercise OTLP HTTP JSON and gRPC through shared importers
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          Kestrel__Endpoints__Http__Url: http://127.0.0.1:5099
+          Kestrel__Endpoints__Http__Protocols: Http1
+          Kestrel__Endpoints__Grpc__Url: http://127.0.0.1:5100
+          Kestrel__Endpoints__Grpc__Protocols: Http2
+          ConnectionStrings__Monitor: Server=127.0.0.1,1433;Database=MonitorOtlpCompatibilityCi;User Id=sa;Password=MonitorOtlpCompatibilityCi!2026Password;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=True
+          Monitor__IngestionApiKey: ci-p14-bootstrap-key
+          Monitor__BootstrapAdmin__Email: p14-ci@monitor.local
+          Monitor__BootstrapAdmin__Password: MonitorP14Admin2026
+          FailureAlerting__Enabled: false
+          UsageBudgets__Enabled: false
+          AlertDelivery__Enabled: false
+          ComponentCommands__Enabled: false
+        run: bash .github/scripts/otlp-compatibility-ci.sh
