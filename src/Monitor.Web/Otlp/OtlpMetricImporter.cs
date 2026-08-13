@@ -451,7 +451,7 @@ public sealed partial class OtlpMetricImporter(
             decimal? count = hasRecordedValue ? (decimal)point.Count : null;
             double? sum = hasRecordedValue ? point.Sum : null;
             var dedupeKey = BuildDedupeKey(
-                componentId, metric.Name, MetricKind.Summary, MetricAggregationTemporality.Unspecified,
+                componentId, metric.Name, MetricKind.Summary, MetricAggregationTemporality.Cumulative,
                 point.StartTimeUnixNano, point.TimeUnixNano, point.Flags, attributesJson, null, count,
                 sum, null, null, null, null, null, null, null, null, null, quantilesJson);
             dedupeKey = ExtendDedupeKey(
@@ -460,7 +460,7 @@ public sealed partial class OtlpMetricImporter(
 
             return new MappedMetricPoint(MetricPoint.Create(
                 componentId, metric.Name, metric.Description, metric.Unit, MetricKind.Summary,
-                MetricAggregationTemporality.Unspecified, false, hasRecordedValue,
+                MetricAggregationTemporality.Cumulative, false, hasRecordedValue,
                 FromUnixNanoOrNull(point.StartTimeUnixNano), FromUnixNano(point.TimeUnixNano), null,
                 count, sum, null, null, null, null, null, null, null, null, null, quantilesJson,
                 attributesJson, resourceAttributesJson, metricMetadataJson, null, scopeName, scopeVersion,
