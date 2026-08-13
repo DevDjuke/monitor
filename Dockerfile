@@ -28,11 +28,14 @@ RUN apt-get update \
 COPY --from=build --chown=app:app /app/publish ./
 
 ENV ASPNETCORE_ENVIRONMENT=Production \
-    ASPNETCORE_HTTP_PORTS=8080 \
+    Kestrel__Endpoints__Http__Url=http://0.0.0.0:8080 \
+    Kestrel__Endpoints__Http__Protocols=Http1 \
+    Kestrel__Endpoints__Grpc__Url=http://0.0.0.0:4317 \
+    Kestrel__Endpoints__Grpc__Protocols=Http2 \
     DOTNET_EnableDiagnostics=0
 
 USER app
-EXPOSE 8080
+EXPOSE 8080 4317
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl --fail --silent --show-error http://127.0.0.1:8080/health/ready || exit 1

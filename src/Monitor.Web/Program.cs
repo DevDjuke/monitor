@@ -59,6 +59,7 @@ builder.Services
     })
     .AddMvcOptions(options => options.Filters.AddService<RoleAuthorizationPageFilter>());
 builder.Services.AddSignalR();
+builder.Services.AddGrpc();
 
 var dataProtection = builder.Services
     .AddDataProtection()
@@ -135,6 +136,7 @@ builder.Services.AddScoped<OtlpComponentScopeValidator>();
 builder.Services.AddScoped<OtlpTraceImporter>();
 builder.Services.AddScoped<OtlpLogImporter>();
 builder.Services.AddScoped<OtlpMetricImporter>();
+builder.Services.AddScoped<OtlpIngestionProcessor>();
 
 builder.Services
     .AddIdentity<MonitorUser, IdentityRole>(options =>
@@ -247,6 +249,9 @@ app.MapHub<MonitorHub>("/hubs/monitor").RequireAuthorization(MonitorPolicies.Vie
 app.MapMonitoringApi();
 app.MapControlCommandApi();
 app.MapLogApi();
+app.MapGrpcService<OtlpTraceGrpcService>();
+app.MapGrpcService<OtlpLogsGrpcService>();
+app.MapGrpcService<OtlpMetricsGrpcService>();
 app.MapOtlp();
 
 app.Run();
@@ -255,4 +260,5 @@ static bool IsMachineEndpoint(PathString path) =>
     path.StartsWithSegments("/api") ||
     path.StartsWithSegments("/hubs") ||
     path.StartsWithSegments("/v1") ||
+    path.StartsWithSegments("/opentelemetry.proto.collector") ||
     path.StartsWithSegments("/health");

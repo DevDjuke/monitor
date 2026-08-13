@@ -32,7 +32,10 @@ services:
         condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      ASPNETCORE_HTTP_PORTS: 8080
+      Kestrel__Endpoints__Http__Url: http://0.0.0.0:8080
+      Kestrel__Endpoints__Http__Protocols: Http1
+      Kestrel__Endpoints__Grpc__Url: http://0.0.0.0:4317
+      Kestrel__Endpoints__Grpc__Protocols: Http2
       AllowedHosts: "${MONITOR_HOST:?Set MONITOR_HOST in .env};localhost;127.0.0.1"
       Production__PublicUrl: https://${MONITOR_HOST:?Set MONITOR_HOST in .env}
       Production__MigrateOnStartup: ${MONITOR_MIGRATE_ON_STARTUP:-true}
@@ -43,6 +46,7 @@ services:
       MONITOR_SECRETS_PATH: /run/secrets
     expose:
       - "8080"
+      - "4317"
     volumes:
       - monitor_data_protection:/var/lib/monitor/data-protection-keys
       - ./secrets:/run/secrets:ro

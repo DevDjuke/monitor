@@ -197,8 +197,8 @@ jobs:
           unsupported_media_status=$(curl -sS -o /dev/null -w '%{http_code}' \
             -X POST \
             -H 'X-Monitor-Key: ci-otlp-ingestion-key' \
-            -H 'Content-Type: application/json' \
-            -d '{}' \
+            -H 'Content-Type: application/xml' \
+            -d '<unsupported />' \
             http://127.0.0.1:5082/v1/traces)
           test "$unsupported_media_status" = "415"
 
