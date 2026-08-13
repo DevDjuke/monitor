@@ -158,11 +158,11 @@ wrong_scope_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   "$BASE_URL/v1/metrics")
 test "$wrong_scope_status" = "403"
 
-json_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+unsupported_media_status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "X-Monitor-Key: $matching_key" \
-  -H 'Content-Type: application/json' \
-  -d '{}' "$BASE_URL/v1/metrics")
-test "$json_status" = "415"
+  -H 'Content-Type: application/xml' \
+  -d '<unsupported />' "$BASE_URL/v1/metrics")
+test "$unsupported_media_status" = "415"
 
 first_status=$(curl -sS -o /tmp/metrics-response.bin -w '%{http_code}' \
   -H "X-Monitor-Key: $matching_key" \

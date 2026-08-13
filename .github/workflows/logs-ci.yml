@@ -100,8 +100,8 @@ jobs:
           unsupported_logs=$(curl -sS -o /dev/null -w '%{http_code}' \
             -X POST \
             -H 'X-Monitor-Key: ci-logs-ingestion-key' \
-            -H 'Content-Type: application/json' \
-            -d '{}' \
+            -H 'Content-Type: application/xml' \
+            -d '<unsupported />' \
             http://127.0.0.1:5086/v1/logs)
           test "$unsupported_logs" = "415"
 
