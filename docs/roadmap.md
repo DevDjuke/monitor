@@ -6,7 +6,7 @@ This roadmap is the current product sequence for turning Monitor from an observa
 
 - Component registry, heartbeats, runs, spans, costs, tokens, and run history.
 - SQL Server persistence and versioned EF Core migrations.
-- Monitor-native ingestion plus OTLP/HTTP protobuf trace, log, and metric ingestion.
+- Monitor-native ingestion plus OTLP/HTTP protobuf, OTLP/HTTP JSON, and OTLP/gRPC trace, log, and metric ingestion.
 - Structured component/run log events with trace/span correlation and filtered log search.
 - SignalR-backed live run lists, run drill-down, log/span reconciliation, and command-state transitions with explicit frozen-history behavior.
 - Durable usage aggregation and success-only retention with failed/cancelled forensic preservation.
@@ -227,16 +227,22 @@ Status: **complete**
 - Add a filtered `/metrics` operator surface and make Metrics a first-class personal Saved Views surface.
 - Bound raw metric detail retention with `Retention:MetricDetailDays` (30 days by default) and the existing retention worker; defer rollups/downsampling until measured volume justifies them.
 - Add a permanent SQL Server-backed integration gate covering component scope, invalid auth/content types, five metric kinds, malformed-point partial success, exact retry dedupe, stored distribution/resource/exemplar fidelity, Metrics Saved Views, UI filtering, and retention.
-- Keep OTLP/gRPC and OTLP/HTTP JSON transport expansion in P14 so both reuse the same importer/domain path.
+- Keep metric persistence transport-independent; P14 now adds gRPC and HTTP JSON by feeding the same importer/domain path.
 - Detailed contract: `docs/otlp-metrics.md`.
 
 ### 14. OTLP compatibility expansion
 
-Status: **planned**
+Status: **complete**
 
-- Add OTLP/gRPC first and OTLP/HTTP JSON second.
-- Reuse the existing trace/log/metric import services instead of creating duplicate domain paths.
-- Pull this forward only when a real integration is blocked by the current OTLP/HTTP protobuf contract.
+- Accept traces, logs, and metrics over the standard OTLP collector gRPC services in addition to the existing OTLP/HTTP protobuf endpoints.
+- Accept canonical protobuf-JSON OTLP payloads on the existing `/v1/traces`, `/v1/logs`, and `/v1/metrics` endpoints, returning JSON OTLP responses for JSON requests.
+- Keep authentication, component-scope validation, partial-success semantics, correlation, failure grouping, metric fidelity, and retry deduplication transport-independent through one shared `OtlpIngestionProcessor` and the existing trace/log/metric importers.
+- Map Monitor machine-auth failures consistently: HTTP uses 401/403 while gRPC uses `UNAUTHENTICATED`/`PERMISSION_DENIED`.
+- Preserve gzip request support for OTLP/HTTP JSON as well as protobuf.
+- Give the production single-node image a dedicated internal HTTP/2 gRPC listener and route only OTLP collector service calls to it through Caddy h2c; keep the UI/API/OTLP-HTTP listener on HTTP/1 behind the same public TLS origin.
+- Add a permanent SQL Server-backed cross-transport integration gate that sends the same semantic telemetry through HTTP JSON and gRPC and proves existing importer deduplication keeps run/span/log/metric row counts stable.
+- Require no EF Core migration; P14 is a transport/deployment compatibility layer over the P3/P13 telemetry schema.
+- Detailed contract: `docs/otlp-compatibility.md`.
 
 ### 15+. Scale from measured deployment pressure
 
