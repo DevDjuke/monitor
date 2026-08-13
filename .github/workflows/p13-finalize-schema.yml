@@ -19,6 +19,32 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      - name: Restore DbContext baseline and apply migration-visible metric mapping
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess
+
+          baseline = subprocess.check_output(
+              ['git','show','origin/main:src/Monitor.Infrastructure/MonitorDbContext.cs'],
+              text=True)
+          baseline = baseline.replace(
+              'using Monitor.Infrastructure.Auth;\n',
+              'using Monitor.Infrastructure.Auth;\nusing Monitor.Infrastructure.Metrics;\n')
+          baseline = baseline.replace(
+              '    public DbSet<LogEvent> LogEvents => Set<LogEvent>();\n',
+              '    public DbSet<LogEvent> LogEvents => Set<LogEvent>();\n    public DbSet<MetricPoint> MetricPoints => Set<MetricPoint>();\n')
+          baseline = baseline.replace(
+              '        base.OnModelCreating(modelBuilder);\n',
+              '        base.OnModelCreating(modelBuilder);\n        MetricPointModelConfiguration.Configure(modelBuilder);\n')
+          required = [
+              'using Monitor.Infrastructure.Metrics;',
+              'public DbSet<MetricPoint> MetricPoints',
+              'MetricPointModelConfiguration.Configure(modelBuilder);'
+          ]
+          if not all(x in baseline for x in required):
+              raise SystemExit('Metric DbContext patch did not apply')
+          Path('src/Monitor.Infrastructure/MonitorDbContext.cs').write_text(baseline)
       - name: Remove runtime-only model customizer and harden metric semantics
         shell: python
         run: |
@@ -29,6 +55,8 @@ jobs:
           s = s.replace('using Microsoft.EntityFrameworkCore.Infrastructure;\n', '')
           s = s.replace('using Monitor.Infrastructure.Metrics;\n', '')
           s = s.replace('        .UseSqlServer(connectionString)\n        .ReplaceService<IModelCustomizer, MonitorModelCustomizer>()\n        .AddInterceptors', '        .UseSqlServer(connectionString)\n        .AddInterceptors')
+          if 'MonitorModelCustomizer' in s or 'IModelCustomizer' in s:
+              raise SystemExit('Runtime model customizer reference remains in Program.cs')
           p.write_text(s)
 
           p = Path('src/Monitor.Web/Otlp/OtlpMetricImporter.cs')
@@ -65,6 +93,8 @@ jobs:
               raise SystemExit('One or more metric semantic patches did not apply')
           p.write_text(s)
       - run: dotnet restore Monitor.sln
+      - name: Compile corrected model before touching migrations
+        run: dotnet build Monitor.sln --configuration Release --no-restore
       - name: Replace empty migration with migration-visible MetricPoints schema
         run: |
           dotnet tool install --global dotnet-ef --version 10.0.10
@@ -87,6 +117,6 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/Monitor.Web/Program.cs src/Monitor.Web/Otlp/OtlpMetricImporter.cs src/Monitor.Infrastructure/Migrations
+          git add src/Monitor.Infrastructure/MonitorDbContext.cs src/Monitor.Web/Program.cs src/Monitor.Web/Otlp/OtlpMetricImporter.cs src/Monitor.Infrastructure/Migrations
           git commit -m 'P13 finalize metric schema and retry identity'
           git push origin HEAD:feature/otlp-metrics
