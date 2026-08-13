@@ -25,6 +25,12 @@ scalar() {
     -Q "SET NOCOUNT ON; $1" | tr -d '\r' | xargs
 }
 
+assert_one() {
+  local label="$1" value="$2"
+  echo "P13 fidelity: $label=$value"
+  test "$value" = "1"
+}
+
 page_token() {
   local url="$1" output="$2"
   curl -fsS -b "$COOKIE_JAR" "$url" -o "$output"
@@ -88,6 +94,8 @@ cleanup() {
     cat "$APP_LOG" 2>/dev/null || true
     echo '=== MetricPoints ==='
     sql "SELECT Id,ComponentId,Name,Kind,Temporality,IsMonotonic,HasRecordedValue,[Timestamp],NumericValue,[Count],[Sum],Min,Max,Scale,ZeroCount,DedupeKey FROM MetricPoints ORDER BY [Timestamp];" 2>/dev/null || true
+    echo '=== Metric JSON payloads ==='
+    sql "SELECT Name,AttributesJson,ResourceAttributesJson,MetricMetadataJson,ExemplarsJson,BucketCountsJson,ExplicitBoundsJson,PositiveBucketsJson,NegativeBucketsJson,QuantilesJson FROM MetricPoints ORDER BY Name;" 2>/dev/null || true
   fi
   kill "$app_pid" 2>/dev/null || true
   wait "$app_pid" 2>/dev/null || true
@@ -189,7 +197,7 @@ WHERE ComponentId='$matching_id'
   AND ResourceAttributesJson LIKE '%p13%'
   AND MetricMetadataJson LIKE '%stable%'
   AND ExemplarsJson LIKE '%00112233445566778899aabbccddeeff%';")
-test "$gauge_ok" = "1"
+assert_one gauge "$gauge_ok"
 
 sum_ok=$(scalar "
 SELECT COUNT(*) FROM MetricPoints
@@ -199,7 +207,7 @@ WHERE ComponentId='$matching_id'
   AND Temporality=2
   AND IsMonotonic=1
   AND HasRecordedValue=1;")
-test "$sum_ok" = "1"
+assert_one sum "$sum_ok"
 
 hist_ok=$(scalar "
 SELECT COUNT(*) FROM MetricPoints
@@ -214,7 +222,7 @@ WHERE ComponentId='$matching_id'
   AND JSON_VALUE(BucketCountsJson,'$[2]')='1'
   AND JSON_VALUE(ExplicitBoundsJson,'$[0]')='10'
   AND JSON_VALUE(ExplicitBoundsJson,'$[1]')='50';")
-test "$hist_ok" = "1"
+assert_one histogram "$hist_ok"
 
 exp_ok=$(scalar "
 SELECT COUNT(*) FROM MetricPoints
@@ -228,7 +236,7 @@ WHERE ComponentId='$matching_id'
   AND JSON_VALUE(PositiveBucketsJson,'$.Counts[0]')='2'
   AND JSON_VALUE(NegativeBucketsJson,'$.Offset')='-1'
   AND JSON_VALUE(NegativeBucketsJson,'$.Counts[0]')='1';")
-test "$exp_ok" = "1"
+assert_one exponential_histogram "$exp_ok"
 
 summary_ok=$(scalar "
 SELECT COUNT(*) FROM MetricPoints
@@ -242,7 +250,7 @@ WHERE ComponentId='$matching_id'
   AND JSON_VALUE(QuantilesJson,'$[0].Value')='20'
   AND JSON_VALUE(QuantilesJson,'$[1].Quantile')='0.9'
   AND JSON_VALUE(QuantilesJson,'$[1].Value')='30';")
-test "$summary_ok" = "1"
+assert_one summary "$summary_ok"
 
 curl -fsS -b "$COOKIE_JAR" \
   "$BASE_URL/metrics?Window=24h&Search=critical&Name=queue.depth&Kind=Gauge&Take=50" \
