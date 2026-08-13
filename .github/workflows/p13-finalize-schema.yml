@@ -19,104 +19,51 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - name: Restore DbContext baseline and apply migration-visible metric mapping
+      - name: Restore the real main snapshot and remove only bad P13 migration files
         shell: python
         run: |
           from pathlib import Path
           import subprocess
 
+          migrations = Path('src/Monitor.Infrastructure/Migrations')
+          for path in migrations.glob('*_OtlpMetrics*.cs'):
+              path.unlink()
+
           baseline = subprocess.check_output(
-              ['git','show','origin/main:src/Monitor.Infrastructure/MonitorDbContext.cs'],
+              ['git','show','origin/main:src/Monitor.Infrastructure/Migrations/MonitorDbContextModelSnapshot.cs'],
               text=True)
-          baseline = baseline.replace(
-              'using Monitor.Infrastructure.Auth;\n',
-              'using Monitor.Infrastructure.Auth;\nusing Monitor.Infrastructure.Metrics;\n')
-          baseline = baseline.replace(
-              '    public DbSet<LogEvent> LogEvents => Set<LogEvent>();\n',
-              '    public DbSet<LogEvent> LogEvents => Set<LogEvent>();\n    public DbSet<MetricPoint> MetricPoints => Set<MetricPoint>();\n')
-          baseline = baseline.replace(
-              '        base.OnModelCreating(modelBuilder);\n',
-              '        base.OnModelCreating(modelBuilder);\n        MetricPointModelConfiguration.Configure(modelBuilder);\n')
-          required = [
-              'using Monitor.Infrastructure.Metrics;',
-              'public DbSet<MetricPoint> MetricPoints',
-              'MetricPointModelConfiguration.Configure(modelBuilder);'
-          ]
-          if not all(x in baseline for x in required):
-              raise SystemExit('Metric DbContext patch did not apply')
-          Path('src/Monitor.Infrastructure/MonitorDbContext.cs').write_text(baseline)
-      - name: Remove runtime-only model customizer and harden metric semantics
-        shell: python
-        run: |
-          from pathlib import Path
-
-          p = Path('src/Monitor.Web/Program.cs')
-          s = p.read_text()
-          s = s.replace('using Microsoft.EntityFrameworkCore.Infrastructure;\n', '')
-          s = s.replace('using Monitor.Infrastructure.Metrics;\n', '')
-          s = s.replace('        .UseSqlServer(connectionString)\n        .ReplaceService<IModelCustomizer, MonitorModelCustomizer>()\n        .AddInterceptors', '        .UseSqlServer(connectionString)\n        .AddInterceptors')
-          if 'MonitorModelCustomizer' in s or 'IModelCustomizer' in s:
-              raise SystemExit('Runtime model customizer reference remains in Program.cs')
-          p.write_text(s)
-
-          p = Path('src/Monitor.Web/Otlp/OtlpMetricImporter.cs')
-          s = p.read_text()
-          s = s.replace(
-              'componentId, metric.Name, MetricKind.Summary, MetricAggregationTemporality.Cumulative,',
-              'componentId, metric.Name, MetricKind.Summary, MetricAggregationTemporality.Unspecified,')
-          s = s.replace(
-              'componentId, metric.Name, metric.Description, metric.Unit, MetricKind.Summary,\n                MetricAggregationTemporality.Cumulative, true, hasRecordedValue,',
-              'componentId, metric.Name, metric.Description, metric.Unit, MetricKind.Summary,\n                MetricAggregationTemporality.Unspecified, false, hasRecordedValue,')
-
-          number_old = '''            var dedupeKey = BuildDedupeKey(\n                componentId, metric.Name, kind, temporality, point.StartTimeUnixNano, point.TimeUnixNano,\n                point.Flags, attributesJson, value, null, null, null, null, null, null, null, null);\n'''
-          number_new = number_old + '''            dedupeKey = ExtendDedupeKey(\n                dedupeKey, metric, isMonotonic, resourceAttributesJson, metricMetadataJson, exemplarsJson,\n                scopeName, scopeVersion, resourceSchemaUrl, scopeSchemaUrl);\n'''
-          s = s.replace(number_old, number_new)
-
-          hist_old = '''            var dedupeKey = BuildDedupeKey(\n                componentId, metric.Name, MetricKind.Histogram, temporality, point.StartTimeUnixNano,\n                point.TimeUnixNano, point.Flags, attributesJson, null, count, sum, min, max,\n                bucketCountsJson, explicitBoundsJson, null, null);\n'''
-          hist_new = hist_old + '''            dedupeKey = ExtendDedupeKey(\n                dedupeKey, metric, false, resourceAttributesJson, metricMetadataJson, exemplarsJson,\n                scopeName, scopeVersion, resourceSchemaUrl, scopeSchemaUrl);\n'''
-          s = s.replace(hist_old, hist_new)
-
-          exp_old = '''            var dedupeKey = BuildDedupeKey(\n                componentId, metric.Name, MetricKind.ExponentialHistogram, temporality,\n                point.StartTimeUnixNano, point.TimeUnixNano, point.Flags, attributesJson, null,\n                count, sum, min, max, null, null, positiveBucketsJson, negativeBucketsJson,\n                point.Scale, zeroCount, point.ZeroThreshold);\n'''
-          exp_new = exp_old + '''            dedupeKey = ExtendDedupeKey(\n                dedupeKey, metric, false, resourceAttributesJson, metricMetadataJson, exemplarsJson,\n                scopeName, scopeVersion, resourceSchemaUrl, scopeSchemaUrl);\n'''
-          s = s.replace(exp_old, exp_new)
-
-          summary_old = '''            var dedupeKey = BuildDedupeKey(\n                componentId, metric.Name, MetricKind.Summary, MetricAggregationTemporality.Unspecified,\n                point.StartTimeUnixNano, point.TimeUnixNano, point.Flags, attributesJson, null, count,\n                sum, null, null, null, null, null, null, null, null, null, quantilesJson);\n'''
-          summary_new = summary_old + '''            dedupeKey = ExtendDedupeKey(\n                dedupeKey, metric, false, resourceAttributesJson, metricMetadataJson, null,\n                scopeName, scopeVersion, resourceSchemaUrl, scopeSchemaUrl);\n'''
-          s = s.replace(summary_old, summary_new)
-
-          marker = '    private async Task<HashSet<string>> LoadExistingDedupeKeysAsync('
-          helper = '''    private static string ExtendDedupeKey(\n        string pointIdentity,\n        OtlpMetric metric,\n        bool isMonotonic,\n        string? resourceAttributesJson,\n        string? metricMetadataJson,\n        string? exemplarsJson,\n        string? scopeName,\n        string? scopeVersion,\n        string? resourceSchemaUrl,\n        string? scopeSchemaUrl)\n    {\n        var contextIdentity = JsonSerializer.Serialize(new\n        {\n            pointIdentity,\n            metric.Description,\n            metric.Unit,\n            isMonotonic,\n            resourceAttributesJson,\n            metricMetadataJson,\n            exemplarsJson,\n            scopeName,\n            scopeVersion,\n            resourceSchemaUrl,\n            scopeSchemaUrl\n        });\n        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(contextIdentity))).ToLowerInvariant();\n    }\n\n'''
-          if helper not in s:
-              s = s.replace(marker, helper + marker)
-          required = [number_new, hist_new, exp_new, summary_new, helper]
-          if not all(x in s for x in required):
-              raise SystemExit('One or more metric semantic patches did not apply')
-          p.write_text(s)
+          (migrations / 'MonitorDbContextModelSnapshot.cs').write_text(baseline)
       - run: dotnet restore Monitor.sln
-      - name: Compile corrected model before touching migrations
+      - name: Verify current P13 model compiles before schema generation
         run: dotnet build Monitor.sln --configuration Release --no-restore
-      - name: Replace empty migration with migration-visible MetricPoints schema
+      - name: Generate P13 as a diff from main's actual model snapshot
         run: |
           dotnet tool install --global dotnet-ef --version 10.0.10
-          dotnet ef migrations remove --force \
-            --project src/Monitor.Infrastructure \
-            --startup-project src/Monitor.Web \
-            --context MonitorDbContext
           dotnet ef migrations add OtlpMetrics \
             --project src/Monitor.Infrastructure \
             --startup-project src/Monitor.Web \
             --context MonitorDbContext \
             --output-dir Migrations
-      - name: Verify generated migration contains MetricPoints
+      - name: Refuse any migration that touches pre-P13 schema
+        shell: bash
         run: |
+          set -euo pipefail
           migration=$(ls src/Monitor.Infrastructure/Migrations/*_OtlpMetrics.cs | grep -v Designer | tail -n 1)
-          grep -q 'CreateTable' "$migration"
-          grep -q 'MetricPoints' "$migration"
-          grep -q 'decimal(20,0)' "$migration"
-      - name: Commit final schema and semantic fixes
+          test -n "$migration"
+          test "$(grep -c 'migrationBuilder.CreateTable' "$migration")" = "1"
+          grep -q 'name: "MetricPoints"' "$migration"
+          grep -q 'type: "decimal(20,0)"' "$migration"
+          grep -q 'migrationBuilder.DropTable' "$migration"
+          grep -q 'name: "MetricPoints"' "$migration"
+          ! grep -q 'CreateSequence' "$migration"
+          ! grep -q 'AlertDeliveryDestinations' "$migration"
+          ! grep -q 'AspNetUsers' "$migration"
+          ! grep -q 'RunAggregates' "$migration"
+          ! grep -q 'UsageBudgets' "$migration"
+      - name: Commit clean P13 migration and snapshot
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/Monitor.Infrastructure/MonitorDbContext.cs src/Monitor.Web/Program.cs src/Monitor.Web/Otlp/OtlpMetricImporter.cs src/Monitor.Infrastructure/Migrations
-          git commit -m 'P13 finalize metric schema and retry identity'
+          git add src/Monitor.Infrastructure/Migrations
+          git commit -m 'P13 regenerate metrics migration from main snapshot'
           git push origin HEAD:feature/otlp-metrics
