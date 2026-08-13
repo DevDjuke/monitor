@@ -10,6 +10,7 @@ using OpenTelemetry.Proto.Metrics.V1;
 using OpenTelemetry.Proto.Resource.V1;
 using OpenTelemetry.Proto.Trace.V1;
 using OtlpSpan = OpenTelemetry.Proto.Trace.V1.Span;
+using OtlpStatus = OpenTelemetry.Proto.Trace.V1.Status;
 
 if (args.Length == 0)
 {
@@ -128,7 +129,7 @@ static ExportTraceServiceRequest BuildTraces(
         Kind = OtlpSpan.Types.SpanKind.Server,
         StartTimeUnixNano = now - 5_000_000UL,
         EndTimeUnixNano = now,
-        Status = new Status { Code = Status.Types.StatusCode.Ok }
+        Status = new OtlpStatus { Code = OtlpStatus.Types.StatusCode.Ok }
     });
     resourceSpans.ScopeSpans.Add(scopeSpans);
     request.ResourceSpans.Add(resourceSpans);
