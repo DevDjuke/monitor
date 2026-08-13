@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text;
+using System.Text.Json;
 using Google.Protobuf;
 using Monitor.Web.Auth;
 using OpenTelemetry.Proto.Collector.Logs.V1;
@@ -149,11 +150,11 @@ public static class OtlpEndpoints
             return encoding switch
             {
                 OtlpHttpEncoding.Protobuf => parser.ParseFrom(payload),
-                OtlpHttpEncoding.Json => JsonParser.Default.Parse<T>(Encoding.UTF8.GetString(payload)),
+                OtlpHttpEncoding.Json => OtlpJson.Parse<T>(Encoding.UTF8.GetString(payload)),
                 _ => null
             };
         }
-        catch (Exception ex) when (ex is InvalidProtocolBufferException or InvalidJsonException)
+        catch (Exception ex) when (ex is InvalidProtocolBufferException or InvalidJsonException or JsonException or FormatException)
         {
             return null;
         }
@@ -163,7 +164,7 @@ public static class OtlpEndpoints
         encoding switch
         {
             OtlpHttpEncoding.Protobuf => Results.Bytes(response.ToByteArray(), "application/x-protobuf"),
-            OtlpHttpEncoding.Json => Results.Text(JsonFormatter.Default.Format(response), "application/json", Encoding.UTF8),
+            OtlpHttpEncoding.Json => Results.Text(OtlpJson.Format(response), "application/json", Encoding.UTF8),
             _ => Results.StatusCode(StatusCodes.Status500InternalServerError)
         };
 
