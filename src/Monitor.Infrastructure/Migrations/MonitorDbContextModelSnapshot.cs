@@ -833,6 +833,154 @@ namespace Monitor.Infrastructure.Migrations
                     b.ToTable("LogEvents", (string)null);
                 });
 
+            modelBuilder.Entity("Monitor.Domain.MetricPoint", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AttributesJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("BucketCountsJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid>("ComponentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal?>("Count")
+                        .HasPrecision(20)
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("DedupeKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("ExemplarsJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ExplicitBoundsJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long>("Flags")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("HasRecordedValue")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsMonotonic")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("int");
+
+                    b.Property<double?>("Max")
+                        .HasColumnType("float");
+
+                    b.Property<string>("MetricMetadataJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<double?>("Min")
+                        .HasColumnType("float");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)");
+
+                    b.Property<string>("NegativeBucketsJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<double?>("NumericValue")
+                        .HasColumnType("float");
+
+                    b.Property<string>("PositiveBucketsJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("QuantilesJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ResourceAttributesJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ResourceSchemaUrl")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int?>("Scale")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ScopeName")
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)");
+
+                    b.Property<string>("ScopeSchemaUrl")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("ScopeVersion")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<DateTimeOffset?>("StartTimestamp")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<double?>("Sum")
+                        .HasColumnType("float");
+
+                    b.Property<int>("Temporality")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("Timestamp")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Unit")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<decimal?>("ZeroCount")
+                        .HasPrecision(20)
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<double?>("ZeroThreshold")
+                        .HasColumnType("float");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DedupeKey")
+                        .IsUnique();
+
+                    b.HasIndex("Timestamp")
+                        .IsDescending();
+
+                    b.HasIndex("ComponentId", "Timestamp")
+                        .IsDescending(false, true);
+
+                    b.HasIndex("Kind", "Timestamp")
+                        .IsDescending(false, true);
+
+                    b.HasIndex("Name", "Timestamp")
+                        .IsDescending(false, true);
+
+                    b.HasIndex("ComponentId", "Name", "Timestamp")
+                        .IsDescending(false, false, true);
+
+                    b.ToTable("MetricPoints", (string)null);
+                });
+
             modelBuilder.Entity("Monitor.Domain.MonitoredComponent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1548,6 +1696,17 @@ namespace Monitor.Infrastructure.Migrations
                     b.Navigation("Run");
 
                     b.Navigation("Span");
+                });
+
+            modelBuilder.Entity("Monitor.Domain.MetricPoint", b =>
+                {
+                    b.HasOne("Monitor.Domain.MonitoredComponent", "Component")
+                        .WithMany()
+                        .HasForeignKey("ComponentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Component");
                 });
 
             modelBuilder.Entity("Monitor.Domain.SavedView", b =>

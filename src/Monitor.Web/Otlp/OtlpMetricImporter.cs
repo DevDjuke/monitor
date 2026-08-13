@@ -273,6 +273,9 @@ public sealed partial class OtlpMetricImporter(
             var dedupeKey = BuildDedupeKey(
                 componentId, metric.Name, kind, temporality, point.StartTimeUnixNano, point.TimeUnixNano,
                 point.Flags, attributesJson, value, null, null, null, null, null, null, null, null);
+            dedupeKey = ExtendDedupeKey(
+                dedupeKey, metric, isMonotonic, resourceAttributesJson, metricMetadataJson, exemplarsJson,
+                scopeName, scopeVersion, resourceSchemaUrl, scopeSchemaUrl);
 
             return new MappedMetricPoint(MetricPoint.Create(
                 componentId,
@@ -350,6 +353,9 @@ public sealed partial class OtlpMetricImporter(
                 componentId, metric.Name, MetricKind.Histogram, temporality, point.StartTimeUnixNano,
                 point.TimeUnixNano, point.Flags, attributesJson, null, count, sum, min, max,
                 bucketCountsJson, explicitBoundsJson, null, null);
+            dedupeKey = ExtendDedupeKey(
+                dedupeKey, metric, false, resourceAttributesJson, metricMetadataJson, exemplarsJson,
+                scopeName, scopeVersion, resourceSchemaUrl, scopeSchemaUrl);
 
             return new MappedMetricPoint(MetricPoint.Create(
                 componentId, metric.Name, metric.Description, metric.Unit, MetricKind.Histogram,
@@ -400,6 +406,9 @@ public sealed partial class OtlpMetricImporter(
                 point.StartTimeUnixNano, point.TimeUnixNano, point.Flags, attributesJson, null,
                 count, sum, min, max, null, null, positiveBucketsJson, negativeBucketsJson,
                 point.Scale, zeroCount, point.ZeroThreshold);
+            dedupeKey = ExtendDedupeKey(
+                dedupeKey, metric, false, resourceAttributesJson, metricMetadataJson, exemplarsJson,
+                scopeName, scopeVersion, resourceSchemaUrl, scopeSchemaUrl);
 
             return new MappedMetricPoint(MetricPoint.Create(
                 componentId, metric.Name, metric.Description, metric.Unit, MetricKind.ExponentialHistogram,
@@ -442,13 +451,16 @@ public sealed partial class OtlpMetricImporter(
             decimal? count = hasRecordedValue ? (decimal)point.Count : null;
             double? sum = hasRecordedValue ? point.Sum : null;
             var dedupeKey = BuildDedupeKey(
-                componentId, metric.Name, MetricKind.Summary, MetricAggregationTemporality.Cumulative,
+                componentId, metric.Name, MetricKind.Summary, MetricAggregationTemporality.Unspecified,
                 point.StartTimeUnixNano, point.TimeUnixNano, point.Flags, attributesJson, null, count,
                 sum, null, null, null, null, null, null, null, null, null, quantilesJson);
+            dedupeKey = ExtendDedupeKey(
+                dedupeKey, metric, false, resourceAttributesJson, metricMetadataJson, null,
+                scopeName, scopeVersion, resourceSchemaUrl, scopeSchemaUrl);
 
             return new MappedMetricPoint(MetricPoint.Create(
                 componentId, metric.Name, metric.Description, metric.Unit, MetricKind.Summary,
-                MetricAggregationTemporality.Cumulative, true, hasRecordedValue,
+                MetricAggregationTemporality.Unspecified, false, hasRecordedValue,
                 FromUnixNanoOrNull(point.StartTimeUnixNano), FromUnixNano(point.TimeUnixNano), null,
                 count, sum, null, null, null, null, null, null, null, null, null, quantilesJson,
                 attributesJson, resourceAttributesJson, metricMetadataJson, null, scopeName, scopeVersion,
@@ -527,6 +539,35 @@ public sealed partial class OtlpMetricImporter(
             previous = value;
         }
         return true;
+    }
+
+    private static string ExtendDedupeKey(
+        string pointIdentity,
+        OtlpMetric metric,
+        bool isMonotonic,
+        string? resourceAttributesJson,
+        string? metricMetadataJson,
+        string? exemplarsJson,
+        string? scopeName,
+        string? scopeVersion,
+        string? resourceSchemaUrl,
+        string? scopeSchemaUrl)
+    {
+        var contextIdentity = JsonSerializer.Serialize(new
+        {
+            pointIdentity,
+            metric.Description,
+            metric.Unit,
+            isMonotonic,
+            resourceAttributesJson,
+            metricMetadataJson,
+            exemplarsJson,
+            scopeName,
+            scopeVersion,
+            resourceSchemaUrl,
+            scopeSchemaUrl
+        });
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(contextIdentity))).ToLowerInvariant();
     }
 
     private async Task<HashSet<string>> LoadExistingDedupeKeysAsync(

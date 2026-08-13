@@ -285,46 +285,47 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
             .HasForeignKey(x => x.RunId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        var log = modelBuilder.Entity<LogEvent>();
-        log.ToTable("LogEvents");
-        log.HasKey(x => x.Id);
-        log.Property(x => x.EventName).HasMaxLength(240);
-        log.Property(x => x.MessageTemplate).HasMaxLength(2000);
-        log.Property(x => x.ExceptionType).HasMaxLength(400);
-        log.Property(x => x.ExceptionMessage).HasMaxLength(4000);
-        log.Property(x => x.InstrumentationSource).HasMaxLength(240);
-        log.Property(x => x.ExternalTraceId).HasMaxLength(32);
-        log.Property(x => x.ExternalSpanId).HasMaxLength(16);
-        log.Property(x => x.DedupeKey).HasMaxLength(64);
-        log.HasIndex(x => x.DedupeKey).IsUnique().HasFilter("[DedupeKey] IS NOT NULL");
-        log.HasIndex(x => x.OccurredAt).IsDescending();
-        log.HasIndex(x => new { x.ComponentId, x.OccurredAt }).IsDescending(false, true);
-        log.HasIndex(x => new { x.RunId, x.OccurredAt }).IsDescending(false, true);
-        log.HasIndex(x => new { x.Level, x.OccurredAt }).IsDescending(false, true);
-        log.HasIndex(x => new { x.ExternalTraceId, x.ExternalSpanId });
-        log.HasOne(x => x.Component)
-            .WithMany()
+        var logEvent = modelBuilder.Entity<LogEvent>();
+        logEvent.ToTable("LogEvents");
+        logEvent.HasKey(x => x.Id);
+        logEvent.Property(x => x.ExternalTraceId).HasMaxLength(32);
+        logEvent.Property(x => x.ExternalSpanId).HasMaxLength(16);
+        logEvent.Property(x => x.ExternalRecordId).HasMaxLength(200);
+        logEvent.Property(x => x.DedupeKey).HasMaxLength(64);
+        logEvent.Property(x => x.SeverityText).HasMaxLength(80);
+        logEvent.Property(x => x.EventName).HasMaxLength(256);
+        logEvent.Property(x => x.Message).HasMaxLength(4000);
+        logEvent.Property(x => x.MessageTemplate).HasMaxLength(4000);
+        logEvent.Property(x => x.ExceptionType).HasMaxLength(240);
+        logEvent.Property(x => x.ExceptionMessage).HasMaxLength(4000);
+        logEvent.Property(x => x.Source).HasMaxLength(240);
+        logEvent.HasIndex(x => x.Timestamp).IsDescending();
+        logEvent.HasIndex(x => new { x.ComponentId, x.Timestamp }).IsDescending(false, true);
+        logEvent.HasIndex(x => new { x.RunId, x.Timestamp }).IsDescending(false, true);
+        logEvent.HasIndex(x => new { x.SpanId, x.Timestamp }).IsDescending(false, true);
+        logEvent.HasIndex(x => x.DedupeKey);
+        logEvent.HasIndex(x => x.ExternalRecordId);
+        logEvent.HasOne(x => x.Component)
+            .WithMany(x => x.LogEvents)
             .HasForeignKey(x => x.ComponentId)
-            .OnDelete(DeleteBehavior.Restrict);
-        log.HasOne(x => x.Run)
+            .OnDelete(DeleteBehavior.NoAction);
+        logEvent.HasOne(x => x.Run)
             .WithMany(x => x.LogEvents)
             .HasForeignKey(x => x.RunId)
             .OnDelete(DeleteBehavior.Cascade);
-        log.HasOne(x => x.Span)
+        logEvent.HasOne(x => x.Span)
             .WithMany(x => x.LogEvents)
             .HasForeignKey(x => x.SpanId)
-            .OnDelete(DeleteBehavior.Restrict);
+            .OnDelete(DeleteBehavior.NoAction);
 
         var aggregate = modelBuilder.Entity<RunAggregate>();
         aggregate.ToTable("RunAggregates");
         aggregate.HasKey(x => x.Id);
+        aggregate.Property(x => x.ComponentName).HasMaxLength(200);
         aggregate.Property(x => x.Environment).HasMaxLength(80);
         aggregate.Property(x => x.Model).HasMaxLength(160);
-        aggregate.HasIndex(x => new { x.ComponentId, x.BucketStart, x.Environment, x.Model }).IsUnique();
+        aggregate.HasIndex(x => new { x.BucketStart, x.ComponentId, x.Model }).IsUnique();
         aggregate.HasIndex(x => x.BucketStart);
-        aggregate.HasOne(x => x.Component)
-            .WithMany(x => x.Aggregates)
-            .HasForeignKey(x => x.ComponentId)
-            .OnDelete(DeleteBehavior.Cascade);
+        aggregate.HasIndex(x => new { x.ComponentId, x.BucketStart });
     }
 }
