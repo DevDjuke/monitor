@@ -176,30 +176,73 @@ dotnet "$FIXTURE_DLL" verify /tmp/metrics-response-duplicate.bin 2
 test "$(scalar "SELECT COUNT(*) FROM MetricPoints WHERE ComponentId='$matching_id';")" = "5"
 test "$(scalar "SELECT COUNT(DISTINCT DedupeKey) FROM MetricPoints WHERE ComponentId='$matching_id';")" = "5"
 
-kind_state=$(scalar "
-SELECT CONCAT(
- SUM(CASE WHEN Kind=1 THEN 1 ELSE 0 END),'|',
- SUM(CASE WHEN Kind=2 THEN 1 ELSE 0 END),'|',
- SUM(CASE WHEN Kind=3 THEN 1 ELSE 0 END),'|',
- SUM(CASE WHEN Kind=4 THEN 1 ELSE 0 END),'|',
- SUM(CASE WHEN Kind=5 THEN 1 ELSE 0 END))
-FROM MetricPoints WHERE ComponentId='$matching_id';")
-test "$kind_state" = "1|1|1|1|1"
+test "$(scalar "SELECT COUNT(*) FROM MetricPoints WHERE ComponentId='$matching_id' AND Kind IN (1,2,3,4,5);")" = "5"
+test "$(scalar "SELECT COUNT(DISTINCT Kind) FROM MetricPoints WHERE ComponentId='$matching_id';")" = "5"
 
-gauge_state=$(scalar "SELECT CONCAT(CONVERT(varchar(32),NumericValue),'|',CASE WHEN AttributesJson LIKE '%critical%' THEN 1 ELSE 0 END,'|',CASE WHEN ResourceAttributesJson LIKE '%p13%' THEN 1 ELSE 0 END,'|',CASE WHEN MetricMetadataJson LIKE '%stable%' THEN 1 ELSE 0 END,'|',CASE WHEN ExemplarsJson LIKE '%00112233445566778899aabbccddeeff%' THEN 1 ELSE 0 END) FROM MetricPoints WHERE ComponentId='$matching_id' AND Name=N'queue.depth';")
-test "$gauge_state" = "7|1|1|1|1"
+gauge_ok=$(scalar "
+SELECT COUNT(*) FROM MetricPoints
+WHERE ComponentId='$matching_id'
+  AND Name=N'queue.depth'
+  AND NumericValue=7
+  AND HasRecordedValue=1
+  AND AttributesJson LIKE '%critical%'
+  AND ResourceAttributesJson LIKE '%p13%'
+  AND MetricMetadataJson LIKE '%stable%'
+  AND ExemplarsJson LIKE '%00112233445566778899aabbccddeeff%';")
+test "$gauge_ok" = "1"
 
-sum_state=$(scalar "SELECT CONCAT(CONVERT(varchar(32),NumericValue),'|',Temporality,'|',CASE WHEN IsMonotonic=1 THEN 1 ELSE 0 END) FROM MetricPoints WHERE ComponentId='$matching_id' AND Name=N'requests.total';")
-test "$sum_state" = "42|2|1"
+sum_ok=$(scalar "
+SELECT COUNT(*) FROM MetricPoints
+WHERE ComponentId='$matching_id'
+  AND Name=N'requests.total'
+  AND NumericValue=42
+  AND Temporality=2
+  AND IsMonotonic=1
+  AND HasRecordedValue=1;")
+test "$sum_ok" = "1"
 
-hist_state=$(scalar "SELECT CONCAT(CONVERT(varchar(32),[Count]),'|',CONVERT(varchar(32),[Sum]),'|',CONVERT(varchar(32),Min),'|',CONVERT(varchar(32),Max),'|',CASE WHEN BucketCountsJson=N'[1,2,1]' THEN 1 ELSE 0 END,'|',CASE WHEN ExplicitBoundsJson=N'[10,50]' THEN 1 ELSE 0 END) FROM MetricPoints WHERE ComponentId='$matching_id' AND Name=N'request.duration';")
-test "$hist_state" = "4|100|5|70|1|1"
+hist_ok=$(scalar "
+SELECT COUNT(*) FROM MetricPoints
+WHERE ComponentId='$matching_id'
+  AND Name=N'request.duration'
+  AND [Count]=4
+  AND [Sum]=100
+  AND Min=5
+  AND Max=70
+  AND JSON_VALUE(BucketCountsJson,'$[0]')='1'
+  AND JSON_VALUE(BucketCountsJson,'$[1]')='2'
+  AND JSON_VALUE(BucketCountsJson,'$[2]')='1'
+  AND JSON_VALUE(ExplicitBoundsJson,'$[0]')='10'
+  AND JSON_VALUE(ExplicitBoundsJson,'$[1]')='50';")
+test "$hist_ok" = "1"
 
-exp_state=$(scalar "SELECT CONCAT(CONVERT(varchar(32),[Count]),'|',Scale,'|',CONVERT(varchar(32),ZeroCount),'|',CASE WHEN PositiveBucketsJson LIKE '%\"Counts\":[2]%' THEN 1 ELSE 0 END,'|',CASE WHEN NegativeBucketsJson LIKE '%\"Counts\":[1]%' THEN 1 ELSE 0 END) FROM MetricPoints WHERE ComponentId='$matching_id' AND Name=N'payload.size';")
-test "$exp_state" = "4|2|1|1|1"
+exp_ok=$(scalar "
+SELECT COUNT(*) FROM MetricPoints
+WHERE ComponentId='$matching_id'
+  AND Name=N'payload.size'
+  AND [Count]=4
+  AND [Sum]=12
+  AND Scale=2
+  AND ZeroCount=1
+  AND JSON_VALUE(PositiveBucketsJson,'$.Offset')='1'
+  AND JSON_VALUE(PositiveBucketsJson,'$.Counts[0]')='2'
+  AND JSON_VALUE(NegativeBucketsJson,'$.Offset')='-1'
+  AND JSON_VALUE(NegativeBucketsJson,'$.Counts[0]')='1';")
+test "$exp_ok" = "1"
 
-summary_state=$(scalar "SELECT CONCAT(CONVERT(varchar(32),[Count]),'|',CONVERT(varchar(32),[Sum]),'|',CASE WHEN QuantilesJson LIKE '%\"Quantile\":0.5%' AND QuantilesJson LIKE '%\"Quantile\":0.9%' THEN 1 ELSE 0 END) FROM MetricPoints WHERE ComponentId='$matching_id' AND Name=N'legacy.latency';")
-test "$summary_state" = "3|60|1"
+summary_ok=$(scalar "
+SELECT COUNT(*) FROM MetricPoints
+WHERE ComponentId='$matching_id'
+  AND Name=N'legacy.latency'
+  AND [Count]=3
+  AND [Sum]=60
+  AND Temporality=2
+  AND IsMonotonic=0
+  AND JSON_VALUE(QuantilesJson,'$[0].Quantile')='0.5'
+  AND JSON_VALUE(QuantilesJson,'$[0].Value')='20'
+  AND JSON_VALUE(QuantilesJson,'$[1].Quantile')='0.9'
+  AND JSON_VALUE(QuantilesJson,'$[1].Value')='30';")
+test "$summary_ok" = "1"
 
 curl -fsS -b "$COOKIE_JAR" \
   "$BASE_URL/metrics?Window=24h&Search=critical&Name=queue.depth&Kind=Gauge&Take=50" \
