@@ -1,0 +1,44 @@
+name: p13-branch-fix
+
+on:
+  push:
+    branches: [feature/otlp-metrics]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/otlp-metrics
+      - name: Fix metric importer nullable inference
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('src/Monitor.Web/Otlp/OtlpMetricImporter.cs')
+          s = p.read_text()
+          replacements = {
+              'var count = hasRecordedValue ? (decimal)point.Count : null;': 'decimal? count = hasRecordedValue ? (decimal)point.Count : null;',
+              'var zeroCount = hasRecordedValue ? (decimal)point.ZeroCount : null;': 'decimal? zeroCount = hasRecordedValue ? (decimal)point.ZeroCount : null;',
+              'var sum = hasRecordedValue && point.HasSum ? point.Sum : null;': 'double? sum = hasRecordedValue && point.HasSum ? point.Sum : null;',
+              'var min = hasRecordedValue && point.HasMin ? point.Min : null;': 'double? min = hasRecordedValue && point.HasMin ? point.Min : null;',
+              'var max = hasRecordedValue && point.HasMax ? point.Max : null;': 'double? max = hasRecordedValue && point.HasMax ? point.Max : null;',
+              'var sum = hasRecordedValue ? point.Sum : null;': 'double? sum = hasRecordedValue ? point.Sum : null;',
+              'public static MappedMetricPoint Rejected { get; } = new(null);': 'public static MappedMetricPoint Rejected { get; } = new((MetricPoint?)null);',
+              'ex is ArgumentException or ArgumentOutOfRangeException or OverflowException': 'ex is ArgumentException or OverflowException'
+          }
+          for old, new in replacements.items():
+              s = s.replace(old, new)
+          p.write_text(s)
+      - name: Commit fix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/Monitor.Web/Otlp/OtlpMetricImporter.cs
+          git diff --cached --quiet && exit 0
+          git commit -m 'P13 fix metric importer nullable mappings'
+          git push origin HEAD:feature/otlp-metrics
