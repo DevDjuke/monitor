@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Text;
 using Google.Protobuf;
 using Monitor.Web.Auth;
 using OpenTelemetry.Proto.Collector.Logs.V1;
@@ -19,182 +20,157 @@ public static class OtlpEndpoints
 
     private static async Task<IResult> ImportTraces(
         HttpContext httpContext,
-        OtlpTraceImporter importer,
-        OtlpComponentScopeValidator scopeValidator,
+        OtlpIngestionProcessor processor,
         IngestionCredentialAuthenticator authenticator,
         CancellationToken cancellationToken)
     {
-        var identity = await authenticator.AuthenticateAsync(
-            httpContext,
-            allowOperator: false,
-            cancellationToken);
-        if (identity is null)
+        var authenticated = await AuthenticateAsync(httpContext, authenticator, cancellationToken);
+        if (authenticated.Identity is null)
         {
             return Results.Unauthorized();
         }
 
-        if (!IsProtobuf(httpContext.Request.ContentType))
+        if (!TryGetEncoding(httpContext.Request.ContentType, out var encoding))
         {
             return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
         }
 
-        var payload = await ReadPayloadAsync(httpContext.Request, cancellationToken);
-        if (payload is null)
-        {
-            return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
-        }
-
-        ExportTraceServiceRequest request;
-        try
-        {
-            request = ExportTraceServiceRequest.Parser.ParseFrom(payload);
-        }
-        catch (InvalidProtocolBufferException)
+        var request = await ReadRequestAsync(httpContext.Request, ExportTraceServiceRequest.Parser, encoding, cancellationToken);
+        if (request is null)
         {
             return Results.BadRequest();
         }
 
-        if (!await scopeValidator.CanIngestAsync(request, identity.ComponentId, cancellationToken))
-        {
-            return Results.StatusCode(StatusCodes.Status403Forbidden);
-        }
-
-        var result = await importer.ImportAsync(request, cancellationToken);
-        var response = new ExportTraceServiceResponse();
-        if (result.RejectedSpans > 0)
-        {
-            response.PartialSuccess = new ExportTracePartialSuccess
-            {
-                RejectedSpans = result.RejectedSpans,
-                ErrorMessage = "Some spans were rejected because trace_id or span_id was invalid."
-            };
-        }
-
-        return Results.Bytes(response.ToByteArray(), "application/x-protobuf");
+        var result = await processor.ProcessAsync(request, authenticated.Identity.ComponentId, cancellationToken);
+        return result.Allowed
+            ? WriteResponse(result.Response!, encoding)
+            : Results.StatusCode(StatusCodes.Status403Forbidden);
     }
 
     private static async Task<IResult> ImportLogs(
         HttpContext httpContext,
-        OtlpLogImporter importer,
-        OtlpComponentScopeValidator scopeValidator,
+        OtlpIngestionProcessor processor,
         IngestionCredentialAuthenticator authenticator,
         CancellationToken cancellationToken)
     {
-        var identity = await authenticator.AuthenticateAsync(
-            httpContext,
-            allowOperator: false,
-            cancellationToken);
-        if (identity is null)
+        var authenticated = await AuthenticateAsync(httpContext, authenticator, cancellationToken);
+        if (authenticated.Identity is null)
         {
             return Results.Unauthorized();
         }
 
-        if (!IsProtobuf(httpContext.Request.ContentType))
+        if (!TryGetEncoding(httpContext.Request.ContentType, out var encoding))
         {
             return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
         }
 
-        var payload = await ReadPayloadAsync(httpContext.Request, cancellationToken);
-        if (payload is null)
-        {
-            return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
-        }
-
-        ExportLogsServiceRequest request;
-        try
-        {
-            request = ExportLogsServiceRequest.Parser.ParseFrom(payload);
-        }
-        catch (InvalidProtocolBufferException)
+        var request = await ReadRequestAsync(httpContext.Request, ExportLogsServiceRequest.Parser, encoding, cancellationToken);
+        if (request is null)
         {
             return Results.BadRequest();
         }
 
-        if (!await scopeValidator.CanIngestAsync(request, identity.ComponentId, cancellationToken))
-        {
-            return Results.StatusCode(StatusCodes.Status403Forbidden);
-        }
-
-        var result = await importer.ImportAsync(request, cancellationToken);
-        var response = new ExportLogsServiceResponse();
-        if (result.RejectedLogs > 0)
-        {
-            response.PartialSuccess = new ExportLogsPartialSuccess
-            {
-                RejectedLogRecords = result.RejectedLogs,
-                ErrorMessage = "Some log records could not be accepted."
-            };
-        }
-
-        return Results.Bytes(response.ToByteArray(), "application/x-protobuf");
+        var result = await processor.ProcessAsync(request, authenticated.Identity.ComponentId, cancellationToken);
+        return result.Allowed
+            ? WriteResponse(result.Response!, encoding)
+            : Results.StatusCode(StatusCodes.Status403Forbidden);
     }
 
     private static async Task<IResult> ImportMetrics(
         HttpContext httpContext,
-        OtlpMetricImporter importer,
-        OtlpComponentScopeValidator scopeValidator,
+        OtlpIngestionProcessor processor,
         IngestionCredentialAuthenticator authenticator,
         CancellationToken cancellationToken)
     {
-        var identity = await authenticator.AuthenticateAsync(
-            httpContext,
-            allowOperator: false,
-            cancellationToken);
-        if (identity is null)
+        var authenticated = await AuthenticateAsync(httpContext, authenticator, cancellationToken);
+        if (authenticated.Identity is null)
         {
             return Results.Unauthorized();
         }
 
-        if (!IsProtobuf(httpContext.Request.ContentType))
+        if (!TryGetEncoding(httpContext.Request.ContentType, out var encoding))
         {
             return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
         }
 
-        var payload = await ReadPayloadAsync(httpContext.Request, cancellationToken);
-        if (payload is null)
-        {
-            return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
-        }
-
-        ExportMetricsServiceRequest request;
-        try
-        {
-            request = ExportMetricsServiceRequest.Parser.ParseFrom(payload);
-        }
-        catch (InvalidProtocolBufferException)
+        var request = await ReadRequestAsync(httpContext.Request, ExportMetricsServiceRequest.Parser, encoding, cancellationToken);
+        if (request is null)
         {
             return Results.BadRequest();
         }
 
-        if (!await scopeValidator.CanIngestAsync(request, identity.ComponentId, cancellationToken))
-        {
-            return Results.StatusCode(StatusCodes.Status403Forbidden);
-        }
-
-        var result = await importer.ImportAsync(request, cancellationToken);
-        var response = new ExportMetricsServiceResponse();
-        if (result.RejectedPoints > 0)
-        {
-            response.PartialSuccess = new ExportMetricsPartialSuccess
-            {
-                RejectedDataPoints = result.RejectedPoints,
-                ErrorMessage = "Some metric data points were rejected because their timestamps, values, temporality, or distribution shape were invalid."
-            };
-        }
-
-        return Results.Bytes(response.ToByteArray(), "application/x-protobuf");
+        var result = await processor.ProcessAsync(request, authenticated.Identity.ComponentId, cancellationToken);
+        return result.Allowed
+            ? WriteResponse(result.Response!, encoding)
+            : Results.StatusCode(StatusCodes.Status403Forbidden);
     }
 
-    private static bool IsProtobuf(string? contentType)
+    private static async Task<(IngestionIdentity? Identity, bool Authenticated)> AuthenticateAsync(
+        HttpContext httpContext,
+        IngestionCredentialAuthenticator authenticator,
+        CancellationToken cancellationToken)
+    {
+        var identity = await authenticator.AuthenticateAsync(httpContext, allowOperator: false, cancellationToken);
+        return (identity, identity is not null);
+    }
+
+    private static bool TryGetEncoding(string? contentType, out OtlpHttpEncoding encoding)
     {
         var normalized = contentType?.Split(';', 2)[0].Trim();
-        return string.Equals(normalized, "application/x-protobuf", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(normalized, "application/protobuf", StringComparison.OrdinalIgnoreCase);
+        if (string.Equals(normalized, "application/x-protobuf", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "application/protobuf", StringComparison.OrdinalIgnoreCase))
+        {
+            encoding = OtlpHttpEncoding.Protobuf;
+            return true;
+        }
+
+        if (string.Equals(normalized, "application/json", StringComparison.OrdinalIgnoreCase))
+        {
+            encoding = OtlpHttpEncoding.Json;
+            return true;
+        }
+
+        encoding = default;
+        return false;
     }
 
-    private static async Task<byte[]?> ReadPayloadAsync(
+    private static async Task<T?> ReadRequestAsync<T>(
         HttpRequest request,
+        MessageParser<T> parser,
+        OtlpHttpEncoding encoding,
         CancellationToken cancellationToken)
+        where T : class, IMessage<T>
+    {
+        var payload = await ReadPayloadAsync(request, cancellationToken);
+        if (payload is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return encoding switch
+            {
+                OtlpHttpEncoding.Protobuf => parser.ParseFrom(payload),
+                OtlpHttpEncoding.Json => JsonParser.Default.Parse<T>(Encoding.UTF8.GetString(payload)),
+                _ => null
+            };
+        }
+        catch (Exception ex) when (ex is InvalidProtocolBufferException or InvalidJsonException)
+        {
+            return null;
+        }
+    }
+
+    private static IResult WriteResponse(IMessage response, OtlpHttpEncoding encoding) =>
+        encoding switch
+        {
+            OtlpHttpEncoding.Protobuf => Results.Bytes(response.ToByteArray(), "application/x-protobuf"),
+            OtlpHttpEncoding.Json => Results.Text(JsonFormatter.Default.Format(response), "application/json", Encoding.UTF8),
+            _ => Results.StatusCode(StatusCodes.Status500InternalServerError)
+        };
+
+    private static async Task<byte[]?> ReadPayloadAsync(HttpRequest request, CancellationToken cancellationToken)
     {
         Stream input = request.Body;
         GZipStream? gzip = null;
@@ -216,6 +192,10 @@ public static class OtlpEndpoints
             await input.CopyToAsync(payload, cancellationToken);
             return payload.ToArray();
         }
+        catch (InvalidDataException)
+        {
+            return null;
+        }
         finally
         {
             if (gzip is not null)
@@ -223,5 +203,11 @@ public static class OtlpEndpoints
                 await gzip.DisposeAsync();
             }
         }
+    }
+
+    private enum OtlpHttpEncoding
+    {
+        Protobuf,
+        Json
     }
 }
