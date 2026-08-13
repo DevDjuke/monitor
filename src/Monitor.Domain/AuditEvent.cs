@@ -94,6 +94,11 @@ public static class AuditActions
     public const string ComponentCommandFailed = "component-command.failed";
     public const string ComponentCommandRejected = "component-command.rejected";
     public const string ComponentCommandExpired = "component-command.expired";
+
+    public const string OperatorAccountCreated = "operator-account.created";
+    public const string OperatorRoleChanged = "operator-account.role-changed";
+    public const string OperatorPasswordReset = "operator-account.password-reset";
+    public const string OperatorAccountDeleted = "operator-account.deleted";
 }
 
 public static class AuditTargetTypes
@@ -104,4 +109,5 @@ public static class AuditTargetTypes
     public const string AlertDelivery = "alert-delivery";
     public const string ComponentCredential = "component-credential";
     public const string ComponentCommand = "component-command";
+    public const string OperatorAccount = "operator-account";
 }

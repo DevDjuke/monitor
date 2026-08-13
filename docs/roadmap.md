@@ -17,6 +17,7 @@ This roadmap is the current product sequence for turning Monitor from an observa
 - Daily/monthly cost and token budget policy with warning/critical alert delivery and optional component-scoped Critical enforcement.
 - Durable leased component control commands with acknowledgement, redelivery, timeout/expiry, and audit history.
 - Personal saved operational views with canonical filter persistence and pinned sidebar shortcuts.
+- Owner / Operator / Viewer / Auditor authorization with Owner-managed local operator accounts and policy-separated read, audit, configuration, and control access.
 - Server-side filters on Runs, Logs, Usage, Alerts, Budgets, Commands, and Audit.
 
 ## Next
@@ -196,11 +197,22 @@ Status: **complete**
 
 ### 12. Roles, permissions, and operator management
 
-Status: **planned when multi-user operation is required**
+Status: **complete**
 
-- Introduce a minimal Owner / Operator / Viewer / Auditor authorization model.
-- Separate read-only investigation from configuration and destructive control actions.
-- Keep the current single-owner operating model until a real multi-user deployment requires this slice.
+- Seed a minimal Owner / Operator / Viewer / Auditor role model on the existing ASP.NET Core Identity store without adding a new authorization schema.
+- Define named View, Audit, Configure, Control, and ManageOperators policies so operational permissions are expressed by capability rather than ad-hoc role checks in handlers.
+- Give Viewer read-only operational investigation, Auditor investigation plus immutable audit-history access, Operator investigation/configuration/component control, and Owner the full superset including account management.
+- Enforce GET/page access with authorization policies and all state-changing Razor POST handlers through a global fail-closed policy filter; future unclassified mutations default to Configure.
+- Keep personal Saved View mutations available to all read-capable users while separating shared configuration and destructive control actions.
+- Add Owner-only `/operators` management for local account creation, role changes, password resets, and account deletion.
+- Prevent self-demotion/self-delete and preserve at least one Owner.
+- Rotate Identity security stamps after role/password changes and revalidate cookie sessions within one minute.
+- Audit operator-account create/role-change/password-reset/delete without persisting password material.
+- Preserve existing installations by assigning Owner to pre-P12 roleless accounts only while the Monitor role model is first initialized; fresh bootstrap/setup administrators are Owner immediately.
+- Keep component ingestion credentials, OTLP auth, telemetry ingestion, and component command polling outside the human-role authorization model.
+- Reuse the Identity role tables already present in the initial schema; P12 requires no EF migration.
+- Add a permanent SQL Server-backed integration gate covering the four-role access matrix, denied Viewer/Auditor mutations, Operator configuration/control, Owner guardrails/account lifecycle, audit evidence, and password non-disclosure.
+- Detailed contract: `docs/roles-and-permissions.md`.
 
 ### 13. OTLP metrics
 

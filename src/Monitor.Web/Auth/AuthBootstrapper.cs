@@ -12,8 +12,39 @@ public static class AuthBootstrapper
         IWebHostEnvironment environment)
     {
         var userManager = services.GetRequiredService<UserManager<MonitorUser>>();
-        if (await userManager.Users.AnyAsync())
+        var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
+
+        var roleModelWasInitialized = true;
+        foreach (var role in MonitorRoles.All)
         {
+            if (!await roleManager.RoleExistsAsync(role))
+            {
+                roleModelWasInitialized = false;
+                break;
+            }
+        }
+
+        await EnsureRolesAsync(roleManager);
+
+        var existingUsers = await userManager.Users.ToListAsync();
+        if (existingUsers.Count > 0)
+        {
+            if (!roleModelWasInitialized)
+            {
+                // P12 upgrade path: accounts created before Monitor roles existed had
+                // unrestricted access. Promote only during role-model initialization;
+                // once P12 is established, a later roleless account is not escalated.
+                foreach (var existingUser in existingUsers)
+                {
+                    var roles = await userManager.GetRolesAsync(existingUser);
+                    if (!roles.Any(role => MonitorRoles.All.Contains(role)))
+                    {
+                        var roleResult = await userManager.AddToRoleAsync(existingUser, MonitorRoles.Owner);
+                        ThrowIfFailed(roleResult, $"Unable to assign Owner to existing account {existingUser.Email}");
+                    }
+                }
+            }
+
             return;
         }
 
@@ -45,10 +76,34 @@ public static class AuthBootstrapper
         };
 
         var result = await userManager.CreateAsync(user, password);
-        if (!result.Succeeded)
+        ThrowIfFailed(result, "Unable to create the bootstrap administrator");
+
+        var ownerResult = await userManager.AddToRoleAsync(user, MonitorRoles.Owner);
+        ThrowIfFailed(ownerResult, "Unable to assign Owner to the bootstrap administrator");
+    }
+
+    private static async Task EnsureRolesAsync(RoleManager<IdentityRole> roleManager)
+    {
+        foreach (var role in MonitorRoles.All)
         {
-            var errors = string.Join("; ", result.Errors.Select(x => x.Description));
-            throw new InvalidOperationException($"Unable to create the bootstrap administrator: {errors}");
+            if (await roleManager.RoleExistsAsync(role))
+            {
+                continue;
+            }
+
+            var result = await roleManager.CreateAsync(new IdentityRole(role));
+            ThrowIfFailed(result, $"Unable to create Monitor role {role}");
         }
+    }
+
+    private static void ThrowIfFailed(IdentityResult result, string message)
+    {
+        if (result.Succeeded)
+        {
+            return;
+        }
+
+        var errors = string.Join("; ", result.Errors.Select(x => x.Description));
+        throw new InvalidOperationException($"{message}: {errors}");
     }
 }

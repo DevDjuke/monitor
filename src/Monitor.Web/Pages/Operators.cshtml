@@ -1,0 +1,105 @@
+@page "/operators"
+@model Monitor.Web.Pages.OperatorsModel
+@{
+    ViewData["Title"] = "Operators";
+}
+
+@section Head {
+    <link rel="stylesheet" href="~/css/operators.css" asp-append-version="true" />
+}
+
+<header class="page-header">
+    <div>
+        <div class="eyebrow">ACCESS CONTROL</div>
+        <h1>Operators</h1>
+        <p class="page-subtitle">Manage local Monitor accounts and their effective control-plane role.</p>
+    </div>
+</header>
+
+@if (TempData["StatusMessage"] is string statusMessage)
+{
+    <div class="status-banner">@statusMessage</div>
+}
+
+<div asp-validation-summary="All" class="validation-summary"></div>
+
+<section class="operator-create card">
+    <div>
+        <div class="section-kicker">NEW ACCOUNT</div>
+        <h2>Create operator</h2>
+        <p>Passwords are shown only to the Owner entering them here and are never written to the audit trail.</p>
+    </div>
+    <form method="post" asp-page-handler="Create" class="operator-create-form">
+        <label>
+            <span>Email</span>
+            <input asp-for="Input.Email" autocomplete="off" />
+        </label>
+        <label>
+            <span>Initial password</span>
+            <input asp-for="Input.Password" autocomplete="new-password" />
+        </label>
+        <label>
+            <span>Role</span>
+            <select asp-for="Input.Role">
+                @foreach (var role in Model.AvailableRoles)
+                {
+                    <option value="@role">@role</option>
+                }
+            </select>
+        </label>
+        <button type="submit" class="button button-primary">Create account</button>
+    </form>
+</section>
+
+<section class="operator-grid">
+    @foreach (var item in Model.Operators)
+    {
+        <article class="operator-card card">
+            <div class="operator-card-head">
+                <div>
+                    <h2>@item.Email</h2>
+                    <span class="role-chip role-@item.Role.ToLowerInvariant()">@item.Role</span>
+                    @if (item.IsCurrentUser)
+                    {
+                        <span class="self-chip">You</span>
+                    }
+                </div>
+            </div>
+
+            <form method="post" asp-page-handler="ChangeRole" class="operator-action-row">
+                <input type="hidden" name="userId" value="@item.Id" />
+                <label>
+                    <span>Role</span>
+                    <select name="role">
+                        @foreach (var role in Model.AvailableRoles)
+                        {
+                            if (role == item.Role)
+                            {
+                                <option value="@role" selected>@role</option>
+                            }
+                            else
+                            {
+                                <option value="@role">@role</option>
+                            }
+                        }
+                    </select>
+                </label>
+                <button type="submit" class="button">Change role</button>
+            </form>
+
+            <form method="post" asp-page-handler="ResetPassword" class="operator-action-row">
+                <input type="hidden" name="userId" value="@item.Id" />
+                <label class="grow">
+                    <span>New password</span>
+                    <input type="password" name="newPassword" autocomplete="new-password" />
+                </label>
+                <button type="submit" class="button">Reset password</button>
+            </form>
+
+            <form method="post" asp-page-handler="Delete" class="operator-delete-row">
+                <input type="hidden" name="userId" value="@item.Id" />
+                <button type="submit" class="button button-danger" disabled="@item.IsCurrentUser">Delete account</button>
+            </form>
+        </article>
+    }
+</section>
