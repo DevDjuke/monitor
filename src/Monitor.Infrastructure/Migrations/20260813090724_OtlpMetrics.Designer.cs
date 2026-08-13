@@ -12,7 +12,7 @@ using Monitor.Infrastructure;
 namespace Monitor.Infrastructure.Migrations
 {
     [DbContext(typeof(MonitorDbContext))]
-    [Migration("20260813090415_OtlpMetrics")]
+    [Migration("20260813090724_OtlpMetrics")]
     partial class OtlpMetrics
     {
         /// <inheritdoc />
