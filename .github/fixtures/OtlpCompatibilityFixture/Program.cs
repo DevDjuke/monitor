@@ -1,6 +1,7 @@
 using Google.Protobuf;
 using Grpc.Core;
 using Grpc.Net.Client;
+using Monitor.Web.Otlp;
 using OpenTelemetry.Proto.Collector.Logs.V1;
 using OpenTelemetry.Proto.Collector.Metrics.V1;
 using OpenTelemetry.Proto.Collector.Trace.V1;
@@ -211,7 +212,7 @@ static Resource BuildResource(string serviceName, string environment)
 static void Write<T>(string directory, string name, T message) where T : IMessage
 {
     File.WriteAllBytes(Path.Combine(directory, $"{name}.bin"), message.ToByteArray());
-    File.WriteAllText(Path.Combine(directory, $"{name}.json"), JsonFormatter.Default.Format(message));
+    File.WriteAllText(Path.Combine(directory, $"{name}.json"), OtlpJson.Format(message));
 }
 
 static void EnsureNoPartialSuccess(long rejected, string signal)
