@@ -311,7 +311,7 @@ public sealed partial class OtlpMetricImporter(
                 dedupeKey,
                 now));
         }
-        catch (Exception ex) when (ex is ArgumentException or ArgumentOutOfRangeException or OverflowException)
+        catch (Exception ex) when (ex is ArgumentException or OverflowException)
         {
             return MappedMetricPoint.Rejected;
         }
@@ -342,10 +342,10 @@ public sealed partial class OtlpMetricImporter(
             var bucketCountsJson = point.BucketCounts.Count == 0 ? null : JsonSerializer.Serialize(point.BucketCounts.ToArray());
             var explicitBoundsJson = point.ExplicitBounds.Count == 0 ? null : JsonSerializer.Serialize(point.ExplicitBounds.ToArray());
             var exemplarsJson = SerializeExemplars(point.Exemplars);
-            var count = hasRecordedValue ? (decimal)point.Count : null;
-            var sum = hasRecordedValue && point.HasSum ? point.Sum : null;
-            var min = hasRecordedValue && point.HasMin ? point.Min : null;
-            var max = hasRecordedValue && point.HasMax ? point.Max : null;
+            decimal? count = hasRecordedValue ? (decimal)point.Count : null;
+            double? sum = hasRecordedValue && point.HasSum ? point.Sum : null;
+            double? min = hasRecordedValue && point.HasMin ? point.Min : null;
+            double? max = hasRecordedValue && point.HasMax ? point.Max : null;
             var dedupeKey = BuildDedupeKey(
                 componentId, metric.Name, MetricKind.Histogram, temporality, point.StartTimeUnixNano,
                 point.TimeUnixNano, point.Flags, attributesJson, null, count, sum, min, max,
@@ -359,7 +359,7 @@ public sealed partial class OtlpMetricImporter(
                 resourceAttributesJson, metricMetadataJson, exemplarsJson, scopeName, scopeVersion,
                 resourceSchemaUrl, scopeSchemaUrl, point.Flags, "OTLP", dedupeKey, now));
         }
-        catch (Exception ex) when (ex is ArgumentException or ArgumentOutOfRangeException or OverflowException)
+        catch (Exception ex) when (ex is ArgumentException or OverflowException)
         {
             return MappedMetricPoint.Rejected;
         }
@@ -390,11 +390,11 @@ public sealed partial class OtlpMetricImporter(
             var positiveBucketsJson = SerializeBuckets(point.Positive);
             var negativeBucketsJson = SerializeBuckets(point.Negative);
             var exemplarsJson = SerializeExemplars(point.Exemplars);
-            var count = hasRecordedValue ? (decimal)point.Count : null;
-            var zeroCount = hasRecordedValue ? (decimal)point.ZeroCount : null;
-            var sum = hasRecordedValue && point.HasSum ? point.Sum : null;
-            var min = hasRecordedValue && point.HasMin ? point.Min : null;
-            var max = hasRecordedValue && point.HasMax ? point.Max : null;
+            decimal? count = hasRecordedValue ? (decimal)point.Count : null;
+            decimal? zeroCount = hasRecordedValue ? (decimal)point.ZeroCount : null;
+            double? sum = hasRecordedValue && point.HasSum ? point.Sum : null;
+            double? min = hasRecordedValue && point.HasMin ? point.Min : null;
+            double? max = hasRecordedValue && point.HasMax ? point.Max : null;
             var dedupeKey = BuildDedupeKey(
                 componentId, metric.Name, MetricKind.ExponentialHistogram, temporality,
                 point.StartTimeUnixNano, point.TimeUnixNano, point.Flags, attributesJson, null,
@@ -409,7 +409,7 @@ public sealed partial class OtlpMetricImporter(
                 attributesJson, resourceAttributesJson, metricMetadataJson, exemplarsJson, scopeName,
                 scopeVersion, resourceSchemaUrl, scopeSchemaUrl, point.Flags, "OTLP", dedupeKey, now));
         }
-        catch (Exception ex) when (ex is ArgumentException or ArgumentOutOfRangeException or OverflowException)
+        catch (Exception ex) when (ex is ArgumentException or OverflowException)
         {
             return MappedMetricPoint.Rejected;
         }
@@ -439,8 +439,8 @@ public sealed partial class OtlpMetricImporter(
             var quantilesJson = point.QuantileValues.Count == 0
                 ? null
                 : JsonSerializer.Serialize(point.QuantileValues.Select(x => new StoredQuantile(x.Quantile, x.Value)).ToArray());
-            var count = hasRecordedValue ? (decimal)point.Count : null;
-            var sum = hasRecordedValue ? point.Sum : null;
+            decimal? count = hasRecordedValue ? (decimal)point.Count : null;
+            double? sum = hasRecordedValue ? point.Sum : null;
             var dedupeKey = BuildDedupeKey(
                 componentId, metric.Name, MetricKind.Summary, MetricAggregationTemporality.Cumulative,
                 point.StartTimeUnixNano, point.TimeUnixNano, point.Flags, attributesJson, null, count,
@@ -454,7 +454,7 @@ public sealed partial class OtlpMetricImporter(
                 attributesJson, resourceAttributesJson, metricMetadataJson, null, scopeName, scopeVersion,
                 resourceSchemaUrl, scopeSchemaUrl, point.Flags, "OTLP", dedupeKey, now));
         }
-        catch (Exception ex) when (ex is ArgumentException or ArgumentOutOfRangeException or OverflowException)
+        catch (Exception ex) when (ex is ArgumentException or OverflowException)
         {
             return MappedMetricPoint.Rejected;
         }
@@ -759,7 +759,7 @@ public sealed partial class OtlpMetricImporter(
 
     private sealed record MappedMetricPoint(MetricPoint? Point)
     {
-        public static MappedMetricPoint Rejected { get; } = new(null);
+        public static MappedMetricPoint Rejected { get; } = new((MetricPoint?)null);
     }
 
     private sealed record StoredBuckets(int Offset, IReadOnlyList<ulong> Counts);
