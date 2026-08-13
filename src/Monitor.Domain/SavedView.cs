@@ -8,7 +8,8 @@ public enum SavedViewSurface
     Alerts = 4,
     Budgets = 5,
     Audit = 6,
-    Commands = 7
+    Commands = 7,
+    Metrics = 8
 }
 
 public sealed class SavedView

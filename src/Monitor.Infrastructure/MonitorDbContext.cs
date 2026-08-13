@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Monitor.Domain;
 using Monitor.Infrastructure.Auth;
+using Monitor.Infrastructure.Metrics;
 
 namespace Monitor.Infrastructure;
 
@@ -14,6 +15,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     public DbSet<AgentRun> Runs => Set<AgentRun>();
     public DbSet<TraceSpan> Spans => Set<TraceSpan>();
     public DbSet<LogEvent> LogEvents => Set<LogEvent>();
+    public DbSet<MetricPoint> MetricPoints => Set<MetricPoint>();
     public DbSet<RunAggregate> RunAggregates => Set<RunAggregate>();
     public DbSet<FailureGroup> FailureGroups => Set<FailureGroup>();
     public DbSet<FailureAlertRule> FailureAlertRules => Set<FailureAlertRule>();
@@ -31,6 +33,7 @@ public sealed class MonitorDbContext(DbContextOptions<MonitorDbContext> options)
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+        MetricPointModelConfiguration.Configure(modelBuilder);
 
         modelBuilder.HasSequence<long>("RunSequence");
 

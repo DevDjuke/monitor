@@ -34,6 +34,9 @@ public sealed class RetentionWorker(
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var service = scope.ServiceProvider.GetRequiredService<RetentionAggregationService>();
                 await service.SweepAsync(stoppingToken);
+
+                var metricRetention = ActivatorUtilities.CreateInstance<MetricRetentionService>(scope.ServiceProvider);
+                await metricRetention.SweepAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

@@ -1,0 +1,212 @@
+@page "/metrics"
+@model MetricsModel
+@{
+    ViewData["Title"] = "Metrics";
+}
+
+@section Head {
+    <link rel="stylesheet" href="~/css/metrics.css" asp-append-version="true" />
+}
+
+<header class="page-head compact">
+    <div>
+        <p class="eyebrow">TELEMETRY</p>
+        <h1>Metrics</h1>
+        <p class="lede">Counters, gauges, histograms and custom agent metrics retained as protocol-independent metric points.</p>
+    </div>
+</header>
+
+<section class="panel metric-filters">
+    <form method="get" class="filter-grid metric-filter-grid">
+        <label>
+            <span>Window</span>
+            <select asp-for="Window">
+                <option value="1h">Last hour</option>
+                <option value="6h">Last 6 hours</option>
+                <option value="24h">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="all">All retained</option>
+            </select>
+        </label>
+        <label>
+            <span>Component</span>
+            <select asp-for="ComponentId">
+                <option value="">All components</option>
+                @foreach (var component in Model.Components)
+                {
+                    <option value="@component.Id">@component.Name · @component.Environment</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Environment</span>
+            <select asp-for="Environment">
+                <option value="">All environments</option>
+                @foreach (var environment in Model.Environments)
+                {
+                    <option value="@environment">@environment</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Metric</span>
+            <select asp-for="Name">
+                <option value="">All metrics</option>
+                @foreach (var name in Model.Names)
+                {
+                    <option value="@name">@name</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Kind</span>
+            <select asp-for="Kind">
+                <option value="">All kinds</option>
+                @foreach (var kind in Model.Kinds)
+                {
+                    <option value="@kind">@kind</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Scope</span>
+            <select asp-for="Scope">
+                <option value="">All scopes</option>
+                @foreach (var scope in Model.Scopes)
+                {
+                    <option value="@scope">@scope</option>
+                }
+            </select>
+        </label>
+        <label class="metric-search">
+            <span>Search</span>
+            <input asp-for="Search" placeholder="metric, unit, dimensions, resource…" />
+        </label>
+        <label>
+            <span>Rows</span>
+            <select asp-for="Take">
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+                <option value="500">500</option>
+            </select>
+        </label>
+        <div class="filter-actions">
+            <button type="submit">Apply filters</button>
+            <a href="/metrics">Reset</a>
+        </div>
+    </form>
+</section>
+
+<section class="metric-summary">
+    <div><span>Matching points</span><strong>@Model.MatchingCount.ToString("N0")</strong></div>
+    <div><span>Unique metrics</span><strong>@Model.UniqueMetricCount.ToString("N0")</strong></div>
+    <div><span>Distributions</span><strong>@Model.DistributionCount.ToString("N0")</strong></div>
+    <div><span>No recorded value</span><strong>@Model.MissingValueCount.ToString("N0")</strong></div>
+</section>
+
+<section class="panel table-panel metrics-panel">
+    <div class="panel-head">
+        <div><p class="eyebrow">METRIC STREAM</p><h2>Latest matching points</h2></div>
+        <span>showing @Model.Rows.Count</span>
+    </div>
+
+    @if (Model.Rows.Count == 0)
+    {
+        <div class="empty"><strong>No matching metric points.</strong><span>Adjust the filters or export OTLP metrics to /v1/metrics.</span></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table class="metrics-table">
+                <thead>
+                    <tr><th>Time</th><th>Metric</th><th>Kind</th><th>Component</th><th>Value</th><th>Dimensions</th></tr>
+                </thead>
+                <tbody>
+                @foreach (var row in Model.Rows)
+                {
+                    <tr>
+                        <td class="metric-time">@row.Timestamp.ToString("u")</td>
+                        <td class="metric-name">
+                            <strong>@row.Name</strong>
+                            @if (!string.IsNullOrWhiteSpace(row.Description))
+                            {
+                                <small>@row.Description</small>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(row.ScopeName))
+                            {
+                                <small>@row.ScopeName@(string.IsNullOrWhiteSpace(row.ScopeVersion) ? "" : $" · {row.ScopeVersion}")</small>
+                            }
+                        </td>
+                        <td>
+                            <span class="metric-kind">@row.Kind</span>
+                            @if (row.Temporality != MetricAggregationTemporality.Unspecified)
+                            {
+                                <small>@row.Temporality</small>
+                            }
+                            @if (row.IsMonotonic)
+                            {
+                                <small>monotonic</small>
+                            }
+                        </td>
+                        <td><a href="/components/@row.ComponentId"><strong>@row.ComponentName</strong></a><small>@row.Environment</small></td>
+                        <td class="metric-value">
+                            <strong>@MetricsModel.FormatValue(row)</strong>
+                            @if (row.Min.HasValue || row.Max.HasValue)
+                            {
+                                <small>min @(row.Min?.ToString("G6") ?? "—") · max @(row.Max?.ToString("G6") ?? "—")</small>
+                            }
+                        </td>
+                        <td class="metric-details">
+                            @if (!string.IsNullOrWhiteSpace(row.AttributesJson))
+                            {
+                                <code>@row.AttributesJson</code>
+                            }
+                            else
+                            {
+                                <span class="muted">no point dimensions</span>
+                            }
+                            <details>
+                                <summary>Full metric details</summary>
+                                <div class="metric-detail-grid">
+                                    <div><span>Source</span><code>@row.Source</code></div>
+                                    <div><span>Flags</span><code>@row.Flags</code></div>
+                                    @if (row.StartTimestamp.HasValue)
+                                    {
+                                        <div><span>Start</span><code>@row.StartTimestamp.Value.ToString("u")</code></div>
+                                    }
+                                    @if (row.Scale.HasValue)
+                                    {
+                                        <div><span>Scale</span><code>@row.Scale</code></div>
+                                    }
+                                    @if (row.ZeroCount.HasValue)
+                                    {
+                                        <div><span>Zero count</span><code>@row.ZeroCount.Value.ToString("0")</code></div>
+                                    }
+                                    @if (row.ZeroThreshold.HasValue)
+                                    {
+                                        <div><span>Zero threshold</span><code>@row.ZeroThreshold.Value.ToString("G6")</code></div>
+                                    }
+                                </div>
+                                @if (!string.IsNullOrWhiteSpace(row.BucketCountsJson)) { <div><span>Bucket counts</span><pre>@row.BucketCountsJson</pre></div> }
+                                @if (!string.IsNullOrWhiteSpace(row.ExplicitBoundsJson)) { <div><span>Explicit bounds</span><pre>@row.ExplicitBoundsJson</pre></div> }
+                                @if (!string.IsNullOrWhiteSpace(row.PositiveBucketsJson)) { <div><span>Positive buckets</span><pre>@row.PositiveBucketsJson</pre></div> }
+                                @if (!string.IsNullOrWhiteSpace(row.NegativeBucketsJson)) { <div><span>Negative buckets</span><pre>@row.NegativeBucketsJson</pre></div> }
+                                @if (!string.IsNullOrWhiteSpace(row.QuantilesJson)) { <div><span>Quantiles</span><pre>@row.QuantilesJson</pre></div> }
+                                @if (!string.IsNullOrWhiteSpace(row.MetricMetadataJson)) { <div><span>Metric metadata</span><pre>@row.MetricMetadataJson</pre></div> }
+                                @if (!string.IsNullOrWhiteSpace(row.ResourceAttributesJson)) { <div><span>Resource</span><pre>@row.ResourceAttributesJson</pre></div> }
+                                @if (!string.IsNullOrWhiteSpace(row.ExemplarsJson)) { <div><span>Exemplars</span><pre>@row.ExemplarsJson</pre></div> }
+                                @if (!string.IsNullOrWhiteSpace(row.ResourceSchemaUrl) || !string.IsNullOrWhiteSpace(row.ScopeSchemaUrl))
+                                {
+                                    <div><span>Schema</span><pre>@row.ResourceSchemaUrl\n@row.ScopeSchemaUrl</pre></div>
+                                }
+                            </details>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>

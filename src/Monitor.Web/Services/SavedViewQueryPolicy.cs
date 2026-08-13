@@ -43,7 +43,12 @@ public sealed class SavedViewQueryPolicy
                 SavedViewSurface.Commands,
                 "Commands",
                 "/commands",
-                ["Window", "ComponentId", "Type", "Status", "Search"])
+                ["Window", "ComponentId", "Type", "Status", "Search"]),
+            [SavedViewSurface.Metrics] = new(
+                SavedViewSurface.Metrics,
+                "Metrics",
+                "/metrics",
+                ["Window", "Search", "ComponentId", "Environment", "Name", "Kind", "Scope", "Take"])
         };
 
     public SavedViewSurfaceDefinition GetDefinition(SavedViewSurface surface) =>

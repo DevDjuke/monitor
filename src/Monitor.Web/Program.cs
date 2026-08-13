@@ -134,6 +134,7 @@ builder.Services.AddHostedService<LogCorrelationWorker>();
 builder.Services.AddScoped<OtlpComponentScopeValidator>();
 builder.Services.AddScoped<OtlpTraceImporter>();
 builder.Services.AddScoped<OtlpLogImporter>();
+builder.Services.AddScoped<OtlpMetricImporter>();
 
 builder.Services
     .AddIdentity<MonitorUser, IdentityRole>(options =>
