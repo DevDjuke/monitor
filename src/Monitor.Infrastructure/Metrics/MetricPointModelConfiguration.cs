@@ -1,5 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
 using Monitor.Domain;
 
 namespace Monitor.Infrastructure.Metrics;
@@ -32,18 +31,5 @@ public static class MetricPointModelConfiguration
             .WithMany()
             .HasForeignKey(x => x.ComponentId)
             .OnDelete(DeleteBehavior.Cascade);
-    }
-}
-
-public sealed class MonitorModelCustomizer(ModelCustomizerDependencies dependencies)
-    : ModelCustomizer(dependencies)
-{
-    public override void Customize(ModelBuilder modelBuilder, DbContext context)
-    {
-        base.Customize(modelBuilder, context);
-        if (context is MonitorDbContext)
-        {
-            MetricPointModelConfiguration.Configure(modelBuilder);
-        }
     }
 }
