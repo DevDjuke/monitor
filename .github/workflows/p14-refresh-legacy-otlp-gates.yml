@@ -16,8 +16,8 @@ jobs:
         with:
           ref: feature/otlp-compatibility
       - name: Replace superseded JSON-is-unsupported assertions
-        shell: python
         run: |
+          python3 <<'PY'
           from pathlib import Path
 
           replacements = {
@@ -80,8 +80,8 @@ test \"$unsupported_media_status\" = \"415\""""
                   raise SystemExit(f'expected legacy assertion not found in {path}')
 
           Path('/tmp/p14-changed').write_text('1' if changed else '0', encoding='utf-8')
+          PY
       - name: Commit refreshed gates
-        if: always()
         run: |
           if [ "$(cat /tmp/p14-changed)" != "1" ]; then
             exit 0
