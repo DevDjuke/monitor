@@ -2,6 +2,7 @@ using System.IO.Compression;
 using Google.Protobuf;
 using Monitor.Web.Auth;
 using OpenTelemetry.Proto.Collector.Logs.V1;
+using OpenTelemetry.Proto.Collector.Metrics.V1;
 using OpenTelemetry.Proto.Collector.Trace.V1;
 
 namespace Monitor.Web.Otlp;
@@ -12,6 +13,7 @@ public static class OtlpEndpoints
     {
         endpoints.MapPost("/v1/traces", ImportTraces);
         endpoints.MapPost("/v1/logs", ImportLogs);
+        endpoints.MapPost("/v1/metrics", ImportMetrics);
         return endpoints;
     }
 
@@ -121,6 +123,62 @@ public static class OtlpEndpoints
             {
                 RejectedLogRecords = result.RejectedLogs,
                 ErrorMessage = "Some log records could not be accepted."
+            };
+        }
+
+        return Results.Bytes(response.ToByteArray(), "application/x-protobuf");
+    }
+
+    private static async Task<IResult> ImportMetrics(
+        HttpContext httpContext,
+        OtlpMetricImporter importer,
+        OtlpComponentScopeValidator scopeValidator,
+        IngestionCredentialAuthenticator authenticator,
+        CancellationToken cancellationToken)
+    {
+        var identity = await authenticator.AuthenticateAsync(
+            httpContext,
+            allowOperator: false,
+            cancellationToken);
+        if (identity is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        if (!IsProtobuf(httpContext.Request.ContentType))
+        {
+            return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+        }
+
+        var payload = await ReadPayloadAsync(httpContext.Request, cancellationToken);
+        if (payload is null)
+        {
+            return Results.StatusCode(StatusCodes.Status415UnsupportedMediaType);
+        }
+
+        ExportMetricsServiceRequest request;
+        try
+        {
+            request = ExportMetricsServiceRequest.Parser.ParseFrom(payload);
+        }
+        catch (InvalidProtocolBufferException)
+        {
+            return Results.BadRequest();
+        }
+
+        if (!await scopeValidator.CanIngestAsync(request, identity.ComponentId, cancellationToken))
+        {
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        }
+
+        var result = await importer.ImportAsync(request, cancellationToken);
+        var response = new ExportMetricsServiceResponse();
+        if (result.RejectedPoints > 0)
+        {
+            response.PartialSuccess = new ExportMetricsPartialSuccess
+            {
+                RejectedDataPoints = result.RejectedPoints,
+                ErrorMessage = "Some metric data points were rejected because their timestamps, values, temporality, or distribution shape were invalid."
             };
         }
 
